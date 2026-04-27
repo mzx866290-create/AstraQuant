@@ -1,0 +1,46 @@
+# Prometheus 配置文件
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'stock-platform-monitor'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus自身
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 行情服务
+  - job_name: 'market-service'
+    static_configs:
+      - targets: ['localhost:8001']
+    metrics_path: '/metrics'
+
+  # 用户服务
+  - job_name: 'user-service'
+    static_configs:
+      - targets: ['localhost:8002']
+    metrics_path: '/metrics'
+
+  # PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['localhost:5432']
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['localhost:6379']
+
+  # ClickHouse
+  - job_name: 'clickhouse'
+    static_configs:
+      - targets: ['localhost:8123']

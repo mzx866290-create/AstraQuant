@@ -1,0 +1,9 @@
+name: New MCP server
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: memory           # 注意这里前面有一个横杠和空格，代表这是一个列表项
+    command: npx.cmd       # 记得保留 Windows 的 .cmd 后缀
+    args:
+      - -y
+      - "@modelcontextprotocol/server-memory"

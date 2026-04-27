@@ -1,0 +1,23 @@
+# 共享模块依赖
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+clickhouse-driver==0.2.6
+redis==5.0.1
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+pandas==2.1.4
+numpy==1.26.2
+
+# 开发依赖
+black==23.11.0
+isort==5.12.0
+flake8==6.1.0
+mypy==1.7.1
+
+# 运行时依赖
+typing-extensions==4.8.0
+dataclasses-json==0.6.2
+
