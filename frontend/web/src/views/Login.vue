@@ -16,7 +16,7 @@
           <el-input v-model="form.password" type="password" show-password placeholder="请输入密码" />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="handleSubmit" :loading="loading" style="width:100%">
+          <el-button type="primary" @click="handleSubmit" :loading="loading" class="submit-btn">
             {{ isLogin ? '登录' : '注册' }}
           </el-button>
         </el-form-item>
@@ -33,12 +33,13 @@
 
 <script setup lang="ts">
 import { ref, reactive } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { userApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 const isLogin = ref(true)
 const loading = ref(false)
@@ -56,6 +57,20 @@ const rules = {
   password: [{ required: true, min: 8, message: '密码至少8位', trigger: 'blur' }],
 }
 
+function getSafeRedirect() {
+  const raw = route.query.redirect
+  const redirect = Array.isArray(raw) ? raw[0] : raw
+  if (!redirect || !redirect.startsWith('/') || redirect.startsWith('//')) return '/'
+
+  try {
+    const url = new URL(redirect, window.location.origin)
+    if (url.origin !== window.location.origin) return '/'
+    return `${url.pathname}${url.search}${url.hash}` || '/'
+  } catch {
+    return '/'
+  }
+}
+
 async function handleSubmit() {
   if (!formRef.value) return
   await formRef.value.validate()
@@ -64,16 +79,16 @@ async function handleSubmit() {
     if (isLogin.value) {
       await userStore.login(form.username, form.password)
       ElMessage.success('登录成功')
-      router.push('/')
+      router.push(getSafeRedirect())
     } else {
       await userApi.register(form.username, form.email, form.password)
       ElMessage.success('注册成功，请登录')
       isLogin.value = true
     }
-  } catch (e: any) {
-    const detail = e?.response?.data?.detail
-    const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join('; ') : (detail || '操作失败')
-    ElMessage.error(msg)
+  } catch (error) {
+    const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+    const msg = Array.isArray(detail) ? detail.map((d) => (d as { msg?: string }).msg).filter(Boolean).join('; ') : (detail || '操作失败')
+    ElMessage.error(msg as string)
   } finally {
     loading.value = false
   }
@@ -94,6 +109,10 @@ async function handleSubmit() {
   text-align: center;
   margin: 0;
 }
+.submit-btn {
+  width: 100%;
+}
+
 .toggle {
   text-align: center;
   margin-top: 16px;

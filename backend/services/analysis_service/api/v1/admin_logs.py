@@ -4,16 +4,16 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from typing import Optional
 import csv
 import io
 from datetime import datetime
 
 from backend.shared.database import get_db
-from backend.shared.models import User, AIModel, AIUsageLog
+from backend.shared.models import User, AIModel, AIUsageLog, UserActivityLog
 from backend.shared.auth import get_current_user, require_admin
-from backend.shared.schemas import AIUsageLogResponse
+from backend.shared.schemas import AIUsageLogResponse, UserActivityLogResponse
 
 router = APIRouter(prefix="/logs", tags=["管理员-日志"])
 
@@ -68,6 +68,54 @@ async def list_logs(
             status=log.status,
             error_message=log.error_message,
             response_time_ms=log.response_time_ms,
+            created_at=log.created_at,
+        ))
+
+    return result
+
+
+@router.get("/activity", response_model=list[UserActivityLogResponse])
+async def list_activity_logs(
+    skip: int = 0,
+    limit: int = 20,
+    user_id: Optional[int] = None,
+    action: Optional[str] = None,
+    target: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user = Depends(require_admin()),
+    db: Session = Depends(get_db),
+):
+    """List user activity audit logs for admins."""
+    query = db.query(UserActivityLog)
+
+    if user_id:
+        query = query.filter(UserActivityLog.user_id == user_id)
+    if action:
+        query = query.filter(UserActivityLog.action.contains(action))
+    if target:
+        query = query.filter(UserActivityLog.target.contains(target))
+    if ip_address:
+        query = query.filter(UserActivityLog.ip_address.contains(ip_address))
+    if date_from:
+        query = query.filter(UserActivityLog.created_at >= datetime.fromisoformat(date_from))
+    if date_to:
+        query = query.filter(UserActivityLog.created_at <= datetime.fromisoformat(date_to))
+
+    logs = query.order_by(desc(UserActivityLog.created_at)).offset(skip).limit(limit).all()
+
+    result = []
+    for log in logs:
+        user = db.query(User).filter(User.id == log.user_id).first() if log.user_id else None
+        result.append(UserActivityLogResponse(
+            id=log.id,
+            user_id=log.user_id,
+            username=user.username if user else None,
+            action=log.action,
+            target=log.target,
+            ip_address=log.ip_address,
+            user_agent=log.user_agent,
             created_at=log.created_at,
         ))
 
@@ -159,5 +207,35 @@ async def get_log_count(
         query = query.filter(AIUsageLog.created_at >= datetime.fromisoformat(date_from))
     if date_to:
         query = query.filter(AIUsageLog.created_at <= datetime.fromisoformat(date_to))
+
+    return {"total": query.scalar() or 0}
+
+
+@router.get("/activity/count")
+async def get_activity_log_count(
+    user_id: Optional[int] = None,
+    action: Optional[str] = None,
+    target: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user = Depends(require_admin()),
+    db: Session = Depends(get_db),
+):
+    """Get user activity audit log count for pagination."""
+    query = db.query(func.count(UserActivityLog.id))
+
+    if user_id:
+        query = query.filter(UserActivityLog.user_id == user_id)
+    if action:
+        query = query.filter(UserActivityLog.action.contains(action))
+    if target:
+        query = query.filter(UserActivityLog.target.contains(target))
+    if ip_address:
+        query = query.filter(UserActivityLog.ip_address.contains(ip_address))
+    if date_from:
+        query = query.filter(UserActivityLog.created_at >= datetime.fromisoformat(date_from))
+    if date_to:
+        query = query.filter(UserActivityLog.created_at <= datetime.fromisoformat(date_to))
 
     return {"total": query.scalar() or 0}

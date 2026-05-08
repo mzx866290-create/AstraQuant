@@ -1,0 +1,65 @@
+{
+  "title": "Stock Platform Business Overview",
+  "uid": "stock-platform-business",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["stock-platform", "business"],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Service Presence",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum(stock_platform_service_info)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Request Rate",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum by (service) (rate(stock_platform_http_requests_total[5m]))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP 5xx Rate",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum by (service) (rate(stock_platform_http_requests_total{status_code=~\"5..\"}[5m]))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "P95 HTTP Latency",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(stock_platform_http_request_duration_seconds_bucket[5m])))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "In-flight Requests",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum by (service) (stock_platform_http_requests_in_progress)"
+        }
+      ]
+    }
+  ]
+}

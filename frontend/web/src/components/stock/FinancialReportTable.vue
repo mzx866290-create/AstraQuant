@@ -4,8 +4,24 @@
       <h4>财务数据</h4>
     </div>
 
+    <DataQualityPanel :quality="dataQuality" />
+    <div v-if="crawlStatus || crawlError" class="crawl-status-bar">
+      <span v-if="crawlStatus" class="crawl-status" :class="crawlStatusLevel(crawlStatus)">
+        {{ formatCrawlStatus(crawlStatus, '期') }}
+      </span>
+      <span v-if="crawlError" class="crawl-status error">
+        {{ crawlError }}
+      </span>
+    </div>
+
     <div v-if="loading" class="loading">加载中...</div>
-    <div v-else-if="!reports.length" class="empty">暂无财报数据，请先运行数据采集</div>
+    <div v-else-if="!reports.length" class="empty">
+      <div>暂无财报数据，请先运行数据采集</div>
+      <small v-if="emptyReason">{{ emptyReason }}</small>
+      <el-button size="small" type="primary" :loading="crawling" @click="crawlCurrentFinancials">
+        立即采集 {{ props.symbol }} 财报
+      </el-button>
+    </div>
 
     <div v-else class="table-wrapper">
       <el-table :data="reports" size="small" stripe>
@@ -75,24 +91,92 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
+import { crawlStatusLevel, crawlStatusReason, formatCrawlError, formatCrawlStatus, pickDataQuality, type CrawlStatus, type DataQualityItem } from '@/utils/dataQuality'
+
+interface FinancialReport {
+  report_date?: string
+  report_type?: string
+  revenue?: number | null
+  revenue_yoy?: number | null
+  net_profit?: number | null
+  net_profit_yoy?: number | null
+  gross_margin?: number | null
+  net_margin?: number | null
+  roe?: number | null
+  eps?: number | null
+  pe_ttm?: number | null
+  pb?: number | null
+}
+
+interface FinancialsResponse {
+  reports?: FinancialReport[]
+  data_quality?: Record<string, DataQualityItem> | DataQualityItem
+}
+
+interface CrawlStatusResponse {
+  statuses?: {
+    financials?: CrawlStatus
+  }
+}
+
+interface CrawlFinancialsResponse {
+  crawl_status?: CrawlStatus
+}
+
 
 const props = defineProps<{ symbol: string }>()
+const emit = defineEmits<{ crawlComplete: [] }>()
 
-const reports = ref<any[]>([])
+const reports = ref<FinancialReport[]>([])
 const loading = ref(false)
+const crawling = ref(false)
+const crawlStatus = ref<CrawlStatus | null>(null)
+const crawlError = ref('')
+const dataQuality = ref<DataQualityItem | null>(null)
+const emptyReason = computed(() => crawlStatusReason(crawlStatus.value))
 
 async function fetchFinancials() {
   loading.value = true
   try {
     const { default: api } = await import('@/api')
-    const resp = await api.get(`/api/v1/financials/${props.symbol}`)
-    reports.value = (resp.data.reports || []).slice(0, 8)
+    const resp = await api.get<FinancialsResponse>(`/api/v1/financials/${props.symbol}`)
+    reports.value = (resp.reports || []).slice(0, 8)
+    dataQuality.value = pickDataQuality(resp.data_quality, 'financial')
+    await loadCrawlStatus()
   } catch (e) {
     console.error('获取财报失败:', e)
     reports.value = []
+    dataQuality.value = null
   } finally {
     loading.value = false
+  }
+}
+
+async function loadCrawlStatus() {
+  try {
+    const { crawlApi } = await import('@/api')
+    const resp = await crawlApi.getCrawlStatus<CrawlStatusResponse>(props.symbol)
+    crawlStatus.value = resp.statuses?.financials || null
+  } catch (e) {
+    crawlStatus.value = null
+  }
+}
+
+async function crawlCurrentFinancials() {
+  crawling.value = true
+  crawlError.value = ''
+  try {
+    const { crawlApi } = await import('@/api')
+    const resp = await crawlApi.crawlFinancials<CrawlFinancialsResponse>(props.symbol)
+    crawlStatus.value = resp.crawl_status || null
+    await fetchFinancials()
+    emit('crawlComplete')
+  } catch (error) {
+    crawlError.value = formatCrawlError(error as { response?: { status?: number; data?: { detail?: string } }; message?: string }, '财报')
+  } finally {
+    crawling.value = false
   }
 }
 
@@ -115,11 +199,79 @@ onMounted(fetchFinancials)
 </script>
 
 <style scoped>
-.financial-table { background: #fff; border-radius: 8px; padding: 16px; }
-.table-header { margin-bottom: 12px; }
-.table-header h4 { margin: 0; font-size: 15px; }
-.table-wrapper { overflow-x: auto; }
-.positive { color: #e53e3e; }
-.negative { color: #38a169; }
-.loading, .empty { text-align: center; color: #999; padding: 30px; font-size: 13px; }
+.financial-table {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+
+.table-header {
+  margin-bottom: var(--space-3);
+}
+
+.table-header h4 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.table-wrapper :deep(.el-table__cell) {
+  font-variant-numeric: tabular-nums;
+}
+
+.table-wrapper :deep(.el-table__cell.is-right .cell) {
+  font-family: var(--font-number);
+}
+
+.loading,
+.empty {
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  text-align: center;
+  font-size: 13px;
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+}
+
+.crawl-status {
+  max-width: 360px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.crawl-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.crawl-status.success {
+  color: #047857;
+}
+
+.crawl-status.warning {
+  color: #b7791f;
+}
+
+.crawl-status.error {
+  color: #c53030;
+}
+
+.crawl-status.info {
+  color: #3182ce;
+}
 </style>

@@ -22,6 +22,17 @@ VALID_INDICATORS = {"ma5", "ma10", "ma20", "ma60", "ma120",
                     "macd", "boll", "kdj", "rsi", "vol5", "vol10", "vol20"}
 
 
+async def _fetch_kline(symbol: str, limit: int = 200) -> list[dict]:
+    from backend.services.data_crawler.sources.eastmoney_source import EastMoneySource
+
+    em = EastMoneySource()
+    try:
+        data = await em.fetch_daily_kline(symbol)
+    finally:
+        await em.close()
+    return data[-limit:] if len(data) > limit else data
+
+
 @router.get("/{symbol}")
 async def get_technical_analysis(
     symbol: str,
@@ -51,16 +62,20 @@ async def get_technical_analysis(
         raise HTTPException(status_code=400,
                             detail=f"不支持的指标: {', '.join(invalid)}. 支持: {', '.join(sorted(VALID_INDICATORS))}")
 
-    # TODO: 从数据源或数据库获取K线数据
-    mock_data = _generate_mock_kline(limit)
+    try:
+        kline_data = await _fetch_kline(symbol, limit)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"K线数据源不可用: {e}")
+    if len(kline_data) < 20:
+        raise HTTPException(status_code=404, detail="真实K线数据不足，无法计算技术指标")
 
-    result = engine.compute_all(mock_data, ind_list)
+    result = engine.compute_all(kline_data, ind_list)
 
     return {
         "symbol": symbol,
         "period": period,
-        "count": len(mock_data),
-        "source": "mock",
+        "count": len(kline_data),
+        "source": "eastmoney",
         "indicators": result,
     }
 
@@ -79,22 +94,27 @@ async def get_single_indicator(
     """
     ind_lower = indicator.lower()
 
-    mock_data = _generate_mock_kline(200)
+    try:
+        kline_data = await _fetch_kline(symbol, 200)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"K线数据源不可用: {e}")
+    if len(kline_data) < 20:
+        raise HTTPException(status_code=404, detail="真实K线数据不足，无法计算技术指标")
 
     if ind_lower == "macd":
         fast = period
         slow = min(period * 2 + 4, 52)
         sig = min(period - 3, 9)
-        result = engine.macd(mock_data, fast=fast, slow=slow, signal=sig)
+        result = engine.macd(kline_data, fast=fast, slow=slow, signal=sig)
     elif ind_lower == "rsi":
-        result = {"rsi": engine.rsi(mock_data, period)}
+        result = {"rsi": engine.rsi(kline_data, period)}
     elif ind_lower == "boll":
-        result = engine.boll(mock_data, period)
+        result = engine.boll(kline_data, period)
     elif ind_lower == "kdj":
-        result = engine.kdj(mock_data, period)
+        result = engine.kdj(kline_data, period)
     elif ind_lower in ("ma", "ema"):
         fn = engine.ma if ind_lower == "ma" else engine.ema
-        result = {f"{ind_lower}{period}": fn(mock_data, period)}
+        result = {f"{ind_lower}{period}": fn(kline_data, period)}
     else:
         raise HTTPException(status_code=400, detail=f"不支持的指标: {indicator}")
 
@@ -104,37 +124,3 @@ async def get_single_indicator(
         "period": period,
         "data": result,
     }
-
-
-def _generate_mock_kline(count: int = 200) -> list[dict]:
-    """生成模拟K线数据"""
-    import random
-    from datetime import datetime, timedelta
-
-    data = []
-    price = 1700.0
-    now = datetime.now()
-    for i in range(count):
-        day = now - timedelta(days=count - i)
-        if day.weekday() >= 5:
-            continue
-        change = (random.random() - 0.48) * 30
-        open_px = price
-        close = round(open_px + change, 2)
-        high = round(max(open_px, close) + random.random() * 15, 2)
-        low = round(min(open_px, close) - random.random() * 15, 2)
-        vol = random.randint(1000000, 6000000)
-        data.append({
-            "date": day.strftime("%Y-%m-%d"),
-            "open": open_px,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": vol,
-            "turnover": round(vol * close, 2),
-            "change_pct": round(change / price * 100, 2),
-            "turnover_rate": round(random.uniform(0.1, 3.0), 2),
-            "amplitude": round(abs(high - low) / open_px * 100, 2),
-        })
-        price = close
-    return data

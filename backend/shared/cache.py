@@ -2,25 +2,85 @@
 import json
 from functools import wraps
 from typing import Optional, Callable, Any
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 import os
 
 logger = logging.getLogger(__name__)
 
 # TTL策略
+DEFAULT_CACHE_TTL = timedelta(minutes=10)
+CACHE_TTL_REALTIME_QUOTE = timedelta(seconds=5)
+CACHE_TTL_MINUTE_KLINE = timedelta(minutes=1)
+CACHE_TTL_DAILY_KLINE = timedelta(hours=24)
+CACHE_TTL_WEEK_MONTH_KLINE = timedelta(days=7)
+CACHE_TTL_SEARCH_RESULT = timedelta(minutes=5)
+CACHE_TTL_DAILY_RECOMMENDATIONS_MAX = timedelta(hours=24)
+
+# Central cache TTL policy. Values are timedelta for fixed TTLs; dynamic
+# categories are resolved by resolve_cache_ttl().
 TTL_POLICY = {
-    "realtime_quote": timedelta(seconds=5),
-    "daily_kline": timedelta(hours=1),
-    "weekly_kline": timedelta(hours=24),
+    "realtime_quote": CACHE_TTL_REALTIME_QUOTE,
+    "quote": CACHE_TTL_REALTIME_QUOTE,
+    "market_quote": CACHE_TTL_REALTIME_QUOTE,
+    "minute_kline": CACHE_TTL_MINUTE_KLINE,
+    "intraday_kline": CACHE_TTL_MINUTE_KLINE,
+    "daily_kline": CACHE_TTL_DAILY_KLINE,
+    "weekly_kline": CACHE_TTL_WEEK_MONTH_KLINE,
+    "monthly_kline": CACHE_TTL_WEEK_MONTH_KLINE,
+    "week_month_kline": CACHE_TTL_WEEK_MONTH_KLINE,
     "stock_info": timedelta(hours=12),
     "financial_data": timedelta(days=1),
-    "search_result": timedelta(minutes=30),
+    "search_result": CACHE_TTL_SEARCH_RESULT,
+    "search": CACHE_TTL_SEARCH_RESULT,
     "user_watchlist": timedelta(minutes=5),
+    "ai_analysis_report": timedelta(hours=8),
+    "ai_batch_summary": timedelta(hours=2),
+    "ai_model_health": timedelta(hours=1),
+    "daily_recommendations": CACHE_TTL_DAILY_RECOMMENDATIONS_MAX,
 }
+
+_INTRADAY_KLINE_PERIODS = {"1m", "5m", "15m", "30m", "60m"}
+_WEEK_MONTH_KLINE_PERIODS = {"1w", "1M", "1mo", "month", "weekly", "monthly"}
+
+
+def seconds(ttl: timedelta) -> int:
+    return max(1, int(ttl.total_seconds()))
+
+
+def ttl_until_next_day(now: Optional[datetime] = None) -> timedelta:
+    current = now or datetime.now()
+    next_day = (current + timedelta(days=1)).date()
+    next_midnight = datetime.combine(next_day, datetime.min.time())
+    ttl = next_midnight - current
+    if ttl.total_seconds() <= 0:
+        return CACHE_TTL_DAILY_RECOMMENDATIONS_MAX
+    return min(ttl, CACHE_TTL_DAILY_RECOMMENDATIONS_MAX)
+
+
+def resolve_cache_ttl(category: str, now: Optional[datetime] = None) -> timedelta:
+    if category == "daily_recommendations":
+        return ttl_until_next_day(now)
+    return TTL_POLICY.get(category, DEFAULT_CACHE_TTL)
+
+
+def cache_ttl_seconds(category: str, now: Optional[datetime] = None) -> int:
+    return seconds(resolve_cache_ttl(category, now))
+
+
+def cache_category_for_kline_period(period: str) -> str:
+    normalized = str(period)
+    if normalized in _INTRADAY_KLINE_PERIODS:
+        return "minute_kline"
+    if normalized == "1d":
+        return "daily_kline"
+    if normalized in _WEEK_MONTH_KLINE_PERIODS:
+        return "week_month_kline"
+    return "daily_kline"
 
 redis_client: Optional[Any] = None
 _redis_unavailable = False
+_fallback_memory: dict = {}
 
 
 async def init_redis():
@@ -63,7 +123,7 @@ class CacheManager:
 
     def __init__(self, client=None):
         self.redis = client
-        self._memory: dict = {}
+        self._memory = _fallback_memory
 
     def _make_key(self, category: str, *args) -> str:
         raw = f"{category}:{'|'.join(str(a) for a in args)}"
@@ -87,13 +147,13 @@ class CacheManager:
             del self._memory[key]
         return None
 
-    async def set(self, category: str, *args, value: Any):
+    async def set(self, category: str, *args, value: Any, ttl: Optional[timedelta] = None):
         key = self._make_key(category, *args)
-        ttl = TTL_POLICY.get(category, timedelta(minutes=10))
+        effective_ttl = ttl or resolve_cache_ttl(category)
         if self.redis:
             try:
                 await self.redis.setex(
-                    key, int(ttl.total_seconds()), json.dumps(value, default=str)
+                    key, seconds(effective_ttl), json.dumps(value, default=str)
                 )
                 return
             except Exception:
@@ -102,7 +162,7 @@ class CacheManager:
         import time
         self._memory[key] = {
             "value": value,
-            "expires": time.time() + ttl.total_seconds(),
+            "expires": time.time() + effective_ttl.total_seconds(),
         }
 
     async def invalidate(self, category: str, *args):

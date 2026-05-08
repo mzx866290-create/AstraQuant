@@ -132,7 +132,7 @@ class NewsSentimentEngine:
 
         if not recent:
             return {"total": 0, "positive": 0, "negative": 0, "neutral": 0,
-                    "avg_score": 0, "dominant_sentiment": "近{days}天无新闻",
+                    "avg_score": 0, "dominant_sentiment": f"近{days}天无新闻",
                     "top_impact": [], "trend": "无数据"}
 
         pos = sum(1 for n in recent if n.get("sentiment") == "正面")
@@ -165,7 +165,38 @@ class NewsSentimentEngine:
         else:
             trend = "数据不足"
 
-        dominant = "正面" if pos >= neg and pos >= neu else "负面" if neg >= pos else "中性"
+        positive_label = "\u6b63\u9762"
+        neutral_label = "\u4e2d\u6027"
+        negative_label = "\u8d1f\u9762"
+        high_label = "\u9ad8"
+        medium_label = "\u4e2d"
+        low_label = "\u4f4e"
+
+        counts = {positive_label: pos, neutral_label: neu, negative_label: neg}
+        count_dominant = max(counts, key=counts.get)
+        avg_score = round(sum(scores) / len(scores), 3) if scores else 0
+
+        high_weight = {high_label: 3.0, medium_label: 1.8, low_label: 1.0}
+        weighted_scores = {positive_label: 0.0, neutral_label: 0.0, negative_label: 0.0}
+        for item in recent:
+            sentiment = item.get("sentiment") or neutral_label
+            if sentiment not in weighted_scores:
+                sentiment = neutral_label
+            weight = high_weight.get(item.get("impact_level"), 1.0)
+            score = abs(float(item.get("sentiment_score") or 0))
+            weighted_scores[sentiment] += max(score, 0.1) * weight
+        weighted_dominant = max(weighted_scores, key=weighted_scores.get)
+
+        dominant_basis = "count"
+        dominant = count_dominant
+        validation_note = "\u4e3b\u5bfc\u60c5\u7eea\u6309\u65b0\u95fb\u6570\u91cf\u5224\u65ad\u3002"
+        if weighted_dominant != count_dominant and weighted_scores[weighted_dominant] >= weighted_scores[count_dominant] * 1.5:
+            dominant_basis = "weighted_impact"
+            dominant = weighted_dominant
+            validation_note = (
+                f"\u6570\u91cf\u4e3b\u5bfc\u4e3a{count_dominant}"
+                f"\uff0c\u4f46\u6309\u5f71\u54cd\u529b\u52a0\u6743\u540e\u504f{weighted_dominant}\u3002"
+            )
 
         return {
             "total": len(recent),
@@ -174,8 +205,12 @@ class NewsSentimentEngine:
             "neutral": neu,
             "positive_ratio": round(pos / len(recent) * 100, 1),
             "negative_ratio": round(neg / len(recent) * 100, 1),
-            "avg_score": round(sum(scores) / len(scores), 3) if scores else 0,
+            "avg_score": avg_score,
             "dominant_sentiment": dominant,
+            "count_dominant_sentiment": count_dominant,
+            "weighted_dominant_sentiment": weighted_dominant,
+            "dominant_basis": dominant_basis,
+            "validation_note": validation_note,
             "top_impact": top_impact_clean,
             "trend": trend,
         }

@@ -1,95 +1,164 @@
 <template>
-  <div class="quote-panel">
-    <el-descriptions :column="4" border size="small">
-      <el-descriptions-item label="最新价" label-class-name="label">
-        <span :class="priceClass">{{ formatPrice(quote.price) }}</span>
-      </el-descriptions-item>
-      <el-descriptions-item label="涨跌幅" label-class-name="label">
-        <span :class="priceClass">{{ formatPct(quote.change_pct) }}</span>
-      </el-descriptions-item>
-      <el-descriptions-item label="涨跌额" label-class-name="label">
-        <span :class="priceClass">{{ formatPrice(quote.change) }}</span>
-      </el-descriptions-item>
-      <el-descriptions-item label="换手率" label-class-name="label">
-        {{ formatPct(quote.turnover_rate) }}
-      </el-descriptions-item>
-      <el-descriptions-item label="今开" label-class-name="label">
-        {{ formatPrice(quote.open) }}
-      </el-descriptions-item>
-      <el-descriptions-item label="最高" label-class-name="label">
-        <span class="price-up">{{ formatPrice(quote.high) }}</span>
-      </el-descriptions-item>
-      <el-descriptions-item label="最低" label-class-name="label">
-        <span class="price-down">{{ formatPrice(quote.low) }}</span>
-      </el-descriptions-item>
-      <el-descriptions-item label="成交量" label-class-name="label">
-        {{ formatVolume(quote.volume) }}
-      </el-descriptions-item>
-      <el-descriptions-item label="成交额" label-class-name="label">
-        {{ formatVolume(quote.turnover) }}
-      </el-descriptions-item>
-      <el-descriptions-item label="市盈率(动)" label-class-name="label">
-        {{ quote.pe_ttm ? quote.pe_ttm.toFixed(2) : '--' }}
-      </el-descriptions-item>
-      <el-descriptions-item label="总市值" label-class-name="label">
-        {{ formatMV(quote.total_mv) }}
-      </el-descriptions-item>
-      <el-descriptions-item label="流通市值" label-class-name="label">
-        {{ formatMV(quote.circ_mv) }}
-      </el-descriptions-item>
-      <el-descriptions-item label="涨停价" label-class-name="label">
-        <span class="price-up">{{ formatPrice(quote.up_limit) }}</span>
-      </el-descriptions-item>
-      <el-descriptions-item label="跌停价" label-class-name="label">
-        <span class="price-down">{{ formatPrice(quote.down_limit) }}</span>
-      </el-descriptions-item>
-    </el-descriptions>
+  <div class="quote-panel dashboard-card">
+    <DataQualityPanel :quality="quoteQuality" />
+    <el-alert
+      v-if="quoteQuality?.is_fallback"
+      class="quote-warning"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="当前行情为降级数据，可能来自K线或本地兜底，不等同于实时行情。"
+    />
+    <div class="quote-grid">
+      <div class="quote-item primary">
+        <span class="quote-label">最新价</span>
+        <strong :class="priceClass" class="quote-value">{{ formatPrice(quote.price) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">涨跌幅</span>
+        <strong :class="priceClass" class="quote-value">{{ formatPct(quote.change_pct) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">涨跌额</span>
+        <strong :class="priceClass" class="quote-value">{{ formatPrice(quote.change) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">换手率</span>
+        <strong class="quote-value">{{ formatPct(quote.turnover_rate) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">今开</span>
+        <strong class="quote-value">{{ formatPrice(quote.open) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">最高</span>
+        <strong class="quote-value price-up">{{ formatPrice(quote.high) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">最低</span>
+        <strong class="quote-value price-down">{{ formatPrice(quote.low) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">成交量</span>
+        <strong class="quote-value">{{ formatVolume(quote.volume) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">成交额</span>
+        <strong class="quote-value">{{ formatVolume(quote.turnover) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">市盈率(动)</span>
+        <strong class="quote-value">{{ quote.pe_ttm ? quote.pe_ttm.toFixed(2) : '--' }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">总市值</span>
+        <strong class="quote-value">{{ formatMarketValue(quote.total_mv) }}</strong>
+      </div>
+      <div class="quote-item">
+        <span class="quote-label">流通市值</span>
+        <strong class="quote-value">{{ formatMarketValue(quote.circ_mv) }}</strong>
+      </div>
+      <div v-if="quote.up_limit" class="quote-item limit">
+        <span class="quote-label">涨停价</span>
+        <strong class="quote-value price-up">{{ formatPrice(quote.up_limit) }}</strong>
+      </div>
+      <div v-if="quote.down_limit" class="quote-item limit">
+        <span class="quote-label">跌停价</span>
+        <strong class="quote-value price-down">{{ formatPrice(quote.down_limit) }}</strong>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { QuoteData } from '@/composables/useStockData'
+import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
+import { formatMarketValue, formatPct, formatPrice, formatVolume } from '@/utils/formatters'
 
 const props = withDefaults(defineProps<{
-  quote: Partial<QuoteData>
+  quote?: Partial<QuoteData>
 }>(), {
-  quote: () => ({
-    price: 0, change: 0, change_pct: 0, high: 0, low: 0,
-    open: 0, volume: 0, turnover: 0, turnover_rate: 0,
-    pe_ttm: 0, total_mv: 0, circ_mv: 0, up_limit: 0, down_limit: 0,
-  }),
+  quote: () => ({}),
 })
 
 const priceClass = computed(() => {
-  const v = props.quote.change_pct || 0
+  const v = Number(props.quote?.change_pct)
+  if (!Number.isFinite(v)) return ''
   return v > 0 ? 'price-up' : v < 0 ? 'price-down' : ''
 })
 
-const formatPrice = (v?: number) => (v ?? 0).toFixed(2)
-const formatPct = (v?: number) => (v ?? 0) > 0 ? `+${(v ?? 0).toFixed(2)}%` : `${(v ?? 0).toFixed(2)}%`
-const formatVolume = (v?: number) => {
-  if (!v) return '--'
-  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿'
-  if (v >= 1e4) return (v / 1e4).toFixed(2) + '万'
-  return v.toString()
-}
-const formatMV = (v?: number) => {
-  if (!v) return '--'
-  if (v >= 1e12) return (v / 1e12).toFixed(2) + '万亿'
-  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿'
-  return (v / 1e4).toFixed(2) + '万'
-}
+const quoteQuality = computed(() => props.quote?.data_quality || null)
 </script>
 
 <style scoped>
 .quote-panel {
-  margin: 8px 0;
+  padding: var(--space-4);
 }
-:deep(.label) {
-  font-weight: 600;
-  width: 80px;
+
+.quote-warning {
+  margin-bottom: var(--space-3);
 }
-.price-up { color: #ef5350; font-weight: bold; }
-.price-down { color: #26a69a; font-weight: bold; }
+
+.quote-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(112px, 1fr));
+  gap: var(--space-3);
+}
+
+.quote-item {
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+  border: 1px solid transparent;
+}
+
+.quote-item.primary {
+  grid-column: span 2;
+  background: linear-gradient(135deg, #fff7f7 0%, #f8fbff 100%);
+  border-color: var(--color-border);
+}
+
+.quote-item.limit {
+  background: #fff;
+  border-color: var(--color-border);
+}
+
+.quote-label {
+  display: block;
+  margin-bottom: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.quote-value {
+  display: block;
+  color: var(--color-text);
+  font-family: var(--font-number);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.quote-item.primary .quote-value {
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+
+@media (max-width: 1180px) {
+  .quote-grid {
+    grid-template-columns: repeat(4, minmax(112px, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .quote-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .quote-item.primary {
+    grid-column: span 2;
+  }
+}
 </style>

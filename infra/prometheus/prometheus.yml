@@ -8,9 +8,10 @@ global:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: []
+        - targets: ['alertmanager:9093']
 
-rule_files: []
+rule_files:
+  - /etc/prometheus/rules/*.yml
 
 scrape_configs:
   # Prometheus自身
@@ -21,26 +22,23 @@ scrape_configs:
   # 行情服务
   - job_name: 'market-service'
     static_configs:
-      - targets: ['localhost:8001']
+      - targets: ['market-service:8000']
     metrics_path: '/metrics'
 
   # 用户服务
   - job_name: 'user-service'
     static_configs:
-      - targets: ['localhost:8002']
+      - targets: ['user-service:8000']
     metrics_path: '/metrics'
 
-  # PostgreSQL
-  - job_name: 'postgres'
+  # 分析服务
+  - job_name: 'analysis-service'
     static_configs:
-      - targets: ['localhost:5432']
+      - targets: ['analysis-service:8000']
+    metrics_path: '/metrics'
 
-  # Redis
-  - job_name: 'redis'
+  # 数据采集服务
+  - job_name: 'data-crawler'
     static_configs:
-      - targets: ['localhost:6379']
-
-  # ClickHouse
-  - job_name: 'clickhouse'
-    static_configs:
-      - targets: ['localhost:8123']
+      - targets: ['data-crawler:8000']
+    metrics_path: '/metrics'

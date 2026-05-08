@@ -4,6 +4,7 @@
  */
 import { ref } from 'vue'
 import { stockApi } from '@/api'
+import type { DataQualityItem } from '@/utils/dataQuality'
 
 export interface KLineItem {
   date: string
@@ -36,6 +37,29 @@ export interface QuoteData {
   down_limit: number
   timestamp: string
   source: string
+  data_quality?: DataQualityItem
+}
+
+export interface StockSearchItem {
+  symbol: string
+  name: string
+  market?: string
+  sector?: string
+}
+
+interface KLineResponse {
+  data?: KLineItem[]
+  indicators?: Record<string, number[]>
+  source?: string
+  data_quality?: DataQualityItem
+}
+
+interface StockSearchResponse {
+  results?: StockSearchItem[]
+}
+
+interface ApiErrorLike {
+  message?: string
 }
 
 export function useStockData() {
@@ -45,25 +69,41 @@ export function useStockData() {
   async function fetchKLine(
     symbol: string,
     period: string = '1d',
-    indicators: string[] = []
+    _indicators: string[] = []
   ): Promise<{
     data: KLineItem[]
     indicators: Record<string, number[]>
     source: string
+    data_quality: DataQualityItem | null
   }> {
     loading.value = true
     error.value = null
     try {
-      const res: any = await stockApi.getKline(symbol, period, 200)
+      const res = await stockApi.getKline<KLineResponse>(symbol, period, 200)
       return {
         data: res.data || [],
         indicators: res.indicators || {},
-        source: res.source || 'unknown'
+        source: res.source || res.data_quality?.source || 'unknown',
+        data_quality: res.data_quality || null,
       }
-    } catch (e: any) {
-      error.value = e.message || '获取K线数据失败'
-      // 返回模拟数据用于开发调试
-      return generateMockKLine()
+    } catch (e) {
+      error.value = (e as ApiErrorLike).message || '获取K线数据失败'
+      if (import.meta.env.DEV && import.meta.env.VITE_ALLOW_MOCK_KLINE === 'true') {
+        return generateMockKLine()
+      }
+      return {
+        data: [],
+        indicators: {},
+        source: 'unavailable',
+        data_quality: {
+          source: 'unavailable',
+          updated_at: new Date().toISOString(),
+          freshness: 'error',
+          confidence: 'low',
+          is_fallback: true,
+          warnings: [error.value || '获取K线数据失败'],
+        },
+      }
     } finally {
       loading.value = false
     }
@@ -73,20 +113,20 @@ export function useStockData() {
     loading.value = true
     error.value = null
     try {
-      const res: any = await stockApi.getStockDetail(symbol)
-      return res as QuoteData
-    } catch (e: any) {
-      error.value = e.message || '获取行情失败'
+      const res = await stockApi.getQuote<QuoteData>(symbol)
+      return res
+    } catch (e) {
+      error.value = (e as ApiErrorLike).message || '获取行情失败'
       return null
     } finally {
       loading.value = false
     }
   }
 
-  async function searchStocks(query: string) {
+  async function searchStocks(query: string): Promise<StockSearchItem[]> {
     loading.value = true
     try {
-      const res: any = await stockApi.searchStocks(query)
+      const res = await stockApi.searchStocks<StockSearchResponse>(query)
       return res.results || []
     } catch {
       return []
@@ -111,6 +151,7 @@ function generateMockKLine(count: number = 120): {
   data: KLineItem[]
   indicators: Record<string, number[]>
   source: string
+  data_quality: DataQualityItem
 } {
   const data: KLineItem[] = []
   let price = 1700
@@ -143,5 +184,17 @@ function generateMockKLine(count: number = 120): {
     price = close
   }
 
-  return { data, indicators: {}, source: 'mock' }
+  return {
+    data,
+    indicators: {},
+    source: 'mock',
+    data_quality: {
+      source: 'mock',
+      updated_at: new Date().toISOString(),
+      freshness: 'generated',
+      confidence: 'low',
+      is_fallback: true,
+      warnings: ['仅开发环境模拟K线，不能作为交易或研究依据'],
+    },
+  }
 }

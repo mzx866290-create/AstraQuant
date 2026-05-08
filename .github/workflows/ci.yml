@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  db-integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify DB integration services
+        run: python scripts/verify_db_integration.py --require-docker
+
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ops drill readiness preflight
+        run: python scripts/ops/verify_ops_drill_readiness.py
+
+      - name: Secret hygiene gate
+        run: python scripts/verify_secret_hygiene.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: "npm"
+          cache-dependency-path: frontend/web/package-lock.json
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            -r backend/services/analysis_service/requirements.txt \
+            -r backend/services/market_service/requirements.txt \
+            -r backend/services/user_service/requirements.txt \
+            -r backend/services/data_crawler/requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend/web
+        run: npm ci
+
+      - name: Compile backend
+        run: python -m compileall backend scripts -q
+
+      - name: Backend unit tests
+        run: PYTHONPATH=. python -m unittest discover backend/tests
+
+      - name: Backend coverage gate
+        run: PYTHONPATH=. python scripts/verify_backend_coverage.py
+
+      - name: Backend smoke checks
+        run: |
+          python backend/scripts/ai_analysis_self_check.py
+          python backend/scripts/daily_recommendations_self_check.py
+
+      - name: Lint frontend
+        working-directory: frontend/web
+        run: npm run lint
+
+      - name: Type-check frontend
+        working-directory: frontend/web
+        run: npm run type-check
+
+      - name: Frontend API compatibility
+        working-directory: frontend/web
+        run: npm run test:api-compat
+
+      - name: Frontend data quality contract
+        working-directory: frontend/web
+        run: npm run test:data-quality
+
+      - name: Build frontend
+        working-directory: frontend/web
+        run: npm run build
+
+      - name: Install Playwright browser
+        working-directory: frontend/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Frontend smoke checks
+        working-directory: frontend/web
+        run: npm run smoke:frontend
+
+  ci-drill-record:
+    runs-on: ubuntu-latest
+    needs: [db-integration, verify]
+    if: always()
+
+    env:
+      DRILL_OWNER: ${{ github.repository_owner }}
+      DRILL_REPOSITORY: ${{ github.repository }}
+      DRILL_COMMIT_SHA: ${{ github.sha }}
+      DRILL_APP_VERSION: ${{ github.ref_name }}@${{ github.sha }}
+      DRILL_ENVIRONMENT: ci
+      DRILL_CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      DRILL_DB_INTEGRATION_RESULT: ${{ needs.db-integration.result }}
+      DRILL_DEPLOYMENT_SMOKE: ${{ needs.verify.result }}
+      DRILL_ROLLBACK_CHECK: not-applicable-ci-record-only
+      DRILL_BLOCKING_ISSUES: ${{ needs.db-integration.result == 'success' && needs.verify.result == 'success' && 'none' || 'review failed CI jobs before deployment' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Render CI deployment drill record
+        run: python scripts/ops/render_ci_deployment_drill_record.py --output artifacts/ci-deployment-drill-record.md
+
+      - name: Upload CI deployment drill record
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-deployment-drill-record
+          path: artifacts/ci-deployment-drill-record.md
+          if-no-files-found: error

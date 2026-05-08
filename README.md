@@ -13,6 +13,10 @@
 - 📱 **响应式设计**：适配桌面端和移动端
 - 🐳 **容器化部署**：Docker Compose一键启动
 
+## 产品边界
+
+当前 MVP 聚焦“发现值得继续研究的线索、理解原因、跟踪风险”，不是荐股工具。每日观察池、AI 分析和评分结果都只用于辅助研究，不构成买入、卖出、仓位或收益建议。更完整的产品承诺、数据可信等级和上线门槛见 [`docs/product-mvp.md`](docs/product-mvp.md)。
+
 ## 技术栈
 
 ### 后端
@@ -31,6 +35,109 @@
 - **HTTP客户端**: Axios
 
 ## 快速启动
+
+### 官方入口
+
+项目只推荐两条启动入口：
+
+- 本地开发：`python scripts/start_local.py` 或 `make dev`
+- 容器全栈：`docker compose up -d` 或 `make stack`
+
+根目录历史脚本（例如 `run_*.py`、`start_*.py`、`*.bat`）只作为兼容入口保留，不再作为新开发和 CI 的推荐路径。后续仓库清理时应逐步移入 `scripts/legacy/`。
+
+### 安全清理生成/运行时文件
+生成物、日志、SQLite 数据库、前端 `dist/` 等运行时文件统一通过清理脚本处理。默认只做 dry-run 预览，不会删除任何文件：
+
+```bash
+python scripts/cleanup_runtime_artifacts.py
+make clean-runtime
+```
+
+确认清理清单无误后，再显式执行删除：
+
+```bash
+python scripts/cleanup_runtime_artifacts.py --apply
+make clean-runtime-apply
+```
+
+`make clean` 仍只负责 Docker 容器和卷清理，不承担源码或业务配置删除。
+
+### 交付与密钥卫生门禁
+
+本地交付验证统一走 `python scripts/verify_delivery.py` 或 `make verify`，会先运行 ops drill readiness preflight，再运行密钥卫生门禁，随后执行后端编译/单测/coverage 和前端 lint/type-check/API 兼容/数据质量契约/build/smoke。
+
+密钥卫生门禁也可以单独运行，用于提交前或发布前快速检查误提交的 token、默认密码和生产密钥痕迹：
+
+```bash
+python scripts/verify_secret_hygiene.py
+make secret-hygiene
+```
+
+### 本地开发一键启动（推荐）
+
+当前开发环境默认使用 SQLite 和本地微服务端口：
+
+- 行情服务：`http://localhost:8001`
+- 用户服务：`http://localhost:8002`
+- 分析服务：`http://localhost:8003`
+- 前端：`http://localhost:5175`
+
+在项目根目录运行：
+
+```bash
+python scripts/start_local.py
+# 或
+make dev
+```
+
+该脚本会先清理 `8001/8002/8003/5175` 上的旧进程，再启动后端三个服务和 Vite 前端，并检查健康状态。若首页“今日观察”显示空数据，优先使用这个脚本重启，避免浏览器连到旧的 analysis-service。
+
+健康检查：
+
+```http
+GET http://localhost:8003/api/v1/analysis/system-health
+```
+
+### 每日观察池说明
+
+首页的“今日观察”不是买入推荐，也不是模型直接喊单。它是基于公开行情/K线、估值、财务、新闻情绪、行业/社会事件和数据质量的规则筛选池，偏向单手成本友好、市值不过分庞大、风险灯较少的沪深 A 股候选标的。
+
+观察池会返回：
+
+- `score`：规则综合评分。
+- `reasons`：入选理由摘要。
+- `risk_flags`：需要先看的风险点。
+- `score_breakdown`：结构化加分/扣分明细。
+- `data_grade`：数据完整度等级。
+
+接口：
+
+```http
+GET /api/v1/analysis/score/batch/recommend?market=ALL&limit=10&strategy=retail_small
+```
+
+重要提醒：观察池只用于发现值得继续研究的线索，不构成证券买卖建议。
+
+### 价格预警
+
+预警支持价格上穿、价格下穿和日涨跌幅超限。用户可以在前端“预警”页面手动点击“立即检查”，行情服务也会在后台自动扫描启用中的预警，命中后写入触发时间并自动禁用该规则。
+
+相关接口：
+
+```http
+GET /api/v1/alerts
+POST /api/v1/alerts
+POST /api/v1/alerts/check
+GET /api/v1/alerts/scheduler/status
+```
+
+自动检查可通过环境变量调整：
+
+```bash
+ALERT_SCHEDULER_ENABLED=true
+ALERT_SCHEDULER_INTERVAL_SECONDS=300
+ALERT_SCHEDULER_MAX_ALERTS=200
+```
 
 ### 1. 前置条件
 
@@ -55,7 +162,9 @@ cp .env.example .env
 ### 4. 启动所有服务
 
 ```bash
-docker-compose up -d
+docker compose up -d
+# 或
+make stack
 ```
 
 ### 5. 访问应用
@@ -63,7 +172,7 @@ docker-compose up -d
 - **前端界面**: http://localhost 或 http://<你的局域网IP>
 - **行情服务API文档**: http://localhost:8001/api/v1/docs
 - **用户服务API文档**: http://localhost:8002/api/v1/docs
-- **Grafana监控**: http://localhost:3000 (admin/admin123)
+- **Grafana监控**: http://localhost:3000 (admin / 使用 `.env` 中的 `GRAFANA_PASS`)
 - **Prometheus**: http://localhost:9090
 
 ### 6. 初始化数据
@@ -168,7 +277,7 @@ Content-Type: application/json
 {
     "username": "test",
     "email": "test@example.com",
-    "password": "password123"
+    "password": "DemoPass123"
 }
 ```
 
@@ -179,7 +288,7 @@ Content-Type: application/json
 
 {
     "username": "test",
-    "password": "password123"
+    "password": "DemoPass123"
 }
 ```
 
@@ -210,11 +319,26 @@ DELETE /api/v1/watchlists/{stock_id}  # 移除自选股
 
 ## 生产环境部署
 
-1. 修改`.env`文件，设置生产环境配置
-2. 更新`docker-compose.prod.yml`（需要创建）
-3. 配置SSL证书
-4. 设置备份策略
-5. 配置日志收集（ELK）
+生产部署、监控和备份恢复不再只停留在 README 摘要中，入口文档如下：
+
+- 生产发布：[`docs/ops/production-deploy.md`](docs/ops/production-deploy.md)
+- 监控告警：[`docs/ops/monitoring-runbook.md`](docs/ops/monitoring-runbook.md)
+- 告警 Webhook 演练：[`docs/ops/monitoring-runbook.md#alert-delivery`](docs/ops/monitoring-runbook.md#alert-delivery)
+- 备份恢复：[`docs/ops/backup-restore.md`](docs/ops/backup-restore.md)
+- CI/部署演练记录：[`docs/ops/ci-deployment-drill-record.md`](docs/ops/ci-deployment-drill-record.md)
+- 演练证据归档与封存包：[`docs/ops/ops-drill-archive-runbook.md`](docs/ops/ops-drill-archive-runbook.md)
+
+演练封存脚本支持 `--summary-json` 输出机器可读结果，适合挂到 CI artifact、发布单或运维日志；summary 文件应放在封存目录外，避免污染正式证据包。
+
+正式演练建议按这个顺序执行：先运行 `python scripts/ops/verify_ops_drill_readiness.py --env-file .env.production` 与 `python scripts/verify_secret_hygiene.py`；再运行 `python scripts/ops/ops_drill_archive_smoke.py` 本地验证归档脚本链路；随后执行真实 CI、`Alert Webhook Drill`（`send=true`、`status=both`）和部署 smoke；最后下载两份 artifact，运行 `prepare_ops_drill_archive.py`、补全 `completed/`、执行 `finalize_ops_drill_archive.py` 并复验封存包。
+
+基础启动命令：
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+```
+
+生产环境必须使用 `.env.production.example` 生成真实密钥配置，并通过部署平台注入；不要提交 `.env.production`。
 
 ## 故障排除
 

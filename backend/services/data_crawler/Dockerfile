@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制共享模块 (需要用于 from backend.shared.validators 导入)
 COPY backend/shared /backend/shared
+COPY backend/services /backend/services
 
 # 复制项目文件
 COPY backend/services/data_crawler .
@@ -26,5 +27,11 @@ COPY backend/services/data_crawler .
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)" || exit 1
+
+EXPOSE 8000
+
 # 启动服务
-CMD ["python", "app/main.py"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

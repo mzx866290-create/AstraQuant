@@ -215,7 +215,10 @@ async def detect_patterns(
     """
     from .scoring import _fetch_recent_kline
 
-    kline_data = _fetch_recent_kline(symbol, limit)
+    try:
+        kline_data = await _fetch_recent_kline(symbol, limit)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"K线数据源不可用: {e}")
     if len(kline_data) < 5:
         return {"symbol": symbol, "patterns": [], "count": 0,
                 "error": "K线数据不足"}

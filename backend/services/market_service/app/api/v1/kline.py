@@ -15,9 +15,11 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from backend.services.analysis_service.engine.indicator_engine import IndicatorEngine
+from backend.services.market_service.app.services import kline_service
 
 router = APIRouter(tags=["K线"])
 engine = IndicatorEngine()
+_build_local_kline = kline_service.build_local_kline
 
 
 class KLinePeriod(str, Enum):
@@ -37,6 +39,13 @@ class AdjustFlag(str, Enum):
     BACKWARD = "2"  # 后复权
 
 
+_INTRADAY_PERIODS = {
+    KLinePeriod.MIN_1,
+    KLinePeriod.MIN_5,
+    KLinePeriod.MIN_15,
+    KLinePeriod.MIN_30,
+    KLinePeriod.MIN_60,
+}
 @router.get("/{symbol}")
 async def get_kline(
     symbol: str,
@@ -62,22 +71,17 @@ async def get_kline(
     clean_symbol = symbol[:6] if len(symbol) >= 6 else symbol
     if not clean_symbol.isdigit():
         raise HTTPException(status_code=400, detail="无效的股票代码")
-
-    kline_data = []
-    source = "mock"
-
-    try:
-        from backend.services.data_crawler.sources.eastmoney_source import EastMoneySource
-        em = EastMoneySource()
-        kline_data = await em.fetch_daily_kline(symbol, adjust=adjust.value)
-        await em.close()
-        source = "eastmoney"
-    except Exception:
-        kline_data = _generate_mock_kline(limit)
-
-    # 限制返回条数
-    if len(kline_data) > limit:
-        kline_data = kline_data[-limit:]
+    if not isinstance(period, KLinePeriod):
+        period = KLinePeriod.DAILY
+    if not isinstance(adjust, AdjustFlag):
+        adjust = AdjustFlag.FORWARD
+    if not isinstance(limit, int):
+        limit = 200
+    if not isinstance(indicators, str):
+        indicators = None
+    kline_data, source = await kline_service.load_kline_data(symbol, period.value, adjust.value, limit)
+    if period in _INTRADAY_PERIODS and not kline_data:
+        raise HTTPException(status_code=503, detail="minute kline source is temporarily unavailable")
 
     result = {
         "symbol": symbol,
@@ -85,6 +89,7 @@ async def get_kline(
         "count": len(kline_data),
         "source": source,
         "data": kline_data,
+        "data_quality": kline_service.build_data_quality(source, period.value, kline_data),
     }
 
     # 计算技术指标
@@ -94,38 +99,3 @@ async def get_kline(
         result["indicators"] = computed
 
     return result
-
-
-def _generate_mock_kline(count: int = 200) -> list[dict]:
-    """生成模拟K线数据用于开发调试"""
-    import random
-    from datetime import datetime, timedelta
-
-    data = []
-    price = 1700.0
-    now = datetime.now()
-    # 从最早开始生成，保证指标计算正确
-    for i in range(count):
-        day = now - timedelta(days=count - i)
-        if day.weekday() >= 5:
-            continue
-        change = (random.random() - 0.48) * 30
-        open_px = price
-        close = round(open_px + change, 2)
-        high = round(max(open_px, close) + random.random() * 15, 2)
-        low = round(min(open_px, close) - random.random() * 15, 2)
-        vol = random.randint(1000000, 6000000)
-        data.append({
-            "date": day.strftime("%Y-%m-%d"),
-            "open": open_px,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": vol,
-            "turnover": round(vol * close, 2),
-            "change_pct": round(change / price * 100, 2),
-            "turnover_rate": round(random.uniform(0.1, 3.0), 2),
-            "amplitude": round(abs(high - low) / open_px * 100, 2),
-        })
-        price = close
-    return data

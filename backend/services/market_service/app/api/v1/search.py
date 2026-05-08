@@ -19,12 +19,19 @@ async def search_stocks(
     limit: int = Query(20, ge=1, le=100, description="返回条数"),
 ):
     """搜索A股股票（本地数据库）"""
+    from backend.shared.cache import get_cache_manager
     from backend.shared.database import SessionLocal
     from backend.shared.models import Stock
 
     keyword = q.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="请输入搜索关键词")
+
+    cache_key = f"v1:{keyword}:{market or 'ALL'}:{limit}"
+    cache = await get_cache_manager()
+    cached = await cache.get("search_result", cache_key)
+    if cached is not None:
+        return cached
 
     db = SessionLocal()
     try:
@@ -36,8 +43,12 @@ async def search_stocks(
         stocks = query.limit(limit).all()
 
         results = []
+        seen_codes = set()
         for s in stocks:
             code = s.symbol[:6]
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
             results.append({
                 "symbol": f"{code}.{s.market}",
                 "name": s.name,
@@ -45,6 +56,8 @@ async def search_stocks(
                 "pinyin": "",
             })
 
-        return {"results": results, "total": len(results), "query": q}
+        response = {"results": results, "total": len(results), "query": q}
+        await cache.set("search_result", cache_key, value=response)
+        return response
     finally:
         db.close()

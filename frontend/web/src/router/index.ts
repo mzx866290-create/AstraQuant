@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 
 const routes: RouteRecordRaw[] = [
@@ -11,6 +12,11 @@ const routes: RouteRecordRaw[] = [
     path: '/stocks',
     name: 'Stocks',
     component: () => import('../views/Stocks.vue')
+  },
+  {
+    path: '/recommendations',
+    name: 'Recommendations',
+    component: () => import('../views/Recommendations.vue')
   },
   {
     path: '/stocks/:symbol',
@@ -52,6 +58,11 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/403',
+    name: 'Forbidden',
+    component: () => import('../views/Forbidden.vue')
+  },
+  {
     path: '/admin',
     component: () => import('../views/admin/AdminLayout.vue'),
     meta: { requiresAuth: true, requiresAdmin: true },
@@ -72,10 +83,19 @@ const router = createRouter({
 
 router.beforeEach(async (to, _from, next) => {
   const userStore = useUserStore()
+  const storedToken = localStorage.getItem('access_token')
+  const requiresUser = to.meta.requiresAuth || to.meta.requiresAdmin
+  let profileRefreshFailed = false
 
   // 尝试恢复登录状态
-  if (!userStore.isLoggedIn && localStorage.getItem('access_token')) {
-    await userStore.fetchMe()
+  if (requiresUser && storedToken && (!userStore.isLoggedIn || !userStore.userInfo)) {
+    userStore.syncTokenFromStorage()
+    try {
+      await userStore.fetchMe()
+    } catch {
+      profileRefreshFailed = true
+      ElMessage.error(userStore.fetchMeError || '登录状态暂时无法刷新，请稍后重试')
+    }
   }
 
   if (to.meta.requiresAuth && !userStore.isLoggedIn) {
@@ -84,7 +104,12 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   if (to.meta.requiresAdmin && !userStore.isAdmin) {
-    next({ name: 'Home' })
+    if (profileRefreshFailed && userStore.isLoggedIn) {
+      next()
+      return
+    }
+    ElMessage.warning('当前账号没有管理员权限')
+    next({ name: 'Forbidden', query: { from: to.fullPath } })
     return
   }
 

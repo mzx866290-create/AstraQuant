@@ -1,0 +1,65 @@
+{
+  "title": "Stock Platform System Overview",
+  "uid": "stock-platform-system",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["stock-platform", "system"],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Scrape Targets Up",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum(up{job=~\"market-service|user-service|analysis-service|data-crawler|prometheus\"})"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Scrape Samples",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "scrape_samples_scraped{job=~\"market-service|user-service|analysis-service|data-crawler\"}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Prometheus TSDB Head Series",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "prometheus_tsdb_head_series"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Process RSS",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "process_resident_memory_bytes"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Process CPU",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "rate(process_cpu_seconds_total[5m])"
+        }
+      ]
+    }
+  ]
+}

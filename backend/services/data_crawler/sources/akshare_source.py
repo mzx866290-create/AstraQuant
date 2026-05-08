@@ -4,7 +4,7 @@ pip install akshare
 提供: K线 / 实时行情 / 财务数据 / 板块数据 / 龙虎榜
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from .base import BaseDataSource
@@ -42,6 +42,69 @@ class AKShareSource(BaseDataSource):
     def _to_ak_symbol(self, symbol: str) -> str:
         """转AKShare代码格式: 600519 → 600519"""
         return symbol[:6]
+
+    def _to_em_symbol(self, symbol: str) -> str:
+        """转AKShare东方财富财报代码格式: 600519 → SH600519"""
+        code = symbol[:6]
+        if code.startswith(("6", "9", "5")):
+            return f"SH{code}"
+        if code.startswith(("0", "1", "2", "3")):
+            return f"SZ{code}"
+        if code.startswith(("4", "8", "920")):
+            return f"BJ{code}"
+        return code
+
+    def _cninfo_stock_param(self, code: str) -> str:
+        """Build CNINFO stock query param: code,orgId."""
+        if code.startswith(("6", "9")):
+            return f"{code},gssh0{code}"
+
+        org_id = self._lookup_cninfo_org_id(code)
+        if org_id:
+            return f"{code},{org_id}"
+
+        if code.startswith(("0", "2", "3")):
+            return f"{code},gssz0{code}"
+        if code.startswith(("4", "8", "920")):
+            return f"{code},gfbj0{code}"
+        return f"{code},"
+
+    def _lookup_cninfo_org_id(self, code: str) -> str:
+        """Resolve CNINFO orgId for SZ/BJ stocks from public static lists."""
+        import requests
+
+        list_name = "bj_stock.json" if code.startswith(("4", "8", "920")) else "szse_stock.json"
+        url = f"http://www.cninfo.com.cn/new/data/{list_name}"
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        resp.raise_for_status()
+        for item in (resp.json().get("stockList") or []):
+            if item.get("code") == code:
+                return item.get("orgId", "")
+        return ""
+
+    def _parse_cninfo_time(self, raw) -> str:
+        if raw in (None, ""):
+            return ""
+        try:
+            value = int(raw)
+            if value > 10_000_000_000:
+                value = value / 1000
+            return datetime.fromtimestamp(value).strftime("%Y-%m-%d")
+        except (TypeError, ValueError, OSError):
+            return str(raw)[:10]
+
+    def _classify_notice(self, title: str) -> str:
+        if any(word in title for word in ("季报", "年报", "半年报", "年度报告", "季度报告", "第一季度", "第三季度")):
+            return "定期报告"
+        if any(word in title for word in ("业绩预告", "业绩快报", "预增", "预减", "预亏", "预盈")):
+            return "业绩预告"
+        if any(word in title for word in ("分红", "派息", "权益分派", "利润分配")):
+            return "分红送转"
+        if any(word in title for word in ("减持", "增持", "回购", "解除限售", "质押")):
+            return "股东变动"
+        if any(word in title for word in ("重组", "收购", "并购", "重大资产", "定向增发")):
+            return "重大事项"
+        return "临时公告"
 
     async def fetch_daily_kline(
         self, symbol: str, start_date: str = "", end_date: str = "", adjust: str = ""
@@ -206,13 +269,10 @@ class AKShareSource(BaseDataSource):
         ak = self._get_ak()
         loop = self._get_event_loop()
         trade_date = date.replace("-", "") if date else datetime.now().strftime("%Y%m%d")
-        df = await loop.run_in_executor(
-            None, lambda: ak.stock_sse_summary()
-        )
         try:
             df = await loop.run_in_executor(
                 None,
-                lambda: ak.stock_lhb_detail_em(date=trade_date),
+                lambda: ak.stock_lhb_detail_em(start_date=trade_date, end_date=trade_date),
             )
             if df is None or df.empty:
                 return []
@@ -221,30 +281,90 @@ class AKShareSource(BaseDataSource):
             logger.warning(f"龙虎榜获取失败: {e}")
             return []
 
-    async def fetch_stock_notices(self, symbol: str, limit: int = 20) -> list[dict]:
-        """获取个股公告 - ak.stock_notice_report()"""
+    async def fetch_stock_dragon_tiger(self, symbol: str, days: int = 30) -> list[dict]:
+        """获取个股最近一段时间的龙虎榜历史"""
         ak = self._get_ak()
         loop = self._get_event_loop()
-        code = symbol[:6]
-        market_prefix = "SH" if code.startswith(("6", "9")) else "SZ"
+        code = self._to_ak_symbol(symbol)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=max(1, min(days, 365)))
         try:
             df = await loop.run_in_executor(
-                None, lambda: ak.stock_notice_report(symbol=f"{market_prefix}{code}")
+                None,
+                lambda: ak.stock_lhb_detail_em(
+                    start_date=start_date.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                ),
             )
+            if df is None or df.empty:
+                return []
+            code_column = "代码" if "代码" in df.columns else "股票代码" if "股票代码" in df.columns else None
+            if code_column:
+                df = df[df[code_column].astype(str).str.zfill(6) == code]
+            return df.to_dict("records")
+        except Exception as e:
+            logger.warning(f"{symbol} 龙虎榜历史获取失败: {e}")
+            return []
+
+    async def fetch_stock_notices(self, symbol: str, limit: int = 20) -> list[dict]:
+        """Fetch stock announcements from CNINFO public disclosure API."""
+        import requests
+
+        loop = self._get_event_loop()
+        code = symbol[:6]
+
+        def _request_cninfo():
+            headers = {
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "http://www.cninfo.com.cn/new/commonUrl/pageOfSearch?url=disclosure/list/search",
+            }
+            form = {
+                "pageNum": "1",
+                "pageSize": str(limit),
+                "column": "szse",
+                "tabName": "fulltext",
+                "plate": "",
+                "stock": self._cninfo_stock_param(code),
+                "searchkey": "",
+                "secid": "",
+                "category": "",
+                "trade": "",
+                "seDate": "",
+                "sortName": "",
+                "sortType": "",
+                "isHLtitle": "true",
+            }
+            resp = requests.post(
+                "http://www.cninfo.com.cn/new/hisAnnouncement/query",
+                data=form,
+                headers=headers,
+                timeout=12,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        try:
+            data = await loop.run_in_executor(None, _request_cninfo)
         except Exception as e:
             logger.warning(f"[{symbol}] 公告获取失败: {e}")
             return []
-        if df is None or df.empty:
-            return []
+
         items = []
-        for _, row in df.head(limit).iterrows():
+        for row in data.get("announcements") or []:
+            if row.get("secCode") and row.get("secCode") != code:
+                continue
+            title = str(row.get("announcementTitle") or "").replace("<em>", "").replace("</em>", "")
+            adjunct_url = str(row.get("adjunctUrl") or "")
+            content_url = f"http://static.cninfo.com.cn/{adjunct_url}" if adjunct_url else ""
             items.append({
-                "title": str(row.get("标题", row.get("title", ""))),
-                "summary": str(row.get("内容摘要", row.get("summary", "")))[:500],
-                "content_url": str(row.get("公告链接", row.get("url", ""))),
-                "announce_date": str(row.get("公告日期", row.get("date", ""))),
-                "category": str(row.get("分类", row.get("category", "临时公告"))),
+                "title": title,
+                "summary": str(row.get("secName") or ""),
+                "content_url": content_url,
+                "announce_date": self._parse_cninfo_time(row.get("announcementTime")),
+                "category": self._classify_notice(title),
             })
+            if len(items) >= limit:
+                break
         return items
 
     async def fetch_financial_abstract(self, symbol: str) -> dict:
@@ -270,7 +390,7 @@ class AKShareSource(BaseDataSource):
         code = symbol[:6]
         try:
             df = await loop.run_in_executor(
-                None, lambda: ak.stock_balance_sheet_by_report_em(symbol=code)
+                None, lambda: ak.stock_balance_sheet_by_report_em(symbol=self._to_em_symbol(code))
             )
         except Exception as e:
             logger.warning(f"[{symbol}] 资产负债表获取失败: {e}")
@@ -286,7 +406,7 @@ class AKShareSource(BaseDataSource):
         code = symbol[:6]
         try:
             df = await loop.run_in_executor(
-                None, lambda: ak.stock_profit_sheet_by_report_em(symbol=code)
+                None, lambda: ak.stock_profit_sheet_by_report_em(symbol=self._to_em_symbol(code))
             )
         except Exception as e:
             logger.warning(f"[{symbol}] 利润表获取失败: {e}")
@@ -302,7 +422,7 @@ class AKShareSource(BaseDataSource):
         code = symbol[:6]
         try:
             df = await loop.run_in_executor(
-                None, lambda: ak.stock_cash_flow_sheet_by_report_em(symbol=code)
+                None, lambda: ak.stock_cash_flow_sheet_by_report_em(symbol=self._to_em_symbol(code))
             )
         except Exception as e:
             logger.warning(f"[{symbol}] 现金流量表获取失败: {e}")

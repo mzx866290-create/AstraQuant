@@ -5,6 +5,8 @@ AI 模型调用客户端
 import asyncio
 import time
 import logging
+import json
+import os
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -39,11 +41,15 @@ class AIClient:
         }
         """
         start_time = time.time()
-        extra_headers = {}
 
         try:
+            normalized_model_id = model_id.strip()
+
             if provider == "openai":
-                result = await self._call_openai(model_id, api_key, api_base_url, config, system_prompt, user_prompt)
+                if normalized_model_id.startswith("deepseek-"):
+                    result = await self._call_deepseek(model_id, api_key, api_base_url, config, system_prompt, user_prompt)
+                else:
+                    result = await self._call_openai(model_id, api_key, api_base_url, config, system_prompt, user_prompt)
             elif provider == "anthropic":
                 result = await self._call_anthropic(model_id, api_key, config, system_prompt, user_prompt)
             elif provider == "deepseek":
@@ -84,7 +90,15 @@ class AIClient:
         """调用 OpenAI API (GPT-4o 等)"""
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=api_key, base_url=api_base_url)
+        api_base_url = self._normalize_api_base_url(api_base_url)
+        timeout = float((config or {}).get("timeout", os.getenv("AI_REQUEST_TIMEOUT", 180)))
+        max_retries = int((config or {}).get("max_retries", os.getenv("AI_MAX_RETRIES", 1)))
+        client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=api_base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
 
         messages = []
         if system_prompt:
@@ -92,22 +106,19 @@ class AIClient:
         messages.append({"role": "user", "content": user_prompt})
 
         # 获取参数
-        temperature = config.get("temperature", 0.7) if config else 0.7
-        max_tokens = config.get("max_tokens", 4096) if config else 4096
+        temperature = config.get("temperature", 0.3) if config else 0.3
+        max_tokens = config.get("max_tokens", int(os.getenv("AI_MAX_TOKENS", "1200"))) if config else int(os.getenv("AI_MAX_TOKENS", "1200"))
+        if len(user_prompt) > 12000:
+            max_tokens = min(max_tokens, 1200)
 
         response = await client.chat.completions.create(
-            model=model_id,
+            model=model_id.strip(),
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
         )
 
-        return {
-            "content": response.choices[0].message.content or "",
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
+        return self._parse_openai_response(response)
 
     async def _call_anthropic(
         self,
@@ -120,11 +131,13 @@ class AIClient:
         """调用 Anthropic API (Claude 3.5/4 等)"""
         from anthropic import AsyncAnthropic
 
-        client = AsyncAnthropic(api_key=api_key)
+        timeout = float((config or {}).get("timeout", os.getenv("AI_REQUEST_TIMEOUT", 180)))
+        max_retries = int((config or {}).get("max_retries", os.getenv("AI_MAX_RETRIES", 1)))
+        client = AsyncAnthropic(api_key=api_key, timeout=timeout, max_retries=max_retries)
 
         # 获取参数
-        temperature = config.get("temperature", 0.7) if config else 0.7
-        max_tokens = config.get("max_tokens", 4096) if config else 4096
+        temperature = config.get("temperature", 0.3) if config else 0.3
+        max_tokens = config.get("max_tokens", int(os.getenv("AI_MAX_TOKENS", "1200"))) if config else int(os.getenv("AI_MAX_TOKENS", "1200"))
 
         response = await client.messages.create(
             model=model_id,
@@ -167,6 +180,45 @@ class AIClient:
         if not api_base_url:
             raise ValueError("custom provider 需要提供 api_base_url")
         return await self._call_openai(model_id, api_key, api_base_url, config, system_prompt, user_prompt)
+
+    @staticmethod
+    def _normalize_api_base_url(api_base_url: Optional[str]) -> Optional[str]:
+        if not api_base_url:
+            return api_base_url
+        url = api_base_url.rstrip("/")
+        return url if url.endswith("/v1") else f"{url}/v1"
+
+    @staticmethod
+    def _parse_openai_response(response: Any) -> dict:
+        if isinstance(response, str):
+            try:
+                response = json.loads(response)
+            except json.JSONDecodeError:
+                return {
+                    "content": response,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                }
+
+        if isinstance(response, dict):
+            choices = response.get("choices") or []
+            usage = response.get("usage") or {}
+            message = choices[0].get("message", {}) if choices else {}
+            return {
+                "content": message.get("content") or "",
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            }
+
+        usage = response.usage
+        return {
+            "content": response.choices[0].message.content or "",
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        }
 
     def _estimate_cost(self, provider: str, model_id: str, prompt_tokens: int, completion_tokens: int) -> float:
         """估算费用 (USD) - 基于公开定价"""

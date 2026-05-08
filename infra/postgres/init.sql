@@ -72,7 +72,7 @@ CREATE INDEX idx_alerts_user_active ON price_alerts(user_id, is_active);
 -- 用户活动日志表
 CREATE TABLE IF NOT EXISTS user_activity_logs (
     id         SERIAL PRIMARY KEY,
-    user_id    INTEGER NOT NULL REFERENCES users(id),
+    user_id    INTEGER REFERENCES users(id),
     action     VARCHAR(50) NOT NULL,
     target     VARCHAR(100),
     ip_address INET,
@@ -153,7 +153,5 @@ INSERT INTO stocks (symbol, name, market, sector) VALUES
     ('603259.SS', '药明康德', 'SH', '医药')
 ON CONFLICT DO NOTHING;
 
--- 默认管理员账号 (密码: admin123, bcrypt hash)
-INSERT INTO users (username, email, password_hash, nickname, role) VALUES
-    ('admin', 'admin@example.com', '$2b$12$LJ3m4ys3LzHOvSZxFkZbZ.2L2d5LiE/jMEFjxFHbMQv4b3qlKp9b6', '管理员', 'admin')
-ON CONFLICT DO NOTHING;
+-- 管理员账号不再使用固定默认密码初始化。
+-- 如需首个管理员，请通过显式的 bootstrap 脚本或 BOOTSTRAP_ADMIN_PASSWORD 创建。

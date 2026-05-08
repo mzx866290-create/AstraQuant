@@ -2,8 +2,68 @@
   <div class="alerts-page">
     <div class="page-header">
       <h2>价格预警</h2>
-      <el-button type="primary" @click="showCreateDialog = true">创建预警</el-button>
+      <div class="header-actions">
+        <el-button :loading="checking" @click="checkAlerts">立即检查</el-button>
+        <el-button type="primary" @click="openCreateDialog()">创建预警</el-button>
+      </div>
     </div>
+
+    <el-alert
+      v-if="lastCheck"
+      class="check-summary"
+      :type="lastCheck.triggered_count > 0 ? 'warning' : 'success'"
+      show-icon
+      :closable="false"
+      :title="`已检查 ${lastCheck.checked_count} 条启用预警，触发 ${lastCheck.triggered_count} 条`"
+    />
+
+    <el-alert
+      v-if="schedulerStatus"
+      class="check-summary"
+      type="info"
+      show-icon
+      :closable="false"
+      :title="schedulerTitle"
+    />
+
+    <el-card class="watchlist-card" shadow="never">
+      <template #header>
+        <div class="section-header">
+          <span>我的自选股</span>
+          <el-button size="small" :loading="watchlistLoading" @click="loadWatchlist">刷新</el-button>
+        </div>
+      </template>
+
+      <el-empty
+        v-if="!watchlistLoading && !watchlistStocks.length"
+        description="暂无自选股，请先添加自选股后设置预警"
+      >
+        <el-button type="primary" @click="$router.push('/watchlist')">去添加自选股</el-button>
+      </el-empty>
+
+      <el-table
+        v-else
+        :data="watchlistStocks"
+        v-loading="watchlistLoading"
+        stripe
+        size="small"
+        class="watchlist-table"
+      >
+        <el-table-column prop="symbol" label="代码" width="120" />
+        <el-table-column prop="name" label="名称" min-width="140" />
+        <el-table-column prop="market" label="市场" width="80" />
+        <el-table-column prop="sector" label="行业" min-width="120">
+          <template #default="{ row }">{{ row.sector || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="预警" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button type="primary" size="small" @click="openCreateDialog(row)">设预警</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-divider />
 
     <el-empty v-if="!alerts.length && !loading" description="暂无预警规则" />
 
@@ -20,6 +80,15 @@
       <el-table-column prop="threshold" label="阈值" width="100">
         <template #default="{ row }">
           {{ row.alert_type === 'change_pct' ? `${row.threshold}%` : row.threshold }}
+        </template>
+      </el-table-column>
+      <el-table-column label="检查结果" min-width="220">
+        <template #default="{ row }">
+          <div v-if="checkResult(row.id)" class="check-result" :class="checkResult(row.id)?.status">
+            <strong>{{ checkResult(row.id)?.status === 'triggered' ? '已触发' : checkResult(row.id)?.status === 'error' ? '异常' : '观察中' }}</strong>
+            <span>{{ checkResult(row.id)?.message }}</span>
+          </div>
+          <span v-else class="muted">尚未检查</span>
         </template>
       </el-table-column>
       <el-table-column prop="is_active" label="状态" width="80">
@@ -55,18 +124,19 @@
           <el-select
             v-model="form.stock_id"
             filterable
-            placeholder="搜索股票"
-            :filter-method="searchStocks"
-            @focus="loadStocks"
-            :loading="stockLoading"
+            placeholder="从我的自选股选择"
+            :disabled="!watchlistStocks.length"
           >
             <el-option
-              v-for="s in stocks"
-              :key="s.id"
+              v-for="s in watchlistStocks"
+              :key="s.stock_id"
               :label="`${s.symbol} - ${s.name}`"
-              :value="s.id"
+              :value="s.stock_id"
             />
           </el-select>
+          <div v-if="!watchlistStocks.length" class="form-tip">
+            暂无自选股，请先添加自选股后创建预警。
+          </div>
         </el-form-item>
         <el-form-item label="预警类型" prop="alert_type">
           <el-select v-model="form.alert_type" placeholder="选择预警类型">
@@ -91,22 +161,80 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
-import { alertApi, stockApi } from '@/api'
+import { ref, reactive, onMounted, computed } from 'vue'
+import { alertApi, watchlistApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 
-const alerts = ref<any[]>([])
+type AlertType = 'price_above' | 'price_below' | 'change_pct'
+
+type AlertCheckStatus = 'triggered' | 'error' | 'ok' | string
+
+interface PriceAlert {
+  id: number
+  stock_symbol?: string
+  stock_name?: string
+  alert_type: AlertType
+  threshold: number
+  is_active: boolean
+  triggered_at?: string | null
+  created_at: string
+}
+
+interface WatchlistStock {
+  stock_id: number
+  symbol: string
+  name?: string
+  market?: string
+  sector?: string
+}
+
+interface WatchlistGroup {
+  items?: WatchlistStock[]
+}
+
+interface CheckResult {
+  alert_id: number
+  status: AlertCheckStatus
+  message?: string
+}
+
+interface AlertCheckSummary {
+  checked_count: number
+  triggered_count: number
+  items?: CheckResult[]
+}
+
+interface SchedulerStatus {
+  running?: boolean
+  enabled?: boolean
+  interval_seconds?: number
+  last_result?: AlertCheckSummary
+}
+
+interface ApiErrorLike {
+  response?: {
+    data?: {
+      detail?: string
+    }
+  }
+}
+
+const alerts = ref<PriceAlert[]>([])
 const loading = ref(false)
 const showCreateDialog = ref(false)
 const submitting = ref(false)
-const stockLoading = ref(false)
-const stocks = ref<any[]>([])
+const checking = ref(false)
+const watchlistLoading = ref(false)
+const watchlistStocks = ref<WatchlistStock[]>([])
 const formRef = ref<FormInstance>()
+const lastCheck = ref<AlertCheckSummary | null>(null)
+const checkResultMap = ref<Record<number, CheckResult>>({})
+const schedulerStatus = ref<SchedulerStatus | null>(null)
 
 const form = reactive({
   stock_id: null as number | null,
-  alert_type: 'price_above',
+  alert_type: 'price_above' as AlertType,
   threshold: 0,
 })
 
@@ -119,40 +247,57 @@ const rules: FormRules = {
 async function loadAlerts() {
   loading.value = true
   try {
-    alerts.value = await alertApi.getAlerts()
-  } catch (e: any) {
+    alerts.value = await alertApi.getAlerts<PriceAlert[]>()
+  } catch {
     ElMessage.error('获取预警列表失败')
   } finally {
     loading.value = false
   }
 }
 
-async function loadStocks() {
-  if (stocks.value.length) return
-  stockLoading.value = true
+async function loadSchedulerStatus() {
   try {
-    const data = await stockApi.getStocks()
-    stocks.value = data.slice(0, 100)
+    schedulerStatus.value = await alertApi.getSchedulerStatus<SchedulerStatus>()
   } catch {
-    stocks.value = []
-  } finally {
-    stockLoading.value = false
+    schedulerStatus.value = null
   }
 }
 
-async function searchStocks(query: string) {
-  if (!query) {
-    loadStocks()
-    return
-  }
-  stockLoading.value = true
+function checkResult(id: number) {
+  return checkResultMap.value[id]
+}
+
+async function loadWatchlist() {
+  watchlistLoading.value = true
   try {
-    stocks.value = await stockApi.searchStocks(query)
+    const res = await watchlistApi.getWatchlists<WatchlistGroup[] | { data?: WatchlistGroup[] }>()
+    const groups = Array.isArray(res) ? res : (res.data || [])
+    const seen = new Set<number>()
+    const rows: WatchlistStock[] = []
+    for (const group of groups) {
+      for (const item of group.items || []) {
+        if (!item.stock_id || seen.has(item.stock_id)) continue
+        seen.add(item.stock_id)
+        rows.push(item)
+      }
+    }
+    watchlistStocks.value = rows
   } catch {
-    stocks.value = []
+    watchlistStocks.value = []
+    ElMessage.error('加载自选股失败')
   } finally {
-    stockLoading.value = false
+    watchlistLoading.value = false
   }
+}
+
+function openCreateDialog(stock?: WatchlistStock) {
+  if (!watchlistStocks.value.length) {
+    ElMessage.warning('请先添加自选股后再创建预警')
+  }
+  form.stock_id = stock?.stock_id || null
+  form.alert_type = 'price_above'
+  form.threshold = 0
+  showCreateDialog.value = true
 }
 
 async function createAlert() {
@@ -171,15 +316,35 @@ async function createAlert() {
     form.alert_type = 'price_above'
     form.threshold = 0
     await loadAlerts()
-  } catch (e: any) {
-    const msg = e?.response?.data?.detail || '创建失败'
+  } catch (e) {
+    const msg = (e as ApiErrorLike)?.response?.data?.detail || '创建失败'
     ElMessage.error(msg)
   } finally {
     submitting.value = false
   }
 }
 
-async function toggleAlert(alert: any) {
+async function checkAlerts() {
+  checking.value = true
+  try {
+    const data = await alertApi.checkAlerts<AlertCheckSummary>()
+    lastCheck.value = data
+    checkResultMap.value = Object.fromEntries((data.items || []).map((item) => [item.alert_id, item]))
+    if (data.triggered_count > 0) {
+      ElMessage.warning(`触发 ${data.triggered_count} 条预警`)
+    } else {
+      ElMessage.success('暂无触发的预警')
+    }
+    await loadAlerts()
+    await loadSchedulerStatus()
+  } catch (e) {
+    ElMessage.error((e as ApiErrorLike)?.response?.data?.detail || '检查预警失败')
+  } finally {
+    checking.value = false
+  }
+}
+
+async function toggleAlert(alert: PriceAlert) {
   try {
     await alertApi.toggleAlert(alert.id)
     ElMessage.success(`预警已${alert.is_active ? '禁用' : '启用'}`)
@@ -195,7 +360,7 @@ async function deleteAlert(id: number) {
     await alertApi.deleteAlert(id)
     ElMessage.success('删除成功')
     await loadAlerts()
-  } catch (e: any) {
+  } catch (e) {
     if (e !== 'cancel') ElMessage.error('删除失败')
   }
 }
@@ -205,7 +370,21 @@ function formatTime(time: string) {
   return new Date(time).toLocaleString('zh-CN')
 }
 
-onMounted(loadAlerts)
+const schedulerTitle = computed(() => {
+  if (!schedulerStatus.value) return ''
+  const status = schedulerStatus.value
+  const state = status.running ? '自动检查运行中' : status.enabled ? '自动检查未运行' : '自动检查已关闭'
+  const interval = status.interval_seconds ? `，周期 ${status.interval_seconds} 秒` : ''
+  const last = status.last_result
+  const lastText = last ? `，上次检查 ${last.checked_count} 条，触发 ${last.triggered_count} 条` : ''
+  return `${state}${interval}${lastText}`
+})
+
+onMounted(() => {
+  loadWatchlist()
+  loadAlerts()
+  loadSchedulerStatus()
+})
 </script>
 
 <style scoped>
@@ -224,5 +403,63 @@ onMounted(loadAlerts)
 .threshold-hint {
   margin-left: 8px;
   color: #909399;
+}
+.header-actions {
+  display: flex;
+  gap: 10px;
+}
+.watchlist-card {
+  margin-bottom: 16px;
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.section-header span {
+  font-weight: 700;
+}
+.watchlist-table {
+  width: 100%;
+}
+.form-tip {
+  margin-top: 6px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.check-summary {
+  margin-bottom: 14px;
+}
+.check-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.check-result strong {
+  color: #606266;
+}
+.check-result.triggered strong {
+  color: #d97706;
+}
+.check-result.error strong {
+  color: #dc2626;
+}
+.muted {
+  color: #909399;
+}
+
+@media (max-width: 760px) {
+  .page-header,
+  .section-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .header-actions {
+    justify-content: space-between;
+  }
 }
 </style>

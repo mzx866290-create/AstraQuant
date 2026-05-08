@@ -3,21 +3,27 @@
     <el-container>
       <el-header class="app-header">
         <div class="header-content">
-          <h1>📈 股票数据分析平台</h1>
-          <div class="header-nav">
+          <router-link to="/" class="brand">
+            <span class="brand-mark">S</span>
+            <span class="brand-text">股票数据分析平台</span>
+          </router-link>
+          <nav class="header-nav" aria-label="主导航">
             <router-link to="/" class="nav-link">首页</router-link>
             <router-link to="/stocks" class="nav-link">股票</router-link>
+            <router-link to="/recommendations" class="nav-link">每日观察</router-link>
             <router-link to="/watchlist" class="nav-link">自选股</router-link>
             <router-link to="/alerts" class="nav-link">预警</router-link>
             <router-link to="/profile" class="nav-link">我的</router-link>
             <router-link to="/admin" class="nav-link admin-link" v-if="isAdmin">管理后台</router-link>
             <router-link to="/login" class="nav-link" v-if="!isLoggedIn">登录</router-link>
-            <a v-else class="nav-link" @click="logout" style="cursor:pointer">退出</a>
-          </div>
+            <button v-else type="button" class="nav-link nav-button" @click="logout">退出</button>
+          </nav>
         </div>
       </el-header>
       <el-main class="app-main">
-        <router-view />
+        <div class="main-shell">
+          <router-view />
+        </div>
       </el-main>
       <el-footer class="app-footer">
         <p>© {{ new Date().getFullYear() }} 股票数据分析平台 | 仅供参考，不构成投资建议</p>
@@ -39,9 +45,7 @@ const isLoggedIn = computed(() => userStore.isLoggedIn)
 const isAdmin = computed(() => userStore.isAdmin)
 
 onMounted(async () => {
-  if (localStorage.getItem('access_token')) {
-    await userStore.fetchMe()
-  }
+  await userStore.fetchMe()
 })
 
 function logout() {
@@ -54,64 +58,154 @@ function logout() {
 <style scoped>
 .app-container {
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  background: var(--color-bg);
 }
 
 .app-header {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  padding: 20px 40px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: auto;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.94);
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+  backdrop-filter: blur(16px);
 }
 
 .header-content {
+  max-width: 1440px;
+  min-height: 64px;
+  margin: 0 auto;
+  padding: 0 var(--space-6);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-6);
 }
 
-.header-content h1 {
-  margin: 0;
-  font-size: 24px;
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+}
+
+.brand-text {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
 .header-nav {
   display: flex;
-  gap: 20px;
+  align-items: center;
+  gap: var(--space-2);
+  overflow-x: auto;
 }
 
 .nav-link {
-  color: white;
+  position: relative;
+  padding: 8px 12px;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
   text-decoration: none;
-  font-weight: 500;
-  transition: opacity 0.3s;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease;
+  white-space: nowrap;
 }
 
-.nav-link:hover {
-  opacity: 0.8;
+.nav-button {
+  border: 0;
+  background: transparent;
+  font: inherit;
+}
+
+.nav-link:hover,
+.nav-link.router-link-active {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
 }
 
 .admin-link {
-  background: rgba(255,255,255,0.2);
-  padding: 4px 12px;
-  border-radius: 4px;
+  color: #7c3aed;
+  background: #f5f3ff;
 }
 
 .app-main {
   flex: 1;
-  padding: 20px;
+  padding: var(--space-6);
+}
+
+.main-shell {
+  width: min(1440px, 100%);
+  margin: 0 auto;
 }
 
 .app-footer {
-  background: #f5f7fa;
-  color: #606266;
+  height: auto;
+  background: transparent;
+  color: var(--color-text-muted);
   text-align: center;
-  padding: 20px;
-  border-top: 1px solid #dcdfe6;
+  padding: var(--space-5);
+  border-top: 1px solid var(--color-border);
 }
 
 .app-footer p {
   margin: 0;
+  font-size: 12px;
+}
+
+@media (max-width: 960px) {
+  .header-content {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: var(--space-4);
+    gap: var(--space-3);
+  }
+
+  .header-nav {
+    width: 100%;
+    padding-bottom: 2px;
+  }
+
+  .app-main {
+    padding: var(--space-4);
+  }
+}
+@media (max-width: 720px) {
+  .header-content {
+    padding: var(--space-3);
+  }
+
+  .brand-text {
+    font-size: 16px;
+  }
+
+  .nav-link {
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+
+  .app-main {
+    padding: var(--space-3);
+  }
 }
 </style>

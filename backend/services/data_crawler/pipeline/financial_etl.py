@@ -2,6 +2,7 @@
 公告与财报 ETL 管道 — 清洗 + 衍生指标计算 + 入库
 """
 import logging
+import math
 from datetime import datetime
 from typing import Optional
 
@@ -11,10 +12,10 @@ logger = logging.getLogger(__name__)
 class AnnouncementETL:
     """公告数据ETL: 清洗 -> 去重 -> 入库"""
 
-    DATE_COLUMNS = ["公告日期", "date", "ann_date", "notice_date", "declaredate"]
+    DATE_COLUMNS = ["公告日期", "date", "ann_date", "notice_date", "declaredate", "announce_date"]
     TITLE_COLUMNS = ["标题", "title", "notice_title", "name"]
     SUMMARY_COLUMNS = ["内容摘要", "summary", "content_desc"]
-    URL_COLUMNS = ["公告链接", "url", "pdf_url", "notice_url"]
+    URL_COLUMNS = ["公告链接", "url", "pdf_url", "notice_url", "content_url"]
     CATEGORY_COLUMNS = ["分类", "category", "type", "notice_type"]
 
     def _find_field(self, item: dict, keys: list, default=""):
@@ -73,7 +74,7 @@ class AnnouncementETL:
 
     async def save(self, db_session, symbol: str, raw_items: list[dict], source: str):
         from backend.shared.models import CompanyAnnouncement
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from backend.services.data_crawler.pipeline.upsert import insert_do_nothing, session_dialect_name
 
         cleaned = self.clean(symbol, raw_items, source)
         if not cleaned:
@@ -81,13 +82,21 @@ class AnnouncementETL:
             return 0
 
         saved = 0
+        dialect_name = session_dialect_name(db_session)
         for row in cleaned:
             try:
-                stmt = sqlite_insert(CompanyAnnouncement).values(**row).on_conflict_do_nothing()
-                db_session.execute(stmt)
-                saved += 1
+                stmt = insert_do_nothing(
+                    CompanyAnnouncement,
+                    row,
+                    ["stock_symbol", "title", "announce_date"],
+                    dialect_name,
+                )
+                result = db_session.execute(stmt)
+                saved += result.rowcount or 0
             except Exception as e:
-                logger.debug(f"[{symbol}] 公告入库跳过 (可能重复): {e}")
+                db_session.rollback()
+                logger.exception("[%s] announcement write failed: %s", symbol, e)
+                raise
         db_session.commit()
         logger.info(f"[{symbol}] 公告入库完成: {saved}/{len(cleaned)} 条")
         return saved
@@ -104,10 +113,28 @@ class FinancialReportETL:
     }
 
     def _safe_float(self, val) -> Optional[float]:
-        if val is None:
+        if val is None or val is False:
             return None
         try:
-            return float(val)
+            if isinstance(val, str):
+                text = val.strip().replace(",", "")
+                if not text or text in {"--", "-", "nan", "None", "false", "False"}:
+                    return None
+                multiplier = 1.0
+                if text.endswith("亿"):
+                    multiplier = 1e8
+                    text = text[:-1]
+                elif text.endswith("万"):
+                    multiplier = 1e4
+                    text = text[:-1]
+                if text.endswith("%"):
+                    text = text[:-1]
+                value = float(text) * multiplier
+            else:
+                value = float(val)
+            if math.isnan(value) or math.isinf(value):
+                return None
+            return value
         except (ValueError, TypeError):
             return None
 
@@ -128,14 +155,27 @@ class FinancialReportETL:
         return "年报"
 
     def _normalize_date(self, raw) -> Optional[datetime]:
-        if not raw:
+        if raw is None:
             return None
         raw = str(raw).strip()
+        if not raw or raw.lower() in {"nan", "none"}:
+            return None
         for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d"):
             try:
                 return datetime.strptime(raw[:10], fmt)
             except ValueError:
                 continue
+        return None
+
+    def _report_date_key(self, item: dict) -> str:
+        return str(item.get("报告期", item.get("report_date", item.get("date", item.get("REPORT_DATE", "")))))[:10]
+
+    def _first_float(self, item: dict, *keys: str) -> Optional[float]:
+        for key in keys:
+            if key in item:
+                value = self._safe_float(item.get(key))
+                if value is not None:
+                    return value
         return None
 
     def merge_and_compute(
@@ -150,19 +190,19 @@ class FinancialReportETL:
         # 按报告期建立索引
         profit_by_date = {}
         for item in profit_data:
-            d = str(item.get("报告期", item.get("report_date", item.get("date", ""))))[:10]
+            d = self._report_date_key(item)
             if d:
                 profit_by_date[d] = item
 
         balance_by_date = {}
         for item in balance_data:
-            d = str(item.get("报告期", item.get("report_date", item.get("date", ""))))[:10]
+            d = self._report_date_key(item)
             if d:
                 balance_by_date[d] = item
 
         cashflow_by_date = {}
         for item in cashflow_data:
-            d = str(item.get("报告期", item.get("report_date", item.get("date", ""))))[:10]
+            d = self._report_date_key(item)
             if d:
                 cashflow_by_date[d] = item
 
@@ -181,34 +221,33 @@ class FinancialReportETL:
             c = cashflow_by_date.get(date_str, {})
 
             # 核心指标提取
-            total_assets = self._safe_float(b.get("资产总计", b.get("total_assets")))
-            total_liabilities = self._safe_float(b.get("负债合计", b.get("total_liabilities")))
-            total_equity = self._safe_float(
-                b.get("归属于母公司股东权益合计", b.get("股东权益合计", b.get("total_equity")))
+            total_assets = self._first_float(b, "资产总计", "total_assets", "TOTAL_ASSETS")
+            total_liabilities = self._first_float(b, "负债合计", "total_liabilities", "TOTAL_LIABILITIES")
+            total_equity = self._first_float(
+                b, "归属于母公司股东权益合计", "股东权益合计", "total_equity", "TOTAL_PARENT_EQUITY", "TOTAL_EQUITY"
             )
-            current_assets = self._safe_float(b.get("流动资产合计", b.get("current_assets")))
-            current_liabilities = self._safe_float(b.get("流动负债合计", b.get("current_liabilities")))
+            current_assets = self._first_float(b, "流动资产合计", "current_assets", "TOTAL_CURRENT_ASSETS")
+            current_liabilities = self._first_float(b, "流动负债合计", "current_liabilities", "TOTAL_CURRENT_LIAB")
 
-            revenue = self._safe_float(p.get("营业总收入", p.get("营业收入", p.get("revenue"))))
-            net_profit = self._safe_float(
-                p.get("归属于母公司股东的净利润", p.get("净利润", p.get("net_profit")))
+            revenue = self._first_float(p, "营业总收入", "营业收入", "revenue", "TOTAL_OPERATE_INCOME", "OPERATE_INCOME")
+            net_profit = self._first_float(
+                p, "归属于母公司股东的净利润", "净利润", "net_profit", "PARENT_NETPROFIT", "NETPROFIT"
             )
-            gross_margin = self._safe_float(p.get("毛利率", p.get("gross_margin")))
-            net_margin = self._safe_float(p.get("净利率", p.get("net_margin")))
-            eps = self._safe_float(p.get("基本每股收益", p.get("eps")))
+            gross_margin = self._first_float(p, "毛利率", "gross_margin")
+            net_margin = self._first_float(p, "净利率", "net_margin")
+            eps = self._first_float(p, "基本每股收益", "eps", "BASIC_EPS")
 
-            # 同比增速从AKShare财务摘要中获取
-            revenue_yoy = self._safe_float(p.get("营业收入同比", p.get("revenue_yoy")))
-            net_profit_yoy = self._safe_float(p.get("净利润同比", p.get("net_profit_yoy")))
+            revenue_yoy = self._first_float(p, "营业收入同比", "revenue_yoy", "TOTAL_OPERATE_INCOME_YOY", "OPERATE_INCOME_YOY")
+            net_profit_yoy = self._first_float(p, "净利润同比", "net_profit_yoy", "PARENT_NETPROFIT_YOY", "NETPROFIT_YOY")
 
-            operating_cf = self._safe_float(
-                c.get("经营活动产生的现金流量净额", c.get("operating_cf"))
+            operating_cf = self._first_float(
+                c, "经营活动产生的现金流量净额", "operating_cf", "NETCASH_OPERATE"
             )
-            investing_cf = self._safe_float(
-                c.get("投资活动产生的现金流量净额", c.get("investing_cf"))
+            investing_cf = self._first_float(
+                c, "投资活动产生的现金流量净额", "investing_cf", "NETCASH_INVEST"
             )
-            financing_cf = self._safe_float(
-                c.get("筹资活动产生的现金流量净额", c.get("financing_cf"))
+            financing_cf = self._first_float(
+                c, "筹资活动产生的现金流量净额", "financing_cf", "NETCASH_FINANCE"
             )
 
             # 衍生指标计算
@@ -263,7 +302,7 @@ class FinancialReportETL:
         source: str = "akshare",
     ) -> int:
         from backend.shared.models import FinancialReport
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from backend.services.data_crawler.pipeline.upsert import insert_do_nothing, session_dialect_name
 
         merged = self.merge_and_compute(symbol, balance_data, profit_data, cashflow_data, source)
         if not merged:
@@ -271,13 +310,21 @@ class FinancialReportETL:
             return 0
 
         saved = 0
+        dialect_name = session_dialect_name(db_session)
         for row in merged:
             try:
-                stmt = sqlite_insert(FinancialReport).values(**row).on_conflict_do_nothing()
-                db_session.execute(stmt)
-                saved += 1
+                stmt = insert_do_nothing(
+                    FinancialReport,
+                    row,
+                    ["stock_symbol", "report_date"],
+                    dialect_name,
+                )
+                result = db_session.execute(stmt)
+                saved += result.rowcount or 0
             except Exception as e:
-                logger.debug(f"[{symbol}] 财报入库跳过: {e}")
+                db_session.rollback()
+                logger.exception("[%s] financial report write failed: %s", symbol, e)
+                raise
         db_session.commit()
         logger.info(f"[{symbol}] 财报入库完成: {saved}/{len(merged)} 条")
         return saved

@@ -7,9 +7,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 import os
 
-JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-jwt-key-change-in-production")
+from .config import is_placeholder, is_production
+
+JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
+
+
+def _jwt_secret() -> str:
+    if not JWT_SECRET:
+        raise RuntimeError("JWT_SECRET is required")
+    if is_production() and is_placeholder(JWT_SECRET):
+        raise RuntimeError("JWT_SECRET uses an unsafe default value")
+    return JWT_SECRET
 
 
 def hash_password(password: str) -> str:
@@ -37,14 +47,14 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRE_DAYS)
 
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, _jwt_secret(), algorithm=JWT_ALGORITHM)
     return encoded_jwt
 
 
 def decode_access_token(token: str) -> Optional[dict]:
     """解析JWT Token"""
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGORITHM])
         return payload
     except JWTError:
         return None

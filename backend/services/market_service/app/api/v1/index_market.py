@@ -3,8 +3,6 @@
 上证/深证/创业板/科创50/沪深300
 """
 from fastapi import APIRouter, HTTPException
-from typing import Optional
-from datetime import datetime
 
 router = APIRouter(tags=["大盘指数"])
 
@@ -37,20 +35,7 @@ async def get_index_detail(symbol: str):
     if symbol not in INDEX_MAP:
         raise HTTPException(status_code=404, detail="指数不存在")
 
-    # TODO: 从数据源获取指数行情
-    return {
-        "symbol": symbol,
-        "name": INDEX_MAP.get(symbol, ""),
-        "price": 0,
-        "change_pct": 0.0,
-        "change": 0.0,
-        "open": 0,
-        "high": 0,
-        "low": 0,
-        "volume": 0,
-        "timestamp": datetime.now().isoformat(),
-        "source": "eastmoney",
-    }
+    raise HTTPException(status_code=501, detail="指数行情服务待接入真实数据")
 
 
 @router.get("/{symbol}/kline")
@@ -67,13 +52,4 @@ async def get_market_overview():
     """
     市场概览：涨跌家数、涨停跌停、成交额
     """
-    # TODO: 从数据源获取
-    return {
-        "total_rise": 0,
-        "total_fall": 0,
-        "limit_up": 0,
-        "limit_down": 0,
-        "total_volume": 0,
-        "total_turnover": 0.0,
-        "timestamp": datetime.now().isoformat(),
-    }
+    raise HTTPException(status_code=501, detail="市场概览服务待接入真实数据")

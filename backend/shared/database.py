@@ -11,9 +11,14 @@ from typing import Generator
 import logging
 
 logger = logging.getLogger(__name__)
+from .config import is_production
 
 # 检测是否使用 SQLite
 def _should_use_sqlite() -> bool:
+    if is_production():
+        if os.getenv("USE_SQLITE", "").lower() == "true":
+            raise RuntimeError("USE_SQLITE=true is forbidden in production")
+        return False
     if os.getenv("USE_SQLITE", "").lower() == "true":
         return True
     db_host = os.getenv("DB_HOST", "postgres")
@@ -41,8 +46,10 @@ if USE_SQLITE:
     # 确保 DB_PATH 是相对于项目根目录的绝对路径
     _db_path = os.getenv("DB_PATH", "stock_platform.db")
     if not os.path.isabs(_db_path):
-        # 尝试找到项目根目录（包含 stock_platform.db 或 backend 目录）
+        _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        # 本地多服务启动时 cwd 会分别落在各服务目录，优先使用项目根目录的同一个 SQLite。
         _candidates = [
+            _project_root,
             os.getcwd(),
             os.path.dirname(os.path.abspath(__file__)),  # backend/shared
         ]
@@ -52,8 +59,7 @@ if USE_SQLITE:
                 _db_path = _test
                 break
         else:
-            # 默认放在当前工作目录
-            _db_path = os.path.join(os.getcwd(), _db_path)
+            _db_path = os.path.join(_project_root, _db_path)
 
     DATABASE_URL = f"sqlite:///{_db_path}"
     logger.info(f"使用 SQLite 数据库: {_db_path}")

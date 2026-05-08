@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: ${DB_NAME:-stock_platform}
       POSTGRES_USER: ${DB_USER:-stockadmin}
-      POSTGRES_PASSWORD: ${DB_PASS:-changeme}
+      POSTGRES_PASSWORD: ${DB_PASS:?DB_PASS must be set in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -33,6 +33,12 @@ services:
       - "9000:9000"
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --host localhost --port 9000 --query 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     networks:
       - stock_network
 
@@ -43,6 +49,11 @@ services:
     # ports removed to avoid Windows port conflicts (internal container networking still works)
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - stock_network
 
@@ -57,16 +68,26 @@ services:
       - DB_HOST=postgres
       - REDIS_HOST=redis
       - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_NATIVE_PORT=9000
       - LOG_LEVEL=INFO
+      - MARKET_SERVICE_HEALTH_URL=http://market-service:8000/health
+      - USER_SERVICE_HEALTH_URL=http://user-service:8000/health
+      - ANALYSIS_SERVICE_HEALTH_URL=http://analysis-service:8000/health
     ports:
       - "8001:8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       clickhouse:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - stock_network
     restart: on-failure
@@ -87,7 +108,13 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - stock_network
     restart: on-failure
@@ -102,6 +129,7 @@ services:
       - DB_HOST=postgres
       - REDIS_HOST=redis
       - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_NATIVE_PORT=9000
       - LOG_LEVEL=INFO
     ports:
       - "8003:8000"
@@ -109,9 +137,15 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       clickhouse:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - stock_network
     restart: on-failure
@@ -125,15 +159,22 @@ services:
     environment:
       - DB_HOST=postgres
       - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_NATIVE_PORT=9000
       - REDIS_HOST=redis
       - LOG_LEVEL=INFO
     depends_on:
       postgres:
         condition: service_healthy
       clickhouse:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - stock_network
     restart: on-failure
@@ -145,8 +186,12 @@ services:
     ports:
       - "5175:80"
     depends_on:
-      - market-service
-      - user-service
+      market-service:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      analysis-service:
+        condition: service_healthy
     networks:
       - stock_network
     restart: on-failure
@@ -157,6 +202,7 @@ services:
     container_name: stock_platform_prometheus
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./infra/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
@@ -166,15 +212,35 @@ services:
     networks:
       - stock_network
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: stock_platform_alertmanager
+    environment:
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://host.docker.internal:9/alerts}
+    volumes:
+      - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--config.expand-env'
+    ports:
+      - "9093:9093"
+    networks:
+      - stock_network
+    restart: on-failure
+
   grafana:
     image: grafana/grafana:latest
     container_name: stock_platform_grafana
     ports:
       - "3000:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASS:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASS:?GRAFANA_PASS must be set in .env}
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks:
       - stock_network
     restart: on-failure
@@ -185,6 +251,7 @@ volumes:
   redis_data:
   prometheus_data:
   grafana_data:
+  alertmanager_data:
 
 networks:
   stock_network:

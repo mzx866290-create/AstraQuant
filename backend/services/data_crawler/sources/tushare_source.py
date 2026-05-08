@@ -4,8 +4,8 @@ pip install tushare
 提供: K线 / 行情 / 财务 / 资金流向 / 龙虎榜
 """
 import logging
+import importlib
 from datetime import datetime
-from typing import Optional
 
 from .base import BaseDataSource
 
@@ -22,25 +22,36 @@ class TushareSource(BaseDataSource):
 
     def __init__(self, token: str = ""):
         super().__init__(name="Tushare", priority=3)
-        self._token = token
+        self._token = token.strip() if token else ""
         self._ts_available = False
+        self._ts_module = None
         self._api = None
+        self.availability_status = "disabled"
+        self.unavailable_reason = "Tushare disabled: TUSHARE_TOKEN is not configured"
         self._check_import()
 
     def _check_import(self):
+        if not self._token:
+            logger.debug(self.unavailable_reason)
+            return
         try:
-            import tushare as ts  # noqa
+            self._ts_module = importlib.import_module("tushare")
             self._ts_available = True
+            self.availability_status = "available"
+            self.unavailable_reason = ""
         except ImportError:
-            logger.warning("tushare 未安装 (pip install tushare)")
+            self.availability_status = "unavailable"
+            self.unavailable_reason = "Tushare unavailable: package is not installed (pip install tushare)"
+            logger.debug(self.unavailable_reason)
 
     def _get_api(self):
+        if not self._token:
+            raise RuntimeError("Tushare 数据源已禁用: 未配置 TUSHARE_TOKEN")
         if not self._ts_available:
-            raise RuntimeError("tushare 未安装")
+            raise RuntimeError("Tushare 数据源不可用: 未安装 tushare (pip install tushare)")
         if self._api is None:
-            import tushare as ts
-            if self._token:
-                ts.set_token(self._token)
+            ts = self._ts_module or importlib.import_module("tushare")
+            ts.set_token(self._token)
             self._api = ts.pro_api()
         return self._api
 
@@ -153,6 +164,10 @@ class TushareSource(BaseDataSource):
 
     async def health_check(self) -> bool:
         if not self._ts_available or not self._token:
+            logger.debug(
+                "Tushare health check skipped: %s",
+                self.unavailable_reason or self.availability_status,
+            )
             return False
         try:
             api = self._get_api()

@@ -1,0 +1,66 @@
+{
+  "title": "Stock Platform Crawler Health",
+  "uid": "stock-platform-crawler",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["stock-platform", "crawler"],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Scheduler Running",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "stock_platform_data_crawler_scheduler_running"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Scheduler Error",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "stock_platform_data_crawler_scheduler_error"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Task Runs",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum by (task, status) (rate(stock_platform_data_crawler_task_runs_total[15m]))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rows Saved",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum by (task) (rate(stock_platform_data_crawler_task_rows_total{kind=\"saved\"}[15m]))"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Latest Task Status",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "stock_platform_data_crawler_task_last_status == 1",
+          "format": "table"
+        }
+      ]
+    }
+  ]
+}

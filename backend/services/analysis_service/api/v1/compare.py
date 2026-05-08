@@ -20,10 +20,16 @@ router = APIRouter(tags=["多股对比"])
 engine = IndicatorEngine()
 
 
-def _fetch_kline(symbol: str, limit: int = 120) -> list[dict]:
+async def _fetch_kline(symbol: str, limit: int = 120) -> list[dict]:
     """获取真实K线数据"""
-    # TODO: 从数据源获取真实K线
-    return _generate_fallback_kline(limit)
+    from backend.services.data_crawler.sources.eastmoney_source import EastMoneySource
+
+    em = EastMoneySource()
+    try:
+        data = await em.fetch_daily_kline(symbol)
+    finally:
+        await em.close()
+    return data[-limit:] if len(data) > limit else data
 
 
 @router.get("")
@@ -50,7 +56,20 @@ async def compare_stocks(
 
     result = {}
     for sym in symbol_list:
-        kline_data = _fetch_kline(sym, limit)
+        try:
+            kline_data = await _fetch_kline(sym, limit)
+        except Exception as e:
+            logger.warning(f"{sym} K线获取失败: {e}")
+            kline_data = []
+        if len(kline_data) < 2:
+            result[sym] = {
+                "latest_indicators": {},
+                "performance": {},
+                "data_points": len(kline_data),
+                "latest_price": None,
+                "error": "真实K线数据不足",
+            }
+            continue
         computed = engine.compute_all(kline_data, ind_list)
 
         # 提取最新值用于对比
@@ -106,7 +125,11 @@ async def compare_performance(
     data = {}
     for sym in symbol_list:
         max_period = max(period_map.get(p, 1) for p in period_list)
-        kline_data = _fetch_kline(sym, max_period + 10)
+        try:
+            kline_data = await _fetch_kline(sym, max_period + 10)
+        except Exception as e:
+            logger.warning(f"{sym} K线获取失败: {e}")
+            kline_data = []
         closes = [d["close"] for d in kline_data if "close" in d]
 
         sym_perf = {}
@@ -140,42 +163,35 @@ async def compare_fundamentals(
     if len(symbol_list) > 5:
         raise HTTPException(status_code=400, detail="最多对比5只股票")
 
-    # TODO: 从DB获取真实财报数据
-    fundamental_data = {}
-    for sym in symbol_list:
-        fundamental_data[sym] = {
-            "pe": None, "pb": None, "roe": None,
-            "gross_margin": None, "net_profit_yoy": None,
-            "revenue_yoy": None,
-        }
+    from backend.shared.database import SessionLocal
+    from backend.shared.models import FinancialReport
+
+    db = SessionLocal()
+    try:
+        fundamental_data = {}
+        for sym in symbol_list:
+            code = sym[:6]
+            latest = (
+                db.query(FinancialReport)
+                .filter(FinancialReport.stock_symbol == code)
+                .order_by(FinancialReport.report_date.desc())
+                .first()
+            )
+            fundamental_data[sym] = {
+                "pe": latest.pe_ttm if latest else None,
+                "pb": latest.pb if latest else None,
+                "roe": latest.roe if latest else None,
+                "gross_margin": latest.gross_margin if latest else None,
+                "net_profit_yoy": latest.net_profit_yoy if latest else None,
+                "revenue_yoy": latest.revenue_yoy if latest else None,
+                "report_date": latest.report_date.isoformat() if latest and latest.report_date else None,
+            }
+    finally:
+        db.close()
 
     return {
         "fundamentals": fundamental_data,
         "count": len(symbol_list),
-        "source": "pending_real_data",
+        "source": "financial_reports",
         "updated_at": datetime.now().isoformat(),
     }
-
-
-def _generate_fallback_kline(count: int = 200) -> list[dict]:
-    """Fallback: 生成模拟K线 (DB不可用时的开发模式)"""
-    import random
-    from datetime import datetime, timedelta
-    data = []
-    price = 50.0
-    now = datetime.now()
-    for i in range(count):
-        day = now - timedelta(days=count - i)
-        if day.weekday() >= 5:
-            continue
-        change = (random.random() - 0.48) * 3
-        open_px = price
-        close = round(open_px + change, 2)
-        high = round(max(open_px, close) + random.random() * 1.5, 2)
-        low = round(min(open_px, close) - random.random() * 1.5, 2)
-        data.append({"date": day.strftime("%Y-%m-%d"), "open": open_px,
-                     "high": high, "low": low, "close": close,
-                     "volume": random.randint(100000, 5000000),
-                     "turnover": 0, "change_pct": 0})
-        price = close
-    return data

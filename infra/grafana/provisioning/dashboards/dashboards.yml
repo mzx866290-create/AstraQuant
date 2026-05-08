@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Stock Platform
+    orgId: 1
+    folder: Stock Platform
+    type: file
+    disableDeletion: false
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

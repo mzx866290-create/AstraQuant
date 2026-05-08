@@ -12,7 +12,7 @@
       <el-descriptions v-else :column="1" border>
         <el-descriptions-item label="用户名">{{ user.username }}</el-descriptions-item>
         <el-descriptions-item label="邮箱">{{ user.email }}</el-descriptions-item>
-        <el-descriptions-item label="角色">{{ user.role === 'premium' ? '付费会员' : '免费用户' }}</el-descriptions-item>
+        <el-descriptions-item label="角色">{{ roleLabel(user.role) }}</el-descriptions-item>
         <el-descriptions-item label="注册时间">{{ user.created_at }}</el-descriptions-item>
       </el-descriptions>
     </el-card>
@@ -20,21 +20,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { userApi } from '@/api'
+import { computed, onMounted } from 'vue'
+import { useUserStore, type UserInfo } from '@/stores/user'
 
-const user = ref<any>({})
-const isLoggedIn = computed(() => !!localStorage.getItem('access_token'))
+const userStore = useUserStore()
+const user = computed<UserInfo>(() => userStore.userInfo || { id: 0, username: '' })
+const isLoggedIn = computed(() => userStore.isLoggedIn)
+
+function roleLabel(role?: string) {
+  if (role === 'admin') return '管理员'
+  if (role === 'premium') return '付费会员'
+  return '免费用户'
+}
 
 onMounted(async () => {
-  if (isLoggedIn.value) {
-    try {
-      const res: any = await userApi.getProfile()
-      user.value = res
-    } catch {
-      // ignore
-    }
-  }
+  await userStore.fetchMe()
 })
 </script>
 

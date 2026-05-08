@@ -116,7 +116,7 @@ class NewsETL:
         if not raw:
             return datetime.now(timezone.utc)
         raw = str(raw).strip()
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S",
                      "%Y-%m-%d", "%Y%m%d", "%Y/%m/%d %H:%M:%S",
                      "%m月%d日 %H:%M", "%m-%d %H:%M", "%m-%d %H:%M:%S"):
             try:
@@ -175,7 +175,7 @@ class NewsETL:
 
     async def save(self, db_session, symbol: str, raw_items: list[dict]) -> int:
         from backend.shared.models import StockNews
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from backend.services.data_crawler.pipeline.upsert import insert_do_nothing, session_dialect_name
 
         cleaned = self.clean(symbol, raw_items)
         if not cleaned:
@@ -183,14 +183,22 @@ class NewsETL:
 
         # 清除 freshness 字段，它不在 ORM 中
         saved = 0
+        dialect_name = session_dialect_name(db_session)
         for row in cleaned:
             row.pop("freshness", None)
             try:
-                stmt = sqlite_insert(StockNews).values(**row).on_conflict_do_nothing()
-                db_session.execute(stmt)
-                saved += 1
+                stmt = insert_do_nothing(
+                    StockNews,
+                    row,
+                    ["stock_symbol", "title", "publish_time"],
+                    dialect_name,
+                )
+                result = db_session.execute(stmt)
+                saved += result.rowcount or 0
             except Exception as e:
-                logger.debug(f"[{symbol}] 新闻入库跳过: {e}")
+                db_session.rollback()
+                logger.exception("[%s] news write failed: %s", symbol, e)
+                raise
         db_session.commit()
         logger.info(f"[{symbol}] 新闻入库: {saved}/{len(cleaned)} 条 (正面:{sum(1 for r in cleaned if r['sentiment']=='正面')}, 负面:{sum(1 for r in cleaned if r['sentiment']=='负面')})")
         return saved

@@ -1,13 +1,23 @@
 """
 用户管理 API - 管理员专用
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from typing import Optional, List
 
+from backend.shared.audit import audit_log
 from backend.shared.database import get_db
-from backend.shared.models import User, UserQuota
-from backend.shared.auth import get_current_user, require_admin
+from backend.shared.models import (
+    AIModel,
+    AIUsageLog,
+    PriceAlert,
+    User,
+    UserActivityLog,
+    UserQuota,
+    Watchlist,
+    WatchlistItem,
+)
+from backend.shared.auth import require_admin
 from backend.shared.schemas import AdminUserResponse, AdminUserUpdate, UserQuotaResponse
 
 router = APIRouter(prefix="/users", tags=["管理员-用户管理"])
@@ -90,6 +100,7 @@ async def get_user(
 async def update_user(
     user_id: int,
     data: AdminUserUpdate,
+    request: Request,
     current_user: User = Depends(require_admin()),
     db: Session = Depends(get_db),
 ):
@@ -103,6 +114,13 @@ async def update_user(
     if data.is_active is not None:
         user.is_active = data.is_active
 
+    audit_log(
+        db,
+        action="admin.user_update",
+        actor=current_user,
+        request=request,
+        target=f"user:{user_id}:role={data.role}:active={data.is_active}",
+    )
     db.commit()
     db.refresh(user)
 
@@ -122,6 +140,7 @@ async def update_user(
 async def update_quota(
     user_id: int,
     data: AdminUserUpdate,
+    request: Request,
     current_user: User = Depends(require_admin()),
     db: Session = Depends(get_db),
 ):
@@ -144,6 +163,13 @@ async def update_quota(
         if data.monthly_limit is not None:
             quota.monthly_limit = data.monthly_limit
 
+    audit_log(
+        db,
+        action="admin.user_quota_update",
+        actor=current_user,
+        request=request,
+        target=f"user:{user_id}:daily={data.daily_limit}:monthly={data.monthly_limit}",
+    )
     db.commit()
     db.refresh(quota)
 
@@ -161,6 +187,7 @@ async def update_quota(
 @router.post("/{user_id}/reset-quota")
 async def reset_quota(
     user_id: int,
+    request: Request,
     current_user: User = Depends(require_admin()),
     db: Session = Depends(get_db),
 ):
@@ -173,6 +200,40 @@ async def reset_quota(
     if quota:
         quota.daily_used = 0
         quota.monthly_used = 0
+        audit_log(db, action="admin.user_quota_reset", actor=current_user, request=request, target=f"user:{user_id}")
         db.commit()
 
     return {"message": "配额已重置"}
+
+
+@router.delete("/{user_id}")
+async def delete_user(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_admin()),
+    db: Session = Depends(get_db),
+):
+    """删除用户（管理员专用）"""
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="不能删除自己")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if user.role == "admin":
+        raise HTTPException(status_code=400, detail="不能删除管理员账号")
+
+    target = f"user:{user_id}:{user.username}"
+    watchlist_ids = [item.id for item in db.query(Watchlist.id).filter(Watchlist.user_id == user_id).all()]
+    if watchlist_ids:
+        db.query(WatchlistItem).filter(WatchlistItem.watchlist_id.in_(watchlist_ids)).delete(synchronize_session=False)
+    db.query(Watchlist).filter(Watchlist.user_id == user_id).delete(synchronize_session=False)
+    db.query(PriceAlert).filter(PriceAlert.user_id == user_id).delete(synchronize_session=False)
+    db.query(UserQuota).filter(UserQuota.user_id == user_id).delete(synchronize_session=False)
+    db.query(UserActivityLog).filter(UserActivityLog.user_id == user_id).delete(synchronize_session=False)
+    db.query(AIUsageLog).filter(AIUsageLog.user_id == user_id).delete(synchronize_session=False)
+    db.query(AIModel).filter(AIModel.created_by == user_id).update({"created_by": None}, synchronize_session=False)
+    db.delete(user)
+    audit_log(db, action="admin.user_delete", actor=current_user, request=request, target=target)
+    db.commit()
+    return {"message": f"用户 {user.username} 已删除"}

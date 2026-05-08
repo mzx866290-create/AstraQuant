@@ -42,36 +42,51 @@ def create_sample_data():
             print(f"[OK] Added {len(stocks)} sample stocks")
 
         if db.query(User).count() == 0:
-            print("创建测试用户...")
-            test_user = User(
-                username="test",
-                email="test@example.com",
-                password_hash=hash_password("test123"),
-                nickname="测试用户",
-                role="free"
-            )
-            admin_user = User(
-                username="admin",
-                email="admin@example.com",
-                password_hash=hash_password("admin123"),
-                nickname="管理员",
-                role="admin"
-            )
-            db.add(test_user)
-            db.add(admin_user)
+            seed_demo_users = os.getenv("SEED_DEMO_USERS", "false").lower() == "true"
+            bootstrap_admin_password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "").strip()
+            seed_users = []
+
+            if seed_demo_users:
+                print("创建演示用户...")
+                test_user = User(
+                    username="test",
+                    email="test@example.com",
+                    password_hash=hash_password("DemoUser123"),
+                    nickname="测试用户",
+                    role="free"
+                )
+                db.add(test_user)
+                seed_users.append(test_user)
+                print("[OK] Created demo user (username: test, password: DemoUser123)")
+
+            if bootstrap_admin_password:
+                print("创建启动管理员...")
+                admin_user = User(
+                    username=os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin"),
+                    email=os.getenv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com"),
+                    password_hash=hash_password(bootstrap_admin_password),
+                    nickname="管理员",
+                    role="admin"
+                )
+                db.add(admin_user)
+                seed_users.append(admin_user)
+                print("[OK] Created bootstrap admin from BOOTSTRAP_ADMIN_PASSWORD")
+
+            if not seed_users:
+                print("[INFO] No default users created. Use registration or set BOOTSTRAP_ADMIN_PASSWORD explicitly.")
+
             db.flush()
-            print("[OK] Created test user (username: test, password: test123)")
-            print("[OK] Created admin user (username: admin, password: admin123)")
 
             # 为用户创建默认配额
-            for user in [test_user, admin_user]:
+            for user in seed_users:
                 quota = UserQuota(
                     user_id=user.id,
                     daily_limit=10 if user.role == "free" else 1000,
                     monthly_limit=100 if user.role == "free" else 10000,
                 )
                 db.add(quota)
-            print("[OK] Created default quotas")
+            if seed_users:
+                print("[OK] Created default quotas")
 
         db.commit()
         print("[OK] Sample data created")

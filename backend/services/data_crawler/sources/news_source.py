@@ -3,6 +3,7 @@
 复用降级链模式：东方财富 → 新浪 → AKShare 电报
 """
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -25,6 +26,46 @@ NEGATIVE_KEYWORDS = [
     "ST", "债务违约", "资产减值", "商誉减值", "资金冻结",
     "大股东质押", "被调查", "业绩修正", "终止重组", "停产",
 ]
+
+FINANCE_SOURCES = [
+    ("东方财富", "https://finance.eastmoney.com"),
+    ("新浪财经", "https://finance.sina.com.cn"),
+    ("同花顺", "https://www.10jqka.com.cn"),
+    ("中金在线", "https://www.cnfol.com"),
+]
+
+FINANCE_KEYWORDS = [
+    "股票", "A股", "沪指", "深指", "创业板", "科创板", "央行", "货币政策",
+    "人民币", "汇率", "GDP", "通胀", "财报", "业绩", "板块", "涨停", "跌停",
+    "指数", "基金", "ETF", "分红", "配股", "IPO", "上市", "退市", "并购",
+    "重组", "定增", "融资", "融券", "减持", "增持", "回购",
+]
+
+SKIP_WORDS = [
+    "首页", "最新", "热门", "关于", "联系", "登录", "注册", "收藏", "分享",
+    "评论", "关闭", "打开", "更多", "导航", "菜单", "相关", "推荐",
+    "财经新闻", "资讯", "实时要闻", "查看详情", "点击查看", "阅读更多",
+]
+
+
+class NewsBaseSource(BaseDataSource):
+    """新闻源基类，复用熔断器但不要求实现行情接口"""
+
+    async def fetch_daily_kline(
+        self, symbol: str, start_date: str = "", end_date: str = "", adjust: str = ""
+    ) -> list[dict]:
+        raise NotImplementedError
+
+    async def fetch_realtime_quote(self, symbol: str) -> dict:
+        raise NotImplementedError
+
+    async def search_stocks(self, query: str) -> list[dict]:
+        raise NotImplementedError
+
+    async def close(self):
+        session = getattr(self, "_session", None)
+        if session is not None and not session.closed:
+            await session.close()
 
 
 class NewsSourceChain:
@@ -56,19 +97,23 @@ class NewsSourceChain:
     async def fetch_stock_news(self, symbol: str, limit: int = 20) -> list[dict]:
         """多源获取个股新闻，去重合并"""
         seen_urls = set()
+        seen_titles = set()
         all_news = []
         for source in self._sources:
             items = await self._try_source(source, "fetch_stock_news", symbol, limit=limit)
             if items:
                 for item in items:
                     url = item.get("url", "")
-                    if url and url not in seen_urls:
+                    title_key = _normalize_title(item.get("title", ""))
+                    if not title_key:
+                        continue
+                    if url and url not in seen_urls and title_key not in seen_titles:
                         seen_urls.add(url)
+                        seen_titles.add(title_key)
                         all_news.append(item)
-                    elif not url:
-                        title = item.get("title", "")
-                        if title not in {n.get("title") for n in all_news}:
-                            all_news.append(item)
+                    elif not url and title_key not in seen_titles:
+                        seen_titles.add(title_key)
+                        all_news.append(item)
         all_news.sort(key=lambda x: x.get("publish_time", ""), reverse=True)
         return all_news[:limit]
 
@@ -80,8 +125,17 @@ class NewsSourceChain:
                 return items[:limit]
         return []
 
+    async def close(self):
+        for source in self._sources:
+            close_fn = getattr(source, "close", None)
+            if close_fn:
+                try:
+                    await close_fn()
+                except Exception:
+                    pass
 
-class EastMoneyNewsSource(BaseDataSource):
+
+class EastMoneyNewsSource(NewsBaseSource):
     """东方财富个股新闻 (优先级最高)"""
 
     def __init__(self):
@@ -121,7 +175,7 @@ class EastMoneyNewsSource(BaseDataSource):
             params=params,
         ) as resp:
             resp.raise_for_status()
-            data = await resp.json()
+            data = await resp.json(content_type=None)
 
         items = []
         raw = data.get("data", {}) or {}
@@ -163,7 +217,7 @@ class EastMoneyNewsSource(BaseDataSource):
             return False
 
 
-class AKShareNewsSource(BaseDataSource):
+class AKShareNewsSource(NewsBaseSource):
     """AKShare新闻源 (备用，覆盖财联社电报)"""
 
     def __init__(self):
@@ -248,7 +302,7 @@ class AKShareNewsSource(BaseDataSource):
             return False
 
 
-class SinaNewsSource(BaseDataSource):
+class SinaNewsSource(NewsBaseSource):
     """新浪财经新闻 (第三备用源)"""
 
     def __init__(self):
@@ -278,26 +332,30 @@ class SinaNewsSource(BaseDataSource):
             f"https://vip.stock.finance.sina.com.cn/corp/go.php/vCB_AllNewsStock/symbol/{sina_sym}.phtml"
         ) as resp:
             resp.raise_for_status()
-            text = await resp.text()
-        # 简单HTML解析提取新闻标题和链接
-        import re
+            raw = await resp.read()
+            text = raw.decode(_detect_encoding(resp.headers.get("Content-Type", "")) or "gb2312", errors="replace")
+
         items = []
         pattern = re.compile(
-            r'<a\s+href=["\'](.*?)["\'].*?target=["\']_blank["\']\s*>(.*?)</a>.*?<span.*?>\((.*?)\)</span>',
+            r"(\d{4}-\d{2}-\d{2})&nbsp;(\d{2}:\d{2}).{0,80}?"
+            r"<a\s+target=['\"]_blank['\"]\s+href=['\"](.*?)['\"]>(.*?)</a>",
             re.DOTALL,
         )
         matches = pattern.findall(text)
-        for url, title, date_str in matches[:limit]:
-            title = re.sub(r'<[^>]+>', '', title).strip()
-            if title:
-                items.append({
-                    "title": title,
-                    "summary": "",
-                    "source": "新浪财经",
-                    "url": url if url.startswith("http") else f"https://vip.stock.finance.sina.com.cn{url}",
-                    "publish_time": date_str.strip() if date_str else "",
-                    "keywords": [],
-                })
+        for date_str, time_str, url, title in matches:
+            title = _clean_title(title)
+            if not title or any(sw in title for sw in SKIP_WORDS):
+                continue
+            items.append({
+                "title": title,
+                "summary": "",
+                "source": "新浪财经",
+                "url": url if url.startswith("http") else f"https://vip.stock.finance.sina.com.cn{url}",
+                "publish_time": f"{date_str} {time_str}",
+                "keywords": [],
+            })
+            if len(items) >= limit:
+                break
         return items
 
     async def fetch_telegraph(self, _symbol: str = "", limit: int = 30) -> list[dict]:
@@ -311,9 +369,213 @@ class SinaNewsSource(BaseDataSource):
             return False
 
 
+class JinaFinanceNewsSource(NewsBaseSource):
+    """
+    财经站点聚合兜底源。
+
+    参考 hot-news-monitor 的做法：优先走 r.jina.ai 提取正文文本，
+    被限流或失败时退回直接 HTML 抓取。该源只保留包含股票代码或股票名称的
+    标题，避免把全市场新闻误当成个股新闻。
+    """
+
+    def __init__(self):
+        super().__init__(name="财经聚合", priority=4)
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def _get_session(self):
+        if self._session is None or self._session.closed:
+            connector = aiohttp.TCPConnector(ssl=False, force_close=True)
+            self._session = aiohttp.ClientSession(
+                connector=connector,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; StockPlatform/2.0)"},
+                timeout=aiohttp.ClientTimeout(total=12),
+            )
+        return self._session
+
+    async def fetch_stock_news(self, symbol: str, limit: int = 20) -> list[dict]:
+        code = symbol[:6]
+        stock_name = _lookup_stock_name(code)
+        terms = [code]
+        if stock_name:
+            terms.append(stock_name)
+
+        result = []
+        seen_titles = set()
+        for source_name, url in FINANCE_SOURCES:
+            items = await self._fetch_single_source(source_name, url, terms, limit=limit)
+            for item in items:
+                title_key = _normalize_title(item.get("title", ""))
+                if title_key and title_key not in seen_titles:
+                    seen_titles.add(title_key)
+                    result.append(item)
+                    if len(result) >= limit:
+                        return result
+        return result
+
+    async def _fetch_single_source(
+        self,
+        source_name: str,
+        url: str,
+        terms: list[str],
+        limit: int,
+    ) -> list[dict]:
+        session = await self._get_session()
+        items = []
+
+        try:
+            jina_url = f"https://r.jina.ai/{url}"
+            async with session.get(
+                jina_url,
+                headers={"Accept": "text/plain", "X-Return-Format": "text"},
+            ) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    if "RateLimitTriggeredError" not in text:
+                        items = _extract_finance_lines(text, source_name, url, terms, limit)
+        except Exception as e:
+            logger.debug(f"{source_name} Jina 新闻提取失败: {e}")
+
+        if items:
+            return items
+
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return []
+                raw = await resp.read()
+                encoding = _detect_encoding(resp.headers.get("Content-Type", ""))
+                text = raw.decode(encoding, errors="replace")
+                return _extract_html_links(text, source_name, url, terms, limit)
+        except Exception as e:
+            logger.debug(f"{source_name} 直接新闻提取失败: {e}")
+            return []
+
+    async def fetch_telegraph(self, _symbol: str = "", limit: int = 30) -> list[dict]:
+        return []
+
+    async def health_check(self) -> bool:
+        try:
+            items = await self.fetch_stock_news("600519", limit=1)
+            return len(items) >= 0
+        except Exception:
+            return False
+
+
+def _lookup_stock_name(code: str) -> str:
+    try:
+        from backend.shared.database import SessionLocal
+        from backend.shared.models import Stock
+
+        db = SessionLocal()
+        try:
+            stock = db.query(Stock).filter(Stock.symbol.like(f"{code}%")).first()
+            return stock.name if stock else ""
+        finally:
+            db.close()
+    except Exception:
+        return ""
+
+
+def _normalize_title(title: str) -> str:
+    title = re.sub(r"\s+", "", title or "")
+    title = re.sub(r"[#*【】\[\]（）()]", "", title)
+    return title[:120]
+
+
+def _clean_title(raw: str) -> str:
+    text = re.sub(r"<[^>]+>", "", raw or "")
+    text = re.sub(r"[#*🎯💼🔥🎓💰🔍🚀]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.strip("-_丨|·")
+    return text
+
+
+def _looks_relevant(title: str, terms: list[str]) -> bool:
+    if not title or len(title) < 6 or len(title) > 250:
+        return False
+    if any(sw in title for sw in SKIP_WORDS):
+        return False
+    return any(term and term in title for term in terms)
+
+
+def _extract_finance_lines(
+    text: str,
+    source_name: str,
+    source_url: str,
+    terms: list[str],
+    limit: int,
+) -> list[dict]:
+    items = []
+    seen = set()
+    for line in text.splitlines():
+        title = _clean_title(line)
+        if not _looks_relevant(title, terms):
+            continue
+        if not any(kw in title for kw in FINANCE_KEYWORDS + terms):
+            continue
+        title_key = _normalize_title(title)
+        if title_key in seen:
+            continue
+        seen.add(title_key)
+        items.append({
+            "title": title[:150],
+            "summary": "",
+            "source": source_name,
+            "url": source_url,
+            "publish_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "keywords": [term for term in terms if term and term in title][:4],
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _extract_html_links(
+    html: str,
+    source_name: str,
+    source_url: str,
+    terms: list[str],
+    limit: int,
+) -> list[dict]:
+    items = []
+    seen = set()
+    pattern = re.compile(r'<a[^>]+href=["\']([^"\']*)["\'][^>]*>(.*?)</a>', re.I | re.S)
+    for href, label in pattern.findall(html):
+        title = _clean_title(label)
+        if not _looks_relevant(title, terms):
+            continue
+        title_key = _normalize_title(title)
+        if title_key in seen:
+            continue
+        seen.add(title_key)
+        full_url = href if href.startswith("http") else source_url
+        items.append({
+            "title": title[:150],
+            "summary": "",
+            "source": source_name,
+            "url": full_url,
+            "publish_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "keywords": [term for term in terms if term and term in title][:4],
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _detect_encoding(content_type: str) -> str:
+    match = re.search(r"charset=([\w-]+)", content_type or "", re.I)
+    if match:
+        encoding = match.group(1).lower()
+        if encoding in ("gb2312", "gbk", "gb18030"):
+            return "gb18030"
+        return encoding
+    return "utf-8"
+
+
 def create_news_chain() -> NewsSourceChain:
     chain = NewsSourceChain()
     chain.register(EastMoneyNewsSource())
     chain.register(SinaNewsSource())
     chain.register(AKShareNewsSource())
+    chain.register(JinaFinanceNewsSource())
     return chain

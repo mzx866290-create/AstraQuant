@@ -33,8 +33,19 @@
       </div>
     </div>
 
+    <DataQualityPanel :quality="dataQuality" />
+    <el-alert
+      v-if="chartMessage"
+      class="chart-warning"
+      type="warning"
+      show-icon
+      :closable="false"
+      :title="chartMessage"
+    />
+
     <!-- 图表容器 -->
     <div ref="chartRef" class="chart-area" />
+    <div v-if="!hasChartData" class="empty-chart">暂无可展示的真实K线数据</div>
 
     <!-- 数据来源 -->
     <div class="chart-footer">
@@ -46,32 +57,35 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, shallowRef } from 'vue'
-import * as echarts from 'echarts/core'
-import {
-  CandlestickChart, BarChart, LineChart
-} from 'echarts/charts'
-import {
-  GridComponent, TooltipComponent, DataZoomComponent,
-  LegendComponent, MarkLineComponent
-} from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
+import type { SeriesOption } from 'echarts'
+import type { ECharts, EChartsCoreOption } from 'echarts/core'
 import { useStockData, type KLineItem } from '@/composables/useStockData'
+import { CHART_COLORS, axisTooltip, calculateMovingAverage, createLimitLine, createResizeObserver } from '@/utils/charts'
+import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
+import type { DataQualityItem } from '@/utils/dataQuality'
 
-// 按需注册ECharts组件（减小bundle体积）
-echarts.use([
-  CandlestickChart, BarChart, LineChart, CanvasRenderer,
-  GridComponent, TooltipComponent, DataZoomComponent,
-  LegendComponent, MarkLineComponent,
-])
+async function loadECharts() {
+  const { loadKLineECharts } = await import('./echartsLoader')
+  return loadKLineECharts()
+}
+
+interface VolumeParams {
+  dataIndex: number
+}
+
+type RadioValue = string | number | boolean | undefined
 
 const props = defineProps<{ symbol: string }>()
 
 const chartRef = ref<HTMLElement>()
-const chart = shallowRef<echarts.ECharts | null>(null)
+const chart = shallowRef<ECharts | null>(null)
 const currentPeriod = ref('1d')
 const adjustFlag = ref('1')
 const activeIndicators = ref<string[]>(['ma5', 'ma20'])
 const dataSource = ref('')
+const dataQuality = ref<DataQualityItem | null>(null)
+const chartMessage = ref('')
+const hasChartData = ref(false)
 
 const { fetchKLine } = useStockData()
 
@@ -79,30 +93,29 @@ async function loadData() {
   if (!chart.value) return
   const res = await fetchKLine(props.symbol, currentPeriod.value, activeIndicators.value)
   dataSource.value = res.source
+  dataQuality.value = res.data_quality
+  chartMessage.value = res.data_quality?.is_fallback
+    ? '当前K线为降级或模拟数据，请不要作为真实市场走势使用'
+    : ''
   renderChart(res.data, res.indicators)
 }
 
-function renderChart(data: KLineItem[], indicators: Record<string, number[]>) {
-  if (!chart.value || data.length === 0) return
+function renderChart(data: KLineItem[], _indicators: Record<string, number[]>) {
+  if (!chart.value) return
+  hasChartData.value = data.length > 0
+  if (data.length === 0) {
+    chart.value.clear()
+    return
+  }
 
   const dates = data.map(d => d.date)
   const ohlc = data.map(d => [d.open, d.close, d.low, d.high])
   const volumes = data.map(d => d.volume)
-  const upLimit = data.map(d => d.close * 1.1)      // 模拟涨停价
-  const downLimit = data.map(d => d.close * 0.9)     // 模拟跌停价
-
-  // 计算均线数据
-  const calcMA = (period: number) => {
-    return data.map((_, i) => {
-      if (i < period - 1) return '-'
-      let sum = 0
-      for (let j = 0; j < period; j++) sum += data[i - j].close
-      return +(sum / period).toFixed(2)
-    })
-  }
+  const upLimit = data.map(d => d.close * 1.1)
+  const downLimit = data.map(d => d.close * 0.9)
 
   // 生成系列
-  const series: any[] = [
+  const series: SeriesOption[] = [
     {
       name: 'K线',
       type: 'candlestick',
@@ -110,10 +123,10 @@ function renderChart(data: KLineItem[], indicators: Record<string, number[]>) {
       xAxisIndex: 0,
       yAxisIndex: 0,
       itemStyle: {
-        color: '#ef5350',        // 阳线(涨)颜色
-        color0: '#26a69a',       // 阴线(跌)颜色
-        borderColor: '#ef5350',
-        borderColor0: '#26a69a',
+        color: CHART_COLORS.up,
+        color0: CHART_COLORS.down,
+        borderColor: CHART_COLORS.up,
+        borderColor0: CHART_COLORS.down,
       },
     },
     {
@@ -123,57 +136,37 @@ function renderChart(data: KLineItem[], indicators: Record<string, number[]>) {
       xAxisIndex: 1,
       yAxisIndex: 1,
       itemStyle: {
-        color: (params: any) => {
+        color: (params: VolumeParams) => {
           const d = data[params.dataIndex]
-          return d && d.close >= d.open ? '#ef5350' : '#26a69a'
+          return d && d.close >= d.open ? CHART_COLORS.up : CHART_COLORS.down
         },
       },
     },
-    {
-      name: '涨停价',
-      type: 'line',
-      data: upLimit,
-      xAxisIndex: 0,
-      yAxisIndex: 0,
-      symbol: 'none',
-      lineStyle: { type: 'dashed', color: '#ff7043', width: 1 },
-      z: 1,
-    },
-    {
-      name: '跌停价',
-      type: 'line',
-      data: downLimit,
-      xAxisIndex: 0,
-      yAxisIndex: 0,
-      symbol: 'none',
-      lineStyle: { type: 'dashed', color: '#66bb6a', width: 1 },
-      z: 1,
-    },
+    createLimitLine('涨停价', upLimit, CHART_COLORS.up),
+    createLimitLine('跌停价', downLimit, CHART_COLORS.down),
   ]
 
-  // 添加均线指标
-  const colors = ['#ff7043', '#ab47bc', '#42a5f5', '#66bb6a']
   activeIndicators.value.forEach((ind, idx) => {
     const period = parseInt(ind.replace('ma', ''))
     if (!isNaN(period)) {
       series.push({
         name: `MA${period}`,
         type: 'line',
-        data: calcMA(period),
+        data: calculateMovingAverage(data, period),
         xAxisIndex: 0,
         yAxisIndex: 0,
         symbol: 'none',
-        lineStyle: { width: 1, color: colors[idx % colors.length] },
+        lineStyle: { width: 1, color: CHART_COLORS.ma[idx % CHART_COLORS.ma.length] },
       })
     }
   })
 
-  const option: echarts.EChartsOption = {
+  const option: EChartsCoreOption = {
     animation: false,
+    color: CHART_COLORS.palette,
     tooltip: {
-      trigger: 'axis',
+      ...axisTooltip,
       axisPointer: { type: 'cross' },
-      borderWidth: 1,
     },
     legend: {
       data: ['K线', '成交量', ...activeIndicators.value.map(i => i.toUpperCase())],
@@ -224,8 +217,9 @@ function renderChart(data: KLineItem[], indicators: Record<string, number[]>) {
   chart.value.setOption(option, true)
 }
 
-function onPeriodChange(val: string) {
-  currentPeriod.value = val
+function onPeriodChange(val: RadioValue) {
+  if (val === undefined) return
+  currentPeriod.value = String(val)
   loadData()
 }
 
@@ -233,16 +227,18 @@ function onIndicatorsChange() {
   loadData()
 }
 
-function onAdjustChange(val: string) {
-  adjustFlag.value = val
+function onAdjustChange(val: RadioValue) {
+  if (val === undefined) return
+  adjustFlag.value = String(val)
   loadData()
 }
 
-// 响应式Resize
-const resizeObserver = new ResizeObserver(() => chart.value?.resize())
+const resizeObserver = createResizeObserver(() => chart.value)
 
-onMounted(() => {
+onMounted(async () => {
   if (chartRef.value) {
+    const echarts = await loadECharts()
+    if (!chartRef.value) return
     chart.value = echarts.init(chartRef.value, undefined, { renderer: 'canvas' })
     resizeObserver.observe(chartRef.value)
     loadData()
@@ -261,49 +257,76 @@ watch(() => props.symbol, () => loadData())
 .kline-chart {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  background: #fff;
-  border-radius: 4px;
+  min-height: 500px;
+  background: var(--color-surface);
 }
 
 .toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid #ebeef5;
+  gap: var(--space-3);
+  padding: var(--space-3) 0 var(--space-4);
+  border-bottom: 1px solid var(--color-border);
 }
 
-.toolbar :deep(.el-radio-button__inner) {
-  padding: 4px 10px;
-  font-size: 12px;
+.period-group,
+.indicator-group,
+.adjust-group {
+  min-width: 0;
 }
 
+.toolbar :deep(.el-radio-button__inner),
 .toolbar :deep(.el-checkbox-button__inner) {
-  padding: 4px 10px;
+  padding: 5px 10px;
   font-size: 12px;
 }
 
 .chart-area {
   flex: 1;
-  min-height: 450px;
+  min-height: 420px;
+}
+
+.chart-warning {
+  margin: var(--space-3) 0 0;
+}
+
+.empty-chart {
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
 }
 
 .chart-footer {
   display: flex;
   justify-content: space-between;
-  padding: 4px 12px;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  color: var(--color-text-muted);
   font-size: 12px;
-  color: #999;
-  border-top: 1px solid #ebeef5;
-}
-
-.data-source {
-  color: #909399;
+  border-top: 1px solid var(--color-border);
 }
 
 .disclaimer {
-  color: #f56c6c;
+  color: var(--color-warning);
+}
+
+@media (max-width: 768px) {
+  .kline-chart {
+    min-height: 420px;
+  }
+
+  .chart-area {
+    min-height: 330px;
+  }
+
+  .chart-footer {
+    flex-direction: column;
+  }
 }
 </style>

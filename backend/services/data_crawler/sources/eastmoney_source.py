@@ -27,8 +27,19 @@ class EastMoneySource(BaseDataSource):
     BASE_URL = "https://push2.eastmoney.com/api/qt/stock/get"
     KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
     SEARCH_URL = "https://searchadapter.eastmoney.com/api/suggest/get"
-    MONEY_FLOW_URL = "https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get"
+    MONEY_FLOW_URL = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+    MONEY_FLOW_LATEST_URL = "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get"
     BATCH_QUOTE_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+    KLINE_PERIOD_MAP = {
+        "1m": "1",
+        "5m": "5",
+        "15m": "15",
+        "30m": "30",
+        "60m": "60",
+        "1d": "101",
+        "1w": "102",
+        "1M": "103",
+    }
 
     # 东方财富市场代码映射
     MARKET_MAP = {
@@ -74,16 +85,42 @@ class EastMoneySource(BaseDataSource):
         获取日K线数据
         adjust: 0=不复权 1=前复权 2=后复权
         """
+        return await self.fetch_kline(
+            symbol=symbol,
+            period="1d",
+            start_date=start_date,
+            end_date=end_date,
+            adjust=adjust,
+        )
+
+    async def fetch_kline(
+        self,
+        symbol: str,
+        period: str = "1d",
+        start_date: str = "",
+        end_date: str = "",
+        adjust: str = "1",
+        limit: int = 500,
+    ) -> list[dict]:
+        """
+        获取日/周/月K线数据。
+        period: 1d=日K, 1w=周K, 1M=月K
+        adjust: 0=不复权 1=前复权 2=后复权
+        """
+        klt = self.KLINE_PERIOD_MAP.get(period)
+        if not klt:
+            raise ValueError(f"unsupported EastMoney kline period: {period}")
+
         secid = self._to_em_security(symbol)
         params = {
             "secid": secid,
             "ut": "fa5fd1943c7b386f172d6893dbfd32bb",
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-            "klt": "101",  # 日K
+            "klt": klt,
             "fqt": adjust,
-            "end": "20500101",
-            "lmt": "500",
+            "end": end_date.replace("-", "") if end_date else "20500101",
+            "lmt": str(max(1, min(limit, 1000))),
         }
         if start_date:
             params["beg"] = start_date.replace("-", "")
@@ -182,8 +219,11 @@ class EastMoneySource(BaseDataSource):
                 })
         return result
 
-    async def fetch_money_flow(self, symbol: str) -> list[dict]:
+    async def fetch_money_flow(self, symbol: str, limit: int = 20) -> list[dict]:
         """获取A股资金流向数据（东方财富特色）"""
+        import asyncio
+        import requests
+
         secid = self._to_em_security(symbol)
         params = {
             "secid": secid,
@@ -191,28 +231,127 @@ class EastMoneySource(BaseDataSource):
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
             "klt": "101",
-            "lmt": "120",
+            "lmt": str(max(1, min(limit, 120))),
         }
-        session = await self._get_session()
-        async with session.get(self.MONEY_FLOW_URL, params=params) as resp:
+
+        def _get_json(url: str, query: dict) -> dict:
+            resp = requests.get(
+                url,
+                params=query,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://quote.eastmoney.com/",
+                },
+                timeout=12,
+            )
             resp.raise_for_status()
-            data = await resp.json()
+            return resp.json()
+
+        def _safe_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _fetch_rank_current() -> Optional[dict]:
+            code = symbol[:6]
+            fs = "m:1+t:2,m:1+t:23" if code.startswith(("6", "9")) else "m:0+t:6,m:0+t:80"
+            base_query = {
+                "po": "0",
+                "np": "1",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": "2",
+                "invt": "2",
+                "fid": "f12",
+                "fs": fs,
+                "fields": "f12,f14,f62,f66,f72,f78,f84",
+                "pz": "100",
+            }
+            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            total_pages = 30
+            for page in range(1, total_pages + 1):
+                query = dict(base_query)
+                query["pn"] = str(page)
+                payload = _get_json(url, query)
+                data = payload.get("data") or {}
+                rows = data.get("diff") or []
+                if page == 1 and data.get("total"):
+                    total_pages = min(60, int((int(data["total"]) + 99) / 100))
+                for row in rows:
+                    if row.get("f12") != code:
+                        continue
+                    values = {
+                        "main_inflow": _safe_float(row.get("f62")),
+                        "super_inflow": _safe_float(row.get("f66")),
+                        "big_inflow": _safe_float(row.get("f72")),
+                        "mid_inflow": _safe_float(row.get("f78")),
+                        "small_inflow": _safe_float(row.get("f84")),
+                    }
+                    if any(value is not None for value in values.values()):
+                        return {
+                            "date": datetime.now().strftime("%Y-%m-%d"),
+                            **{key: value or 0.0 for key, value in values.items()},
+                        }
+                    return None
+            return None
+
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, lambda: _get_json(self.MONEY_FLOW_URL, params))
+        except Exception as e:
+            logger.info(f"[{symbol}] 资金流向历史数据获取失败，尝试最新资金流: {e}")
+            data = {}
 
         raw = data.get("data", {}) or {}
         klines = raw.get("klines", [])
         result = []
-        for line in klines:
+        def parse_line(line: str) -> Optional[dict]:
             parts = line.split(",")
-            if len(parts) >= 9:
-                result.append({
-                    "date": parts[0],
-                    "main_inflow": float(parts[1]),   # 主力净流入
-                    "small_inflow": float(parts[2]),   # 小单净流入
-                    "mid_inflow": float(parts[3]),     # 中单净流入
-                    "big_inflow": float(parts[4]),     # 大单净流入
-                    "super_inflow": float(parts[5]),   # 超大单净流入
-                })
-        return result
+            if len(parts) >= 6:
+                try:
+                    return {
+                        "date": parts[0],
+                        "main_inflow": float(parts[1]),   # 主力净流入
+                        "small_inflow": float(parts[2]),   # 小单净流入
+                        "mid_inflow": float(parts[3]),     # 中单净流入
+                        "big_inflow": float(parts[4]),     # 大单净流入
+                        "super_inflow": float(parts[5]),   # 超大单净流入
+                    }
+                except (TypeError, ValueError):
+                    return None
+            return None
+
+        for line in klines:
+            item = parse_line(line)
+            if item:
+                result.append(item)
+
+        try:
+            latest_params = dict(params)
+            latest_params["lmt"] = "1"
+            latest_data = await loop.run_in_executor(
+                None, lambda: _get_json(self.MONEY_FLOW_LATEST_URL, latest_params)
+            )
+            for line in ((latest_data.get("data") or {}).get("klines") or []):
+                item = parse_line(line)
+                if not item:
+                    continue
+                result = [row for row in result if row.get("date") != item["date"]]
+                result.append(item)
+        except Exception:
+            pass
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        if not any(row.get("date") == today for row in result):
+            try:
+                current = await loop.run_in_executor(None, _fetch_rank_current)
+                if current:
+                    result = [row for row in result if row.get("date") != current["date"]]
+                    result.append(current)
+            except Exception as e:
+                logger.warning(f"[{symbol}] 资金流向排行兜底获取失败: {e}")
+
+        return result[-limit:]
 
     async def fetch_stock_news(self, symbol: str, limit: int = 15) -> list[dict]:
         """获取个股相关新闻"""

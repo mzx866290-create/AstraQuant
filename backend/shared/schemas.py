@@ -1,7 +1,7 @@
+﻿"""
+Pydantic 鏁版嵁楠岃瘉 Schema - DTO 瀹氫箟
 """
-Pydantic 数据验证 Schema - DTO 定义
-"""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -24,8 +24,7 @@ class StockResponse(StockBase):
     is_active: bool
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============ User Schemas ============
@@ -51,8 +50,7 @@ class UserResponse(UserBase):
     is_active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TokenResponse(BaseModel):
@@ -71,8 +69,7 @@ class WatchlistItemResponse(WatchlistItemBase):
     sort_order: int
     added_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WatchlistBase(BaseModel):
@@ -90,11 +87,10 @@ class WatchlistResponse(WatchlistBase):
     created_at: datetime
     items: List[WatchlistItemResponse] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ============ K线数据 Schemas ============
+# ============ K绾挎暟鎹?Schemas ============
 class KLineDataPoint(BaseModel):
     date: str
     open: float
@@ -130,7 +126,7 @@ class QuoteResponse(BaseModel):
     source: str
 
 
-# ============ 价格预警 Schemas ============
+# ============ 浠锋牸棰勮 Schemas ============
 class PriceAlertCreate(BaseModel):
     stock_id: int
     alert_type: str  # price_above/price_below/change_pct
@@ -143,12 +139,13 @@ class PriceAlertResponse(PriceAlertCreate):
     is_active: bool
     triggered_at: Optional[datetime] = None
     created_at: datetime
+    stock_symbol: Optional[str] = None
+    stock_name: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ============ 搜索结果 Schemas ============
+# ============ 鎼滅储缁撴灉 Schemas ============
 class SearchResultItem(BaseModel):
     id: int
     symbol: str
@@ -162,7 +159,7 @@ class SearchResponse(BaseModel):
     results: List[SearchResultItem]
 
 
-# ============ AI 模型 Schemas ============
+# ============ AI 妯″瀷 Schemas ============
 class AIModelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     provider: str = Field(..., pattern=r"^(openai|anthropic|deepseek|custom)$")
@@ -202,39 +199,84 @@ class AIModelResponse(BaseModel):
     allowed_roles: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AIModelPublicResponse(BaseModel):
-    """用户端可见的模型信息（不含敏感字段）"""
+    """鐢ㄦ埛绔彲瑙佺殑妯″瀷淇℃伅锛堜笉鍚晱鎰熷瓧娈碉級"""
     id: int
     name: str
     provider: str
     description: Optional[str] = None
+    health_status: Optional[str] = None
+    health_latency_ms: Optional[int] = None
+    health_checked_at: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ============ AI 分析 Schemas ============
+# ============ AI 鍒嗘瀽 Schemas ============
 class AIAnalysisRequest(BaseModel):
     model_id: int
     symbol: str = Field(..., min_length=1, max_length=20)
-    question: Optional[str] = None  # 用户自定义提问，默认为综合分析
-    include_news: bool = True  # 是否包含近期新闻
+    question: Optional[str] = None  # 鐢ㄦ埛鑷畾涔夋彁闂紝榛樿涓虹患鍚堝垎鏋?    framework: Optional[str] = None  # 鍒嗘瀽妗嗘灦: technical/fundamental/valuation/event
+    include_news: bool = True  # 鏄惁鍖呭惈杩戞湡鏂伴椈
+    report_template: str = "quick"  # quick/professional/teaching
+    report_mode: str = "summary"  # summary/detailed
+    audience: str = "normal"  # normal/beginner
+    prompt_style: str = "default"  # default/plain/beginner/professional/risk_control
+    force_refresh: bool = False  # bypass same-day AI cache
+
+
+class AIBatchSummaryRequest(BaseModel):
+    symbols: List[str] = Field(..., min_length=1, max_length=30)
+    report_mode: str = "summary"
+    audience: str = "normal"
+    include_news: bool = True
+    force_refresh: bool = False
+
+
+class AIFollowUpRequest(BaseModel):
+    model_id: int
+    symbol: str = Field(..., min_length=1, max_length=20)
+    question: str = Field(..., min_length=2, max_length=500)
+    analysis: str = Field(..., min_length=20, max_length=16000)
+    report_meta: Optional[dict] = None
+    prompt_style: str = "default"
+    audience: str = "normal"
 
 
 class AIAnalysisResponse(BaseModel):
     symbol: str
     model_name: str
-    analysis: str  # Markdown 格式的分析报告
+    analysis: str  # Markdown 鏍煎紡鐨勫垎鏋愭姤鍛?    tokens_used: int
+    response_time_ms: int
+    created_at: datetime
+    requested_model: Optional[str] = None
+    actual_model: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    data_quality: Optional[dict] = None
+    readiness: Optional[dict] = None
+    risk_lights: Optional[dict] = None
+    trust_boundary: Optional[dict] = None
+    report_meta: Optional[dict] = None
+    cache_hit: bool = False
+
+
+class AIFollowUpResponse(BaseModel):
+    symbol: str
+    model_name: str
+    answer: str
     tokens_used: int
     response_time_ms: int
     created_at: datetime
+    requested_model: Optional[str] = None
+    actual_model: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    report_meta: Optional[dict] = None
 
 
-# ============ AI 调用日志 Schemas ============
+# ============ AI 璋冪敤鏃ュ織 Schemas ============
 class AIUsageLogResponse(BaseModel):
     id: int
     user_id: int
@@ -251,11 +293,23 @@ class AIUsageLogResponse(BaseModel):
     response_time_ms: int
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ============ 用户配额 Schemas ============
+class UserActivityLogResponse(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    action: str
+    target: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ============ 鐢ㄦ埛閰嶉 Schemas ============
 class UserQuotaResponse(BaseModel):
     user_id: int
     daily_limit: int
@@ -265,8 +319,7 @@ class UserQuotaResponse(BaseModel):
     daily_remaining: int = 0
     monthly_remaining: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserQuotaUpdate(BaseModel):
@@ -274,7 +327,7 @@ class UserQuotaUpdate(BaseModel):
     monthly_limit: Optional[int] = Field(None, ge=0, le=100000)
 
 
-# ============ 管理统计 Schemas ============
+# ============ 绠＄悊缁熻 Schemas ============
 class AdminStatsResponse(BaseModel):
     total_users: int
     active_users_today: int
@@ -290,7 +343,7 @@ class AdminStatsResponse(BaseModel):
 
 
 class AdminUserResponse(BaseModel):
-    """管理员用户列表"""
+    """Admin user list."""
     id: int
     username: str
     email: str
@@ -303,8 +356,7 @@ class AdminUserResponse(BaseModel):
     daily_used: int = 0
     monthly_used: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AdminUserUpdate(BaseModel):
@@ -314,7 +366,7 @@ class AdminUserUpdate(BaseModel):
     monthly_limit: Optional[int] = Field(None, ge=0, le=100000)
 
 
-# ============ 公告 Schemas ============
+# ============ 鍏憡 Schemas ============
 class AnnouncementResponse(BaseModel):
     id: int
     stock_symbol: str
@@ -325,11 +377,10 @@ class AnnouncementResponse(BaseModel):
     source: str
     category: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ============ 财报 Schemas ============
+# ============ 璐㈡姤 Schemas ============
 class FinancialReportResponse(BaseModel):
     id: int
     stock_symbol: str
@@ -355,8 +406,7 @@ class FinancialReportResponse(BaseModel):
     pb: Optional[float] = None
     source: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FinancialSummaryResponse(BaseModel):
@@ -368,7 +418,7 @@ class FinancialSummaryResponse(BaseModel):
     latest_pb: Optional[float] = None
 
 
-# ============ 新闻 Schemas ============
+# ============ 鏂伴椈 Schemas ============
 class StockNewsResponse(BaseModel):
     id: int
     stock_symbol: str
@@ -384,8 +434,7 @@ class StockNewsResponse(BaseModel):
     related_sector: Optional[str] = None
     keywords: Optional[list] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NewsImpactResponse(BaseModel):
@@ -393,10 +442,10 @@ class NewsImpactResponse(BaseModel):
     recent_news: List[StockNewsResponse]
     sentiment_summary: dict  # {positive: N, neutral: N, negative: N, avg_score: X}
     top_impact_events: List[StockNewsResponse]
-    sector_news: List[StockNewsResponse]  # 相关行业新闻
+    sector_news: List[StockNewsResponse]  # 鐩稿叧琛屼笟鏂伴椈
 
 
-# ============ 财务分析 Schemas ============
+# ============ 璐㈠姟鍒嗘瀽 Schemas ============
 class DuPontResponse(BaseModel):
     roe: float
     net_margin: float
@@ -408,14 +457,14 @@ class DuPontResponse(BaseModel):
 class FScoreResponse(BaseModel):
     score: int  # 0-9
     details: List[dict]  # [{criterion, passed, reason}]
-    rating: str  # 优秀/良好/一般/较差
+    rating: str  # 浼樼/鑹ソ/涓€鑸?杈冨樊
 
 
 class ValuationResponse(BaseModel):
     symbol: str
     current_pe: Optional[float] = None
     current_pb: Optional[float] = None
-    pe_percentile: Optional[float] = None  # 当前PE在历史中的分位
+    pe_percentile: Optional[float] = None  # 褰撳墠PE鍦ㄥ巻鍙蹭腑鐨勫垎浣?
     pb_percentile: Optional[float] = None
     pe_band: dict  # {min, p25, median, p75, max, current}
     pb_band: dict

@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
 COPY backend/services/user_service/requirements.txt .
 COPY backend/shared ../shared
 COPY backend/shared /backend/shared
+COPY backend/services /backend/services
 
 # 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
@@ -20,7 +21,7 @@ COPY backend/services/user_service/app ./app
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)" || exit 1
 
 EXPOSE 8000
 

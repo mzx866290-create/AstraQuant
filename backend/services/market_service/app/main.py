@@ -2,7 +2,7 @@
 行情服务 - FastAPI 入口 v2
 A股行情 / K线 / 搜索 / 板块 / 龙虎榜
 """
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uuid
@@ -16,23 +16,35 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 sys.path.insert(0, _SERVICE_DIR)   # 让 app 包可导入
 sys.path.insert(0, _PROJECT_ROOT)  # 让 backend 包可导入
 
+from backend.shared.config import fastapi_docs_kwargs, is_production, validate_production_settings
+from backend.shared.observability import (
+    clickhouse_check,
+    database_check,
+    install_metrics,
+    readiness_response,
+    redis_check,
+)
+
 # 本地运行：检测并启用 SQLite 模式
-_db_host = os.getenv("DB_HOST", "")
-if _db_host in (None, "", "postgres"):
-    os.environ["DB_HOST"] = "localhost"
-if os.getenv("USE_SQLITE", "").lower() != "true" and _db_host in (None, "", "postgres", "localhost"):
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
-        if s.connect_ex(("localhost", 5432)) != 0:
+if not is_production():
+    _db_host = os.getenv("DB_HOST", "")
+    if _db_host in (None, "", "postgres"):
+        os.environ["DB_HOST"] = "localhost"
+    if os.getenv("USE_SQLITE", "").lower() != "true" and _db_host in (None, "", "postgres", "localhost"):
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            if s.connect_ex(("localhost", 5432)) != 0:
+                os.environ["USE_SQLITE"] = "true"
+            s.close()
+        except Exception:
             os.environ["USE_SQLITE"] = "true"
-        s.close()
-    except Exception:
-        os.environ["USE_SQLITE"] = "true"
+
+validate_production_settings("market-service")
 
 from app.api.v1 import quotes, kline, search, sectors, dragon_tiger, alerts, index_market, stocks
-from app.api.v1 import announcements, financials, news_api
+from app.api.v1 import announcements, financials, news_api, crawl
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -51,7 +63,17 @@ async def lifespan(app: FastAPI):
         await init_redis()
     except Exception:
         logger.info("Redis不可用，行情服务将以无缓存模式运行")
+    try:
+        from backend.services.market_service.app.tasks.alert_scheduler import alert_scheduler
+        alert_scheduler.start()
+    except Exception as e:
+        logger.warning(f"预警自动检查任务启动跳过: {e}")
     yield
+    try:
+        from backend.services.market_service.app.tasks.alert_scheduler import alert_scheduler
+        await alert_scheduler.stop()
+    except Exception:
+        pass
     try:
         from backend.shared.cache import close_redis
         await close_redis()
@@ -64,8 +86,10 @@ app = FastAPI(
     title="StockPlatform - 行情服务 (A股)",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url="/api/v1/docs",
+    **fastapi_docs_kwargs(),
 )
+
+install_metrics(app, "market-service")
 
 # CORS
 app.add_middleware(
@@ -99,16 +123,30 @@ app.include_router(kline.router,         prefix="/api/v1/kline",         tags=["
 app.include_router(search.router,        prefix="/api/v1/search",        tags=["搜索"])
 app.include_router(sectors.router,       prefix="/api/v1/sectors",       tags=["板块"])
 app.include_router(dragon_tiger.router,  prefix="/api/v1/dragon-tiger",  tags=["龙虎榜"])
-app.include_router(alerts.router,        prefix="/api/v1/alerts",        tags=["预警"])
+app.include_router(alerts.router,        prefix="/api/v1",               tags=["预警"])
 app.include_router(index_market.router,  prefix="/api/v1/indices",       tags=["大盘指数"])
 app.include_router(announcements.router, prefix="/api/v1/announcements", tags=["公告"])
 app.include_router(financials.router,    prefix="/api/v1/financials",    tags=["财报"])
 app.include_router(news_api.router,      prefix="/api/v1/news",          tags=["新闻"])
+app.include_router(crawl.router,         prefix="/api/v1/crawl",         tags=["数据采集"])
 
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "market-service", "version": "2.0"}
+
+
+@app.get("/ready")
+async def ready_check(response: Response):
+    return readiness_response(
+        "market-service",
+        response,
+        checks=[
+            database_check,
+            lambda: redis_check(required=False),
+            lambda: clickhouse_check(required=False),
+        ],
+    )
 
 
 if __name__ == "__main__":

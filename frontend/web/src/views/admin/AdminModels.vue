@@ -97,14 +97,47 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { adminApi } from '@/api'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+
+type ModelProvider = 'openai' | 'anthropic' | 'deepseek' | 'custom'
+
+type ModelFormPayload = Omit<ModelForm, 'provider'> & { provider: string }
+type ModelFormKey = keyof ModelFormPayload
+
+type ModelUpdatePayload = Partial<ModelFormPayload>
+
+interface AIModel {
+  id: number
+  name: string
+  provider: ModelProvider | string
+  model_id: string
+  is_active: boolean
+  allowed_roles?: string
+  api_base_url?: string
+  description?: string
+}
+
+interface ModelForm {
+  name: string
+  provider: string
+  model_id: string
+  api_key: string
+  api_base_url: string
+  description: string
+  allowed_roles: string
+}
+
+interface ModelTestResult {
+  status: string
+  message?: string
+}
 
 const loading = ref(true)
-const models = ref<any[]>([])
+const models = ref<AIModel[]>([])
 const showFormDialog = ref(false)
-const editingModel = ref<any>(null)
+const editingModel = ref<AIModel | null>(null)
 
-function emptyForm() {
+function emptyForm(): ModelForm {
   return {
     name: '',
     provider: 'openai',
@@ -121,7 +154,7 @@ const form = ref(emptyForm())
 async function loadModels() {
   try {
     loading.value = true
-    models.value = await adminApi.getModels()
+    models.value = await adminApi.getModels<AIModel[]>()
   } catch (e) {
     ElMessage.error('加载模型失败')
   } finally {
@@ -129,7 +162,7 @@ async function loadModels() {
   }
 }
 
-function openEditDialog(model: any) {
+function openEditDialog(model: AIModel) {
   editingModel.value = model
   form.value = {
     name: model.name,
@@ -153,11 +186,11 @@ async function submitForm() {
   try {
     if (editingModel.value) {
       // 编辑模式: 只发送有变化的字段
-      const payload: Record<string, any> = {}
-      const fields = ['name', 'provider', 'model_id', 'api_base_url', 'description', 'allowed_roles']
+      const payload: ModelUpdatePayload = {}
+      const fields: ModelFormKey[] = ['name', 'provider', 'model_id', 'api_base_url', 'description', 'allowed_roles']
       for (const key of fields) {
-        if (form.value[key as keyof typeof form.value]) {
-          payload[key] = form.value[key as keyof typeof form.value]
+        if (form.value[key]) {
+          payload[key] = form.value[key]
         }
       }
       if (form.value.api_key) {
@@ -176,7 +209,7 @@ async function submitForm() {
   }
 }
 
-async function toggleModel(model: any) {
+async function toggleModel(model: AIModel) {
   try {
     await adminApi.toggleModel(model.id)
     ElMessage.success(model.is_active ? '已禁用' : '已启用')
@@ -186,10 +219,10 @@ async function toggleModel(model: any) {
   }
 }
 
-async function testModel(model: any) {
+async function testModel(model: AIModel) {
   try {
     ElMessage.info('正在测试连接...')
-    const result = await adminApi.testModel(model.id)
+    const result = await adminApi.testModel<ModelTestResult>(model.id)
     if (result.status === 'success') {
       ElMessage.success('连接成功')
     } else {
@@ -200,14 +233,14 @@ async function testModel(model: any) {
   }
 }
 
-async function deleteModel(model: any) {
-  if (!confirm(`确定删除模型 "${model.name}" 吗?`)) return
+async function deleteModel(model: AIModel) {
   try {
+    await ElMessageBox.confirm(`确定删除模型 "${model.name}" 吗?`, '确认删除', { type: 'warning' })
     await adminApi.deleteModel(model.id)
     ElMessage.success('删除成功')
     loadModels()
-  } catch (e) {
-    ElMessage.error('删除失败')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error('删除失败')
   }
 }
 

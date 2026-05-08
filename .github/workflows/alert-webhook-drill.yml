@@ -1,0 +1,57 @@
+name: Alert Webhook Drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      send:
+        description: "Actually send to ALERT_WEBHOOK_URL"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      status:
+        description: "Synthetic alert status"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - firing
+          - resolved
+          - both
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run webhook drill and write record
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          mkdir -p artifacts
+          if [ "${{ inputs.send }}" = "true" ]; then
+            test -n "$ALERT_WEBHOOK_URL"
+            python scripts/ops/alert_webhook_drill.py --send \
+              --status "${{ inputs.status }}" \
+              --record-output artifacts/alert-webhook-drill-record.md
+          else
+            python scripts/ops/alert_webhook_drill.py \
+              --url "https://alerts.example.invalid/manual-drill-token" \
+              --dry-run \
+              --status "${{ inputs.status }}" \
+              --record-output artifacts/alert-webhook-drill-record.md
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alert-webhook-drill-record
+          path: artifacts/alert-webhook-drill-record.md
+          if-no-files-found: error

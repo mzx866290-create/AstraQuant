@@ -1,16 +1,15 @@
 """
 AI 模型管理 API - 管理员专用
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from pydantic import BaseModel
 
+from backend.shared.audit import audit_log
 from backend.shared.database import get_db
 from backend.shared.models import AIModel, User
-from backend.shared.auth import get_current_user, require_admin
-from backend.shared.schemas import AIModelCreate, AIModelUpdate, AIModelResponse, AIModelPublicResponse
-from backend.shared.security import hash_password
+from backend.shared.auth import require_admin
+from backend.shared.schemas import AIModelCreate, AIModelUpdate, AIModelResponse
 
 router = APIRouter(prefix="/models", tags=["管理员-模型管理"])
 
@@ -34,6 +33,7 @@ async def list_models(
 @router.post("", response_model=AIModelResponse)
 async def create_model(
     data: AIModelCreate,
+    request: Request,
     current_user: User = Depends(require_admin()),
     db: Session = Depends(get_db),
 ):
@@ -54,6 +54,7 @@ async def create_model(
         created_by=current_user.id,
     )
     db.add(model)
+    audit_log(db, action="admin.model_create", actor=current_user, request=request, target=f"model:{data.name}")
     db.commit()
     db.refresh(model)
     return model
@@ -63,6 +64,7 @@ async def create_model(
 async def update_model(
     model_id: int,
     data: AIModelUpdate,
+    request: Request,
     current_user: User = Depends(require_admin()),
     db: Session = Depends(get_db),
 ):
@@ -79,6 +81,7 @@ async def update_model(
     for key, value in update_data.items():
         setattr(model, key, value)
 
+    audit_log(db, action="admin.model_update", actor=current_user, request=request, target=f"model:{model_id}")
     db.commit()
     db.refresh(model)
     return model
@@ -87,6 +90,7 @@ async def update_model(
 @router.delete("/{model_id}")
 async def delete_model(
     model_id: int,
+    request: Request,
     current_user: User = Depends(require_admin()),
     db: Session = Depends(get_db),
 ):
@@ -95,7 +99,9 @@ async def delete_model(
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
 
+    target = f"model:{model.id}:{model.name}"
     db.delete(model)
+    audit_log(db, action="admin.model_delete", actor=current_user, request=request, target=target)
     db.commit()
     return {"message": "模型已删除"}
 
@@ -103,6 +109,7 @@ async def delete_model(
 @router.post("/{model_id}/test")
 async def test_model(
     model_id: int,
+    request: Request,
     current_user: User = Depends(require_admin()),
     db: Session = Depends(get_db),
 ):
@@ -124,6 +131,8 @@ async def test_model(
                 messages=[{"role": "user", "content": "Hi"}],
                 max_tokens=5,
             )
+            audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:success")
+            db.commit()
             return {"status": "success", "message": "连接成功", "response": "OK"}
         elif model.provider == "anthropic":
             from anthropic import Anthropic
@@ -133,6 +142,8 @@ async def test_model(
                 max_tokens=5,
                 messages=[{"role": "user", "content": "Hi"}],
             )
+            audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:success")
+            db.commit()
             return {"status": "success", "message": "连接成功", "response": "OK"}
         elif model.provider == "deepseek":
             from openai import OpenAI
@@ -142,16 +153,23 @@ async def test_model(
                 messages=[{"role": "user", "content": "Hi"}],
                 max_tokens=5,
             )
+            audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:success")
+            db.commit()
             return {"status": "success", "message": "连接成功", "response": "OK"}
         else:
+            audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:unsupported")
+            db.commit()
             return {"status": "error", "message": f"不支持的 provider: {model.provider}"}
     except Exception as e:
+        audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:error")
+        db.commit()
         return {"status": "error", "message": f"连接失败: {str(e)}"}
 
 
 @router.patch("/{model_id}/toggle")
 async def toggle_model(
     model_id: int,
+    request: Request,
     current_user: User = Depends(require_admin()),
     db: Session = Depends(get_db),
 ):
@@ -161,5 +179,12 @@ async def toggle_model(
         raise HTTPException(status_code=404, detail="模型不存在")
 
     model.is_active = not model.is_active
+    audit_log(
+        db,
+        action="admin.model_toggle",
+        actor=current_user,
+        request=request,
+        target=f"model:{model_id}:{'enabled' if model.is_active else 'disabled'}",
+    )
     db.commit()
     return {"message": f"模型已{'启用' if model.is_active else '禁用'}", "is_active": model.is_active}

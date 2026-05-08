@@ -4,6 +4,7 @@
 支持熔断器跳过不可用源
 """
 import asyncio
+import inspect
 import logging
 from typing import Callable
 
@@ -43,8 +44,11 @@ class DataSourceChain:
             if not source.circuit_breaker.is_available():
                 logger.debug(f"跳过数据源 {source.name} (熔断中)")
                 continue
+            method: Callable | None = getattr(source, method_name, None)
+            if not callable(method):
+                logger.debug("data source %s does not support %s; skipping", source.name, method_name)
+                continue
             try:
-                method: Callable = getattr(source, method_name)
                 result = await asyncio.wait_for(method(**kwargs), timeout=15.0)
                 source.circuit_breaker.record_success()
                 logger.info(f"数据源 {source.name} 成功: {method_name}")
@@ -78,3 +82,15 @@ class DataSourceChain:
         return await self.fetch_with_fallback(
             "search_stocks", query=query
         )
+
+    async def close(self):
+        for source in self._sources:
+            close_fn = getattr(source, "close", None)
+            if not callable(close_fn):
+                continue
+            try:
+                result = close_fn()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                logger.warning("failed to close data source %s: %s", getattr(source, "name", source), exc)

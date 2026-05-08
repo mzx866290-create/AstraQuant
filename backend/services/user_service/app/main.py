@@ -2,7 +2,7 @@
 用户服务 - FastAPI 入口 v2
 认证 / 自选股管理 / 用户信息
 """
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uuid
@@ -14,28 +14,34 @@ from dotenv import load_dotenv
 
 # 加载 .env 文件（本地开发时使用）
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
-dotenv_path = os.path.join(_PROJECT_ROOT, ".env")
-if os.path.exists(dotenv_path):
-    load_dotenv(dotenv_path)
-
-# 本地运行：检测并启用 SQLite 模式
-_db_host = os.getenv("DB_HOST", "")
-if _db_host in (None, "", "postgres"):
-    os.environ["DB_HOST"] = "localhost"
-if os.getenv("USE_SQLITE", "").lower() != "true" and _db_host in (None, "", "postgres", "localhost"):
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
-        if s.connect_ex(("localhost", 5432)) != 0:
-            os.environ["USE_SQLITE"] = "true"
-        s.close()
-    except Exception:
-        os.environ["USE_SQLITE"] = "true"
-
 _SERVICE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, _SERVICE_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
+
+from backend.shared.config import fastapi_docs_kwargs, is_production, validate_production_settings
+from backend.shared.observability import database_check, install_metrics, readiness_response, redis_check
+
+dotenv_path = os.path.join(_PROJECT_ROOT, ".env")
+if not is_production() and os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path, override=True)
+
+# 本地运行：检测并启用 SQLite 模式
+if not is_production():
+    _db_host = os.getenv("DB_HOST", "")
+    if _db_host in (None, "", "postgres"):
+        os.environ["DB_HOST"] = "localhost"
+    if os.getenv("USE_SQLITE", "").lower() != "true" and _db_host in (None, "", "postgres", "localhost"):
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            if s.connect_ex(("localhost", 5432)) != 0:
+                os.environ["USE_SQLITE"] = "true"
+            s.close()
+        except Exception:
+            os.environ["USE_SQLITE"] = "true"
+
+validate_production_settings("user-service")
 
 from backend.shared.database import init_db
 from backend.shared.cache import init_redis, close_redis
@@ -66,8 +72,10 @@ app = FastAPI(
     title="StockPlatform - 用户服务",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url="/api/v1/docs",
+    **fastapi_docs_kwargs(),
 )
+
+install_metrics(app, "user-service")
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,6 +109,15 @@ app.include_router(watchlist_routes.router,  prefix="/api/v1", tags=["自选股"
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "user-service", "version": "2.0"}
+
+
+@app.get("/ready")
+async def ready_check(response: Response):
+    return readiness_response(
+        "user-service",
+        response,
+        checks=[database_check, lambda: redis_check(required=False)],
+    )
 
 
 if __name__ == "__main__":

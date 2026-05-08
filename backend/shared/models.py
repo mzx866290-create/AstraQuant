@@ -1,6 +1,6 @@
 """共享数据模型 - SQLAlchemy ORM 模型定义"""
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey, UniqueConstraint, JSON
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from datetime import datetime, timezone
 
 Base = declarative_base()
@@ -81,7 +81,7 @@ class UserActivityLog(Base):
     __tablename__ = "user_activity_logs"
     
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     action = Column(String(50), nullable=False)
     target = Column(String(100), nullable=True)
     ip_address = Column(String(45), nullable=True)
@@ -199,6 +199,24 @@ class FinancialReport(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (UniqueConstraint("stock_symbol", "report_date", name="uix_financial"),)
+
+
+class CrawlStatus(Base):
+    """数据采集状态表"""
+    __tablename__ = "crawl_status"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stock_symbol = Column(String(20), nullable=False, index=True)
+    data_type = Column(String(30), nullable=False, index=True)          # news/announcements/financials
+    status = Column(String(20), nullable=False, default="success")     # success/error
+    source = Column(String(100), nullable=True)
+    fetched_count = Column(Integer, default=0)
+    saved_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    finished_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+
+    __table_args__ = (UniqueConstraint("stock_symbol", "data_type", name="uix_crawl_status_latest"),)
 
 
 class StockNews(Base):

@@ -3,8 +3,7 @@
     <div class="feed-header">
       <h4>实时新闻</h4>
       <div class="feed-filters">
-        <el-select v-model="sentimentFilter" size="small" placeholder="情感筛选" clearable
-                   style="width: 100px" @change="onFilterChange">
+        <el-select v-model="sentimentFilter" size="small" placeholder="情感筛选" clearable class="filter-select" @change="onFilterChange">
           <el-option label="全部" value="" />
           <el-option label="正面" value="正面" />
           <el-option label="中性" value="中性" />
@@ -21,10 +20,25 @@
       <span class="sent-tag dominant">主导: {{ sentimentSummary.dominant }}</span>
     </div>
 
+    <DataQualityPanel :quality="dataQuality" />
+
+    <div v-if="crawlStatus || crawlError" class="crawl-status-bar">
+      <span v-if="crawlStatus" class="crawl-status" :class="crawlStatusLevel(crawlStatus)">
+        {{ formatCrawlStatus(crawlStatus) }}
+      </span>
+      <span v-if="crawlError" class="crawl-status error">
+        {{ crawlError }}
+      </span>
+    </div>
+
     <div v-if="loading" class="loading">加载中...</div>
 
     <div v-else-if="newsList.length === 0" class="empty">
-      暂无相关新闻
+      <div>暂无相关新闻</div>
+      <small v-if="emptyReason">{{ emptyReason }}</small>
+      <el-button size="small" type="primary" :loading="crawling" @click="crawlCurrentNews">
+        立即采集 {{ props.symbol }} 新闻
+      </el-button>
     </div>
 
     <div v-else class="news-list">
@@ -62,37 +76,93 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { safeOpen } from '@/utils/safeOpen'
+import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
+import { crawlStatusLevel, crawlStatusReason, formatCrawlError, formatCrawlStatus, pickDataQuality, type CrawlStatus, type DataQualityItem } from '@/utils/dataQuality'
+
+type Sentiment = '正面' | '中性' | '负面'
+
+interface NewsItem {
+  id: number | string
+  title: string
+  url?: string
+  summary?: string
+  sentiment?: Sentiment | string
+  impact_level?: string
+  event_category?: string
+  source?: string
+  source_authority?: string
+  publish_time?: string
+  keywords?: string[]
+}
+
+interface SentimentSummary {
+  positive: number
+  neutral: number
+  negative: number
+  dominant: string
+}
+
+interface NewsResponse {
+  news?: NewsItem[]
+  sentiment_summary?: SentimentSummary
+  data_quality?: Record<string, DataQualityItem> | DataQualityItem
+}
+
+interface CrawlStatusResponse {
+  statuses?: {
+    news?: CrawlStatus
+  }
+}
+
+interface CrawlNewsResponse {
+  crawl_status?: CrawlStatus
+}
+
+type NewsParams = {
+  sentiment?: string
+}
 
 const props = defineProps<{ symbol: string }>()
+const emit = defineEmits<{ crawlComplete: [] }>()
 
-const newsList = ref<any[]>([])
-const sentimentSummary = ref<any>(null)
+const newsList = ref<NewsItem[]>([])
+const sentimentSummary = ref<SentimentSummary | null>(null)
 const sentimentFilter = ref('')
 const loading = ref(false)
+const crawling = ref(false)
+const crawlStatus = ref<CrawlStatus | null>(null)
+const crawlError = ref('')
+const dataQuality = ref<DataQualityItem | null>(null)
+const emptyReason = computed(() => crawlStatusReason(crawlStatus.value))
 
 async function fetchNews() {
   loading.value = true
   try {
     const { default: api } = await import('@/api')
-    const params: any = {}
+    const params: NewsParams = {}
     if (sentimentFilter.value) params.sentiment = sentimentFilter.value
-    const resp = await api.get(`/api/v1/news/${props.symbol}`, { params })
-    newsList.value = resp.data.news || []
-    sentimentSummary.value = resp.data.sentiment_summary
+    const resp = await api.get<NewsResponse>(`/api/v1/news/${props.symbol}`, { params })
+    newsList.value = resp.news || []
+    sentimentSummary.value = resp.sentiment_summary || null
+    dataQuality.value = pickDataQuality(resp.data_quality, 'news')
+    await loadCrawlStatus()
   } catch (e) {
     console.error('获取新闻失败:', e)
     newsList.value = []
+    dataQuality.value = null
+    await loadCrawlStatus()
   } finally {
     loading.value = false
   }
 }
 
-function sentimentClass(sentiment: string) {
+function sentimentClass(sentiment?: string) {
   return sentiment === '正面' ? 'positive' : sentiment === '负面' ? 'negative' : 'neutral'
 }
 
-function formatTime(time: string) {
+function formatTime(time?: string) {
   if (!time) return ''
   const d = new Date(time)
   const now = new Date()
@@ -102,8 +172,34 @@ function formatTime(time: string) {
   return time.slice(0, 16)
 }
 
-function openUrl(url: string) {
-  if (url) window.open(url, '_blank')
+function openUrl(url?: string) {
+  safeOpen(url)
+}
+
+async function loadCrawlStatus() {
+  try {
+    const { crawlApi } = await import('@/api')
+    const resp = await crawlApi.getCrawlStatus<CrawlStatusResponse>(props.symbol)
+    crawlStatus.value = resp.statuses?.news || null
+  } catch (e) {
+    crawlStatus.value = null
+  }
+}
+
+async function crawlCurrentNews() {
+  crawling.value = true
+  crawlError.value = ''
+  try {
+    const { crawlApi } = await import('@/api')
+    const resp = await crawlApi.crawlNews<CrawlNewsResponse>(props.symbol)
+    crawlStatus.value = resp.crawl_status || null
+    await fetchNews()
+    emit('crawlComplete')
+  } catch (error) {
+    crawlError.value = formatCrawlError(error as { response?: { status?: number; data?: { detail?: string } }; message?: string }, '新闻')
+  } finally {
+    crawling.value = false
+  }
 }
 
 function onFilterChange() { fetchNews() }
@@ -117,6 +213,7 @@ onMounted(fetchNews)
 .feed-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .feed-header h4 { margin: 0; font-size: 15px; }
 .feed-filters { display: flex; gap: 8px; }
+.filter-select { width: 100px; }
 .sentiment-bar { display: flex; gap: 10px; margin-bottom: 12px; padding: 8px 12px; background: #f8f9fa; border-radius: 6px; font-size: 12px; }
 .sent-tag.positive { color: #e53e3e; }
 .sent-tag.negative { color: #38a169; }
@@ -141,6 +238,12 @@ onMounted(fetchNews)
 .news-title:hover { color: #3182ce; }
 .news-summary { font-size: 12px; color: #718096; margin-top: 4px; line-height: 1.4; }
 .news-keywords { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
-.loading, .empty { text-align: center; color: #999; padding: 30px; font-size: 13px; }
+.loading, .empty { text-align: center; color: #999; padding: 30px; font-size: 13px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.crawl-status-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.crawl-status { font-size: 12px; color: #718096; line-height: 1.4; max-width: 360px; }
+.crawl-status.success { color: #047857; }
+.crawl-status.warning { color: #b7791f; }
+.crawl-status.error { color: #c53030; }
+.crawl-status.info { color: #3182ce; }
 .time { margin-left: auto; }
 </style>

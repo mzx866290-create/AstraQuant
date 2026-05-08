@@ -75,11 +75,38 @@
 import { ref, computed, onMounted } from 'vue'
 import { adminApi } from '@/api'
 
+interface StatsOverview {
+  total_users: number
+  active_users_today: number
+  active_models: number
+  total_api_calls_today: number
+  total_tokens_today: number
+  total_cost_month?: number
+  calls_by_day?: CallsByDayItem[]
+  calls_by_model?: CallsByModelItem[]
+  top_users?: TopUserItem[]
+}
+
+interface CallsByDayItem {
+  date: string
+  count: number
+}
+
+interface CallsByModelItem {
+  model_name: string
+  count: number
+}
+
+interface TopUserItem {
+  username: string
+  count: number
+}
+
 const loading = ref(true)
-const stats = ref<any>(null)
-const callsByDay = ref<any[]>([])
-const callsByModel = ref<any[]>([])
-const topUsers = ref<any[]>([])
+const stats = ref<StatsOverview | null>(null)
+const callsByDay = ref<CallsByDayItem[]>([])
+const callsByModel = ref<CallsByModelItem[]>([])
+const topUsers = ref<TopUserItem[]>([])
 
 const maxCalls = computed(() => {
   if (!callsByDay.value.length) return 1
@@ -89,7 +116,7 @@ const maxCalls = computed(() => {
 async function loadStats() {
   try {
     loading.value = true
-    const data = await adminApi.getStatsOverview()
+    const data = await adminApi.getStatsOverview<StatsOverview>()
     stats.value = data
     callsByDay.value = data.calls_by_day || []
     callsByModel.value = data.calls_by_model || []

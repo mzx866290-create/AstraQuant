@@ -1,0 +1,72 @@
+groups:
+  - name: stock-platform-service-alerts
+    rules:
+      - alert: ServiceMetricsTargetDown
+        expr: up{job=~"market-service|user-service|analysis-service|data-crawler"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} metrics target is down"
+          description: "Prometheus has not been able to scrape {{ $labels.job }} at {{ $labels.instance }} for more than 2 minutes."
+          runbook_url: "docs/ops/monitoring-runbook.md#servicemetricstargetdown"
+
+      - alert: PrometheusTargetMissing
+        expr: absent(up{job=~"market-service|user-service|analysis-service|data-crawler"})
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No application metrics targets are being scraped"
+          description: "Prometheus has no active up-series for the backend services. Check service discovery and scrape configuration."
+          runbook_url: "docs/ops/monitoring-runbook.md#prometheustargetmissing"
+
+      - alert: ServiceMetricsScrapeFailing
+        expr: scrape_samples_scraped{job=~"market-service|user-service|analysis-service|data-crawler"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} scrape is returning no samples"
+          description: "The /metrics endpoint for {{ $labels.job }} is reachable but has returned zero samples for more than 5 minutes."
+          runbook_url: "docs/ops/monitoring-runbook.md#servicemetricsscrapefailing"
+
+      - alert: ServiceHttp5xxRateHigh
+        expr: sum by (service) (rate(stock_platform_http_requests_total{status_code=~"5.."}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is returning elevated 5xx responses"
+          description: "{{ $labels.service }} has returned more than 0.1 HTTP 5xx responses per second over the last 5 minutes."
+          runbook_url: "docs/ops/monitoring-runbook.md#servicehttp5xxratehigh"
+
+      - alert: DataCrawlerSchedulerStopped
+        expr: stock_platform_data_crawler_scheduler_enabled{service="data-crawler"} == 1 and on(service) stock_platform_data_crawler_scheduler_running{service="data-crawler"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Data crawler scheduler is stopped"
+          description: "The data crawler service is up, but its scheduler is enabled and not running."
+          runbook_url: "docs/ops/monitoring-runbook.md#datacrawlerschedulerstopped"
+
+      - alert: DataCrawlerSchedulerError
+        expr: stock_platform_data_crawler_scheduler_error{service="data-crawler"} == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Data crawler scheduler has an error"
+          description: "The data crawler runtime has recorded a scheduler error. Check the data-crawler logs and /status endpoint."
+          runbook_url: "docs/ops/monitoring-runbook.md#datacrawlerschedulererror"
+
+      - alert: DataCrawlerTaskFailing
+        expr: stock_platform_data_crawler_task_last_status{status=~"error|not_implemented|empty_symbol_pool"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data crawler task {{ $labels.task }} is failing"
+          description: "The latest run for task {{ $labels.task }} ended with status {{ $labels.status }}."
+          runbook_url: "docs/ops/monitoring-runbook.md#datacrawlertaskfailing"

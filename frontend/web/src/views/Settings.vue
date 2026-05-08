@@ -11,10 +11,10 @@
         <el-form-item label="API 地址">
           <el-input
             v-model="apiBaseUrl"
-            placeholder="http://localhost:8001"
+            placeholder="留空使用当前站点"
             clearable
           />
-          <div class="form-tip">例如: http://localhost:8001 或 http://192.168.1.100:8001</div>
+          <div class="form-tip">推荐留空走同源网关；如需自定义，请填写统一网关地址，不要直连 8001/8002/8003。</div>
         </el-form-item>
 
         <el-form-item>
@@ -24,7 +24,7 @@
       </el-form>
     </el-card>
 
-    <el-card class="config-card" style="margin-top: 16px">
+    <el-card class="config-card spaced-card">
       <template #header>
         <span>连接测试</span>
       </template>
@@ -52,7 +52,7 @@
       </el-form>
     </el-card>
 
-    <el-card class="config-card" style="margin-top: 16px">
+    <el-card class="config-card spaced-card">
       <template #header>
         <span>当前配置信息</span>
       </template>
@@ -70,26 +70,37 @@
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
+import { isDirectServiceBaseUrl, normalizeApiBaseUrl } from '@/api'
+import { useUserStore } from '@/stores/user'
 
+interface ApiErrorLike {
+  message?: string
+}
+
+const userStore = useUserStore()
 const apiBaseUrl = ref('')
 const testUrl = ref('/api/v1/stocks')
 const testing = ref(false)
 const testResult = ref<{ success: boolean; message: string } | null>(null)
+const defaultBaseURLLabel = '同源网关代理（推荐）'
 
 const currentBaseURL = computed(() => {
-  return localStorage.getItem('api_base_url') || 'http://localhost:8001 (默认)'
+  return normalizeApiBaseUrl(localStorage.getItem('api_base_url')) || defaultBaseURLLabel
 })
 
-const hasToken = computed(() => {
-  return !!localStorage.getItem('access_token')
-})
+
+const hasToken = computed(() => userStore.isLoggedIn)
 
 onMounted(() => {
-  apiBaseUrl.value = localStorage.getItem('api_base_url') || 'http://localhost:8001'
+  apiBaseUrl.value = normalizeApiBaseUrl(localStorage.getItem('api_base_url'))
 })
 
 function saveSettings() {
-  const url = apiBaseUrl.value.trim()
+  const url = normalizeApiBaseUrl(apiBaseUrl.value)
+  if (url && isDirectServiceBaseUrl(url)) {
+    ElMessage.warning('请填写统一网关地址，不要直连 8001/8002/8003。')
+    return
+  }
   if (url) {
     localStorage.setItem('api_base_url', url)
     ElMessage.success('API 地址已保存')
@@ -101,24 +112,28 @@ function saveSettings() {
 
 function resetSettings() {
   localStorage.removeItem('api_base_url')
-  apiBaseUrl.value = 'http://localhost:8001'
+  apiBaseUrl.value = ''
   ElMessage.info('已恢复默认设置')
 }
 
 async function testConnection() {
+  const base = normalizeApiBaseUrl(apiBaseUrl.value)
+  if (base && isDirectServiceBaseUrl(base)) {
+    ElMessage.warning('测试前请改成统一网关地址，或直接留空使用当前站点。')
+    return
+  }
   testing.value = true
   testResult.value = null
-  const base = apiBaseUrl.value.trim() || 'http://localhost:8001'
   try {
     const res = await axios.get(`${base}${testUrl.value}`, { timeout: 5000 })
     testResult.value = {
       success: true,
       message: `响应状态: ${res.status}, 数据: ${JSON.stringify(res.data).substring(0, 200)}`
     }
-  } catch (e: any) {
+  } catch (error) {
     testResult.value = {
       success: false,
-      message: e.message || '连接失败'
+      message: (error as ApiErrorLike).message || '连接失败'
     }
   } finally {
     testing.value = false
@@ -133,6 +148,10 @@ async function testConnection() {
 
 .config-card {
   max-width: 700px;
+}
+
+.spaced-card {
+  margin-top: 16px;
 }
 
 .form-tip {

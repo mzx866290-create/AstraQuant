@@ -22,6 +22,11 @@ class AddItemRequest(BaseModel):
     symbol: Optional[str] = None
 
 
+def _api_symbol(stock: Stock) -> str:
+    code = stock.symbol[:6]
+    return f"{code}.{stock.market}"
+
+
 @router.get("")
 async def get_watchlists(
     current_user: User = Depends(get_current_user),
@@ -51,7 +56,7 @@ async def get_watchlists(
             item_data.append({
                 "id": item.id,
                 "stock_id": item.stock_id,
-                "symbol": stock.symbol if stock else "",
+                "symbol": _api_symbol(stock) if stock else "",
                 "name": stock.name if stock else "",
                 "market": stock.market if stock else "",
                 "sector": stock.sector if stock else "",
@@ -99,11 +104,14 @@ async def create_watchlist(
 async def add_to_watchlist(
     watchlist_id: int,
     body: AddItemRequest,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """添加股票到自选股（支持 stock_id 或 symbol）"""
     wl = db.query(Watchlist).filter(Watchlist.id == watchlist_id).first()
     if not wl:
+        raise_not_found("自选股分组")
+    if wl.user_id != current_user.id:
         raise_not_found("自选股分组")
 
     stock = None
@@ -130,7 +138,7 @@ async def add_to_watchlist(
     return {
         "id": item.id,
         "stock_id": item.stock_id,
-        "symbol": stock.symbol,
+        "symbol": _api_symbol(stock),
         "name": stock.name,
         "market": stock.market,
         "sort_order": item.sort_order,
@@ -139,22 +147,17 @@ async def add_to_watchlist(
 
 
 @router.delete("/{watchlist_id}/items/{stock_id}")
-async def remove_from_watchlist(watchlist_id: int, stock_id: int, db: Session = Depends(get_db)):
+async def remove_from_watchlist(
+    watchlist_id: int,
+    stock_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """从自选股移除"""
-    item = db.query(WatchlistItem).filter(
-        WatchlistItem.watchlist_id == watchlist_id,
-        WatchlistItem.stock_id == stock_id,
-    ).first()
-    if not item:
-        raise_not_found("自选股记录")
-    db.delete(item)
-    db.commit()
-    return {"message": "移除成功"}
+    wl = db.query(Watchlist).filter(Watchlist.id == watchlist_id).first()
+    if not wl or wl.user_id != current_user.id:
+        raise_not_found("自选股分组")
 
-
-@router.delete("/{watchlist_id}/items/{stock_id}")
-async def remove_from_watchlist(watchlist_id: int, stock_id: int, db: Session = Depends(get_db)):
-    """从自选股移除"""
     item = db.query(WatchlistItem).filter(
         WatchlistItem.watchlist_id == watchlist_id,
         WatchlistItem.stock_id == stock_id,
