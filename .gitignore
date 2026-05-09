@@ -12,6 +12,9 @@ venv/
 # IDE
 .vscode/
 .idea/
+.claude/
+.continue/
+.mcp.json
 .claude/worktrees/
 *.swp
 *.swo
