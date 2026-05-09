@@ -39,6 +39,7 @@ class DataSourceChain:
         kwargs: 传给该方法的参数
         返回 {"data": ..., "source": "源名称"}
         """
+        timeout_seconds = float(kwargs.pop("_timeout_seconds", 15.0))
         last_error = None
         for source in self._sources:
             if not source.circuit_breaker.is_available():
@@ -49,7 +50,7 @@ class DataSourceChain:
                 logger.debug("data source %s does not support %s; skipping", source.name, method_name)
                 continue
             try:
-                result = await asyncio.wait_for(method(**kwargs), timeout=15.0)
+                result = await asyncio.wait_for(method(**kwargs), timeout=timeout_seconds)
                 source.circuit_breaker.record_success()
                 logger.info(f"数据源 {source.name} 成功: {method_name}")
                 return {"data": result, "source": source.name}
@@ -82,6 +83,9 @@ class DataSourceChain:
         return await self.fetch_with_fallback(
             "search_stocks", query=query
         )
+
+    async def fetch_stock_master(self) -> dict:
+        return await self.fetch_with_fallback("fetch_stock_master")
 
     async def close(self):
         for source in self._sources:

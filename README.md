@@ -92,11 +92,23 @@ make dev
 
 该脚本会先清理 `8001/8002/8003/5175` 上的旧进程，再启动后端三个服务和 Vite 前端，并检查健康状态。若首页“今日观察”显示空数据，优先使用这个脚本重启，避免浏览器连到旧的 analysis-service。
 
+首次启动或本地 SQLite 被重建后，先同步股票主数据，避免每日观察池、自选股搜索只看到少量示例股票：
+
+```bash
+python scripts/sync_stock_master.py
+# 或
+make sync-stock-master
+```
+
+同步脚本会从公开数据源拉取沪深 A 股主数据并按 6 位代码 upsert，不会删除用户、自选股或预警数据；只有显式加 `--deactivate-missing` 时才会把源端缺失的旧股票标记为停用。
+
 健康检查：
 
 ```http
-GET http://localhost:8003/api/v1/analysis/system-health
+GET http://localhost:8003/api/v1/analysis/public-health
 ```
+
+管理员完整健康检查接口为 `GET /api/v1/analysis/system-health`，需要管理员登录态；未登录直接访问会返回 401。
 
 ### 每日观察池说明
 

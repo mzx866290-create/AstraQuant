@@ -459,6 +459,16 @@ watch(
   margin-top: calc(var(--space-5) * -0.5);
 }
 
+@media (max-width: 1024px) {
+  .two-column {
+    grid-template-columns: 1fr;
+  }
+
+  .news-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 960px) {
   .stock-hero,
   .stock-identity {
@@ -471,10 +481,22 @@ watch(
     text-align: left;
   }
 
-  .beginner-guide,
-  .two-column,
-  .news-grid {
+  .beginner-guide {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .stock-hero {
+    padding: var(--space-4);
+  }
+
+  .stock-identity h2 {
+    font-size: 24px;
+  }
+
+  .hero-price strong {
+    font-size: 32px;
   }
 }
 </style>

@@ -44,128 +44,166 @@
       </span>
     </section>
 
-    <el-table
-      v-loading="loading"
-      :data="recommendations"
-      stripe
-      class="observe-table"
-      @row-click="goDetail"
-    >
-      <template #empty>
-        <div class="empty-state">
-          <strong>暂无今日观察数据</strong>
-          <span>{{ emptyReason }}</span>
+    <!-- 骨架屏 -->
+    <div v-if="loading" class="skeleton-grid">
+      <div v-for="i in 6" :key="i" class="skeleton-card">
+        <div class="skeleton-header">
+          <div class="skeleton-title"></div>
+          <div class="skeleton-circle"></div>
         </div>
-      </template>
-      <el-table-column type="index" label="#" width="52" />
-      <el-table-column label="股票" min-width="150">
-        <template #default="{ row }">
-          <div class="stock-cell">
-            <strong>{{ row.name }}</strong>
-            <span>{{ row.symbol }}</span>
+        <div class="skeleton-body">
+          <div class="skeleton-line skeleton-line-lg"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-tags">
+            <div class="skeleton-tag"></div>
+            <div class="skeleton-tag"></div>
           </div>
-        </template>
-      </el-table-column>
-      <el-table-column prop="sector" label="行业" width="110" />
-      <el-table-column label="评分" width="105">
-        <template #default="{ row }">
-          <div class="score-cell">
-            <strong>{{ row.score }}</strong>
-            <el-tag size="small" :type="ratingTag(row.rating?.level)">{{ row.rating?.text }}</el-tag>
+        </div>
+      </div>
+    </div>
+
+    <!-- 卡片网格 -->
+    <div v-else-if="recommendations.length > 0" class="recommendation-grid">
+      <div
+        v-for="(row, index) in recommendations"
+        :key="row.symbol"
+        class="stock-card"
+        :style="{ animationDelay: `${index * 0.05}s` }"
+        @click="goDetail(row)"
+      >
+        <div class="card-header">
+          <div class="stock-info">
+            <strong class="stock-name">{{ row.name }}</strong>
+            <div class="stock-meta">
+              <span class="stock-symbol">{{ row.symbol }}</span>
+              <el-tag v-if="row.sector" size="small" effect="plain" class="sector-tag">{{ row.sector }}</el-tag>
+            </div>
           </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="数据" width="125">
-        <template #default="{ row }">
+          <div class="score-ring" :class="scoreClass(row.score)">
+            <span class="score-value">{{ row.score }}</span>
+            <span class="score-label">{{ row.rating?.text }}</span>
+          </div>
+        </div>
+
+        <div class="card-metrics">
+          <div class="metric">
+            <span class="metric-label">最新价</span>
+            <strong class="metric-value">{{ formatPrice(row.price) }}</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">涨跌幅</span>
+            <strong class="metric-value" :class="changeClass(row.change_pct)">
+              {{ formatPct(row.change_pct) }}
+            </strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">单手成本</span>
+            <strong class="metric-value">{{ formatMoney(row.lot_cost) }}</strong>
+          </div>
+        </div>
+
+        <div class="card-data-grade">
           <el-tag
             size="small"
             :type="dataGradeTag(row.data_grade?.grade)"
             effect="light"
-            :title="row.data_grade?.analysis_scope || ''"
+            class="grade-tag"
           >
-            {{ row.data_grade?.grade || 'D' }} {{ row.data_grade?.label || '数据不足' }}
+            {{ row.data_grade?.grade || 'D' }}
           </el-tag>
+          <span class="grade-label">{{ row.data_grade?.label || '数据不足' }}</span>
           <el-tag
             v-if="row.candidate_source || meta?.candidate_source"
             size="small"
             :type="isFallbackCandidate(row, meta?.candidate_source) ? 'danger' : 'info'"
             effect="plain"
+            class="source-tag"
           >
             {{ candidateSourceLabel(row.candidate_source || meta?.candidate_source) }}
           </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="行情" width="120">
-        <template #default="{ row }">
-          <div>{{ formatPrice(row.price) }}</div>
-          <span :class="changeClass(row.change_pct)">{{ formatPct(row.change_pct) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="单手成本" width="105">
-        <template #default="{ row }">
-          {{ formatMoney(row.lot_cost) }}
-        </template>
-      </el-table-column>
-      <el-table-column label="观察理由" min-width="280">
-        <template #default="{ row }">
+        </div>
+
+        <div v-if="row.reasons?.length" class="card-section">
+          <span class="section-label">观察理由</span>
           <div class="chips">
-            <el-tag v-for="reason in (row.reasons || []).slice(0, 3)" :key="reason" size="small" effect="plain">
+            <el-tag
+              v-for="reason in row.reasons.slice(0, 3)"
+              :key="reason"
+              size="small"
+              effect="plain"
+              class="reason-tag"
+            >
               {{ reason }}
             </el-tag>
           </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="评分明细" min-width="230">
-        <template #default="{ row }">
-          <div class="breakdown-list">
+        </div>
+
+        <div v-if="topBreakdown(row).length" class="card-section">
+          <span class="section-label">评分明细</span>
+          <div class="chips">
             <el-tag
-              v-for="item in topBreakdown(row)"
+              v-for="item in topBreakdown(row).slice(0, 4)"
               :key="item.key"
               size="small"
               :type="breakdownType(item)"
               effect="light"
+              class="breakdown-tag"
             >
               {{ item.label }} {{ formatDelta(item.delta) }}
             </el-tag>
           </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="风险" min-width="220">
-        <template #default="{ row }">
+        </div>
+
+        <div v-if="(row.risk_flags || []).length || recommendationRowWarnings(row, meta?.candidate_source).length" class="card-section">
+          <span class="section-label">风险</span>
           <div class="chips">
-            <el-tag v-for="risk in (row.risk_flags || []).slice(0, 2)" :key="risk" size="small" type="warning" effect="plain">
+            <el-tag
+              v-for="risk in (row.risk_flags || []).slice(0, 2)"
+              :key="risk"
+              size="small"
+              type="warning"
+              effect="plain"
+              class="risk-tag"
+            >
               {{ risk }}
             </el-tag>
             <el-tag
-              v-for="warning in recommendationRowWarnings(row, meta?.candidate_source).slice(0, 3)"
+              v-for="warning in recommendationRowWarnings(row, meta?.candidate_source).slice(0, 2)"
               :key="warning"
               size="small"
               type="danger"
               effect="plain"
+              class="risk-tag"
             >
               {{ warning }}
             </el-tag>
           </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="140">
-        <template #default="{ row }">
-          <div class="row-actions">
-            <el-button type="primary" link @click.stop="goDetail(row)">详情</el-button>
-            <el-button
-              type="success"
-              link
-              :loading="addingSymbol === row.symbol"
-              :disabled="Boolean(actionBlockedReason(row))"
-              :title="actionBlockedReason(row)"
-              @click.stop="handleAddToWatchlist(row)"
-            >
-              加自选
-            </el-button>
-          </div>
-        </template>
-      </el-table-column>
-    </el-table>
+        </div>
+
+        <div class="card-actions" @click.stop>
+          <el-button type="primary" link @click="goDetail(row)">详情</el-button>
+          <el-button
+            type="success"
+            link
+            :loading="addingSymbol === row.symbol"
+            :disabled="Boolean(actionBlockedReason(row))"
+            :title="actionBlockedReason(row)"
+            @click="handleAddToWatchlist(row)"
+          >
+            加自选
+          </el-button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 空状态 -->
+    <div v-else class="empty-state-card">
+      <div class="empty-content">
+        <el-icon :size="56" class="empty-icon"><TrendCharts /></el-icon>
+        <strong>暂无今日观察数据</strong>
+        <span>{{ emptyReason }}</span>
+      </div>
+    </div>
 
     <section class="home-actions">
       <router-link to="/recommendations" class="action-link">
@@ -206,7 +244,6 @@ import {
   candidateSourceLabel,
   dataGradeTag,
   isFallbackCandidate,
-  ratingTag,
   recommendationActionBlockedReason,
   recommendationEmptyReason,
   recommendationRowWarnings,
@@ -275,9 +312,7 @@ const healthText = computed(() => {
 })
 
 const candidateSourceText = computed(() => {
-  if (meta.value?.candidate_source === 'fallback') return '开发兜底'
-  if (meta.value?.candidate_source === 'db') return '数据库'
-  return '未知'
+  return candidateSourceLabel(meta.value?.candidate_source)
 })
 
 const recommendationWarning = computed(() => {
@@ -286,6 +321,9 @@ const recommendationWarning = computed(() => {
   const warnings = meta.value.warnings || []
   if (meta.value.candidate_source === 'fallback') {
     return '当前观察池使用开发兜底候选池，仅用于调试展示，不代表真实市场筛选结果。'
+  }
+  if (meta.value.candidate_source === 'mixed') {
+    return '数据库候选池偏小，已用开发兜底候选补足；每只标的会单独标明来源。'
   }
   return warnings[0] || ''
 })
@@ -304,6 +342,13 @@ function changeClass(value?: number | string) {
   const number = Number(value)
   if (!Number.isFinite(number)) return ''
   return number >= 0 ? 'up' : 'down'
+}
+
+function scoreClass(score?: number) {
+  if (!score || !Number.isFinite(score)) return ''
+  if (score >= 70) return 'high'
+  if (score >= 40) return 'medium'
+  return 'low'
 }
 
 function goDetail(row: RecommendationItem) {
@@ -440,34 +485,316 @@ onMounted(() => {
   color: var(--color-text-muted);
 }
 
-.observe-table {
-  width: 100%;
-  border: 1px solid var(--color-border);
-  box-shadow: var(--shadow-card);
+/* Skeleton loading */
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--space-4);
 }
 
-.stock-cell,
-.score-cell {
+.skeleton-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  overflow: hidden;
+}
+
+.skeleton-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+
+.skeleton-title {
+  height: 20px;
+  width: 120px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+}
+
+.skeleton-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+}
+
+.skeleton-body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-3);
 }
 
-.stock-cell span,
-.score-cell strong {
+.skeleton-line {
+  height: 16px;
+  width: 60%;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+}
+
+.skeleton-line-lg {
+  width: 40%;
+  height: 28px;
+}
+
+.skeleton-tags {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.skeleton-tag {
+  width: 60px;
+  height: 24px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-loading {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Card grid */
+.recommendation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--space-4);
+}
+
+.stock-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  animation: card-enter 0.4s ease-out backwards;
+}
+
+.stock-card:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 8px 24px rgba(29, 78, 216, 0.08);
+  transform: translateY(-2px);
+}
+
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.stock-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.stock-name {
+  display: block;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--color-text);
+  margin-bottom: var(--space-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stock-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.stock-symbol {
   font-family: var(--font-number);
-  font-variant-numeric: tabular-nums;
-}
-
-.stock-cell span {
+  font-size: 13px;
   color: var(--color-text-muted);
 }
 
-.chips,
-.breakdown-list {
+.sector-tag {
+  font-size: 11px;
+}
+
+.score-ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 3px solid var(--color-border);
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+}
+
+.score-ring:hover {
+  transform: scale(1.05);
+}
+
+.score-ring.high {
+  border-color: var(--color-down);
+  background: var(--color-success-bg);
+}
+
+.score-ring.medium {
+  border-color: var(--color-warning);
+  background: var(--color-warning-soft);
+}
+
+.score-ring.low {
+  border-color: var(--color-up);
+  background: var(--color-danger-soft);
+}
+
+.score-value {
+  font-size: 18px;
+  font-weight: 800;
+  font-family: var(--font-number);
+  line-height: 1;
+}
+
+.score-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.card-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+}
+
+.metric {
+  text-align: center;
+}
+
+.metric-label {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-1);
+}
+
+.metric-value {
+  display: block;
+  font-family: var(--font-number);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.card-data-grade {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.grade-label {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.grade-tag {
+  font-weight: 700;
+}
+
+.card-section {
+  margin-bottom: var(--space-3);
+}
+
+.section-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1);
+}
+
+.reason-tag,
+.breakdown-tag,
+.risk-tag {
+  font-size: 11px;
+}
+
+.card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-2);
+}
+
+.empty-state-card {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 320px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-8);
+}
+
+.empty-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.empty-content strong {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.empty-icon {
+  color: var(--color-border-strong);
 }
 
 .up {
@@ -539,6 +866,31 @@ onMounted(() => {
 
   .home-actions {
     grid-template-columns: 1fr;
+  }
+
+  .recommendation-grid,
+  .skeleton-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stock-card {
+    padding: var(--space-4);
+  }
+
+  .card-metrics {
+    grid-template-columns: 1fr;
+    gap: var(--space-2);
+  }
+
+  .metric {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    text-align: left;
+  }
+
+  .metric-label {
+    margin-bottom: 0;
   }
 }
 </style>

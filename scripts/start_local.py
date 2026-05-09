@@ -131,7 +131,8 @@ def main() -> int:
     print("Frontend: http://localhost:5175/")
     print(f"Public URL: {PUBLIC_URL}")
     print("Daily observation: http://localhost:5175/")
-    print("System health: http://localhost:8003/api/v1/analysis/system-health")
+    print("Public health: http://localhost:8003/api/v1/analysis/public-health")
+    print("Admin system health: http://localhost:8003/api/v1/analysis/system-health")
     print("Logs: ./logs")
     if not all(checks):
         print("One or more services failed health checks. See logs above.")

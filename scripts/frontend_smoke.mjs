@@ -107,6 +107,59 @@ async function installApiMocks(page) {
       items: [],
     },
   }
+  const adminModels = [{
+    id: 1,
+    name: 'Smoke Admin Model',
+    provider: 'openai',
+    model_id: 'smoke-admin-model',
+    is_active: true,
+    allowed_roles: 'free,premium,admin',
+    api_base_url: '',
+    description: 'Smoke admin model',
+  }]
+  const adminUsers = [{
+    id: 99,
+    username: 'admin-smoke',
+    email: 'admin-smoke@example.test',
+    role: 'admin',
+    is_active: true,
+    daily_used: 3,
+    daily_limit: 50,
+    monthly_used: 20,
+    monthly_limit: 500,
+  }, {
+    id: 2,
+    username: 'regular-smoke',
+    email: 'regular-smoke@example.test',
+    role: 'free',
+    is_active: true,
+    daily_used: 1,
+    daily_limit: 20,
+    monthly_used: 4,
+    monthly_limit: 200,
+  }]
+  const usageLogs = [{
+    id: 1,
+    created_at: '2026-05-07T09:40:00Z',
+    username: 'regular-smoke',
+    user_id: 2,
+    model_name: 'Smoke Admin Model',
+    stock_symbol: '600000.SH',
+    total_tokens: 128,
+    cost: 0.0012,
+    status: 'success',
+    response_time_ms: 321,
+  }]
+  const activityLogs = [{
+    id: 1,
+    created_at: '2026-05-07T09:41:00Z',
+    username: 'admin-smoke',
+    user_id: 99,
+    action: 'login',
+    target: 'admin',
+    ip_address: '127.0.0.1',
+    user_agent: 'frontend-smoke',
+  }]
 
   const quoteQuality = {
     source: 'mock-fallback',
@@ -169,13 +222,36 @@ async function installApiMocks(page) {
       return
     }
 
+    if (auth.includes('admin-token')) {
+      await mockJson(route, {
+        id: 99,
+        username: 'admin-smoke',
+        email: 'admin-smoke@example.test',
+        role: 'admin',
+        is_active: true,
+        created_at: '2026-05-07T09:00:00Z',
+      })
+      return
+    }
+
     await mockJson(route, {
       id: 1,
       username: 'smoke-user',
       email: 'smoke@example.test',
       role: 'user',
       is_active: true,
+      created_at: '2026-05-07T09:00:00Z',
     })
+  })
+
+  await page.route('**/api/v1/auth/me/password', async (route) => {
+    const body = route.request().postDataJSON()
+    if (body?.current_password !== smokePassword) {
+      await mockJson(route, { detail: 'invalid current password' }, 400)
+      return
+    }
+
+    await mockJson(route, { message: 'Password updated' })
   })
 
   await page.route('**/api/v1/analysis/ai/models', async (route) => {
@@ -205,6 +281,84 @@ async function installApiMocks(page) {
         { service: 'analysis-service', status: 'ok' },
       ],
     })
+  })
+
+  await page.route('**/api/v1/admin/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const method = request.method()
+
+    if (url.pathname === '/api/v1/admin/stats/overview' && method === 'GET') {
+      await mockJson(route, {
+        total_users: 2,
+        active_users_today: 1,
+        active_models: 1,
+        total_api_calls_today: 7,
+        total_tokens_today: 128,
+        total_cost_month: 0.024,
+        calls_by_day: [
+          { date: '2026-05-06', count: 3 },
+          { date: '2026-05-07', count: 4 },
+        ],
+        calls_by_model: [
+          { model_name: 'Smoke Admin Model', count: 7 },
+        ],
+        top_users: [
+          { username: 'regular-smoke', count: 5 },
+        ],
+      })
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/models' && method === 'GET') {
+      await mockJson(route, adminModels)
+      return
+    }
+
+    const modelTestMatch = url.pathname.match(/^\/api\/v1\/admin\/models\/(\d+)\/test$/)
+    if (modelTestMatch && method === 'POST') {
+      await mockJson(route, { status: 'success' })
+      return
+    }
+
+    const modelToggleMatch = url.pathname.match(/^\/api\/v1\/admin\/models\/(\d+)\/toggle$/)
+    if (modelToggleMatch && method === 'PATCH') {
+      const id = Number(modelToggleMatch[1])
+      const model = adminModels.find((item) => item.id === id)
+      if (!model) {
+        await mockJson(route, { detail: 'model not found' }, 404)
+        return
+      }
+      model.is_active = !model.is_active
+      await mockJson(route, model)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/users' && method === 'GET') {
+      await mockJson(route, adminUsers)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/logs/activity' && method === 'GET') {
+      await mockJson(route, activityLogs)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/logs/export' && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/csv; charset=utf-8',
+        body: 'created_at,username,model_name,status\n2026-05-07T09:40:00Z,regular-smoke,Smoke Admin Model,success\n',
+      })
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/logs' && method === 'GET') {
+      await mockJson(route, usageLogs)
+      return
+    }
+
+    await mockJson(route, { detail: 'unhandled smoke admin route' }, 404)
   })
 
   await page.route('**/api/v1/alerts**', async (route) => {
@@ -354,6 +508,26 @@ async function installApiMocks(page) {
         news: null,
         announcements: null,
         financials: null,
+      },
+    })
+  })
+
+  await page.route('**/api/v1/crawl/**/news', async (route) => {
+    await mockJson(route, {
+      symbol: '600000',
+      data_type: 'news',
+      status: 'fresh',
+      skipped: true,
+      from_cache: true,
+      message: '5分钟前已更新，无需重复采集',
+      fetched: 1,
+      saved: 1,
+      updated_at: '2026-05-07T09:20:00Z',
+      crawl_status: {
+        status: 'fresh',
+        message: '5分钟前已更新，无需重复采集',
+        finished_at: '2026-05-07T09:20:00Z',
+        saved: 1,
       },
     })
   })
@@ -533,7 +707,7 @@ async function runSmoke() {
 
   try {
     await page.goto('/login')
-    await expect(page.locator('.login-card')).toBeVisible()
+    await expect(page.locator('.form-wrapper')).toBeVisible()
     await expect(page.locator('.submit-btn')).toBeVisible()
     console.log('ok /login renders in browser')
 
@@ -541,8 +715,8 @@ async function runSmoke() {
     await expect(page).toHaveURL(/\/login\?redirect=(%2F|\/)watchlist$/)
     console.log('ok protected route redirects to login')
 
-    await page.locator('.login-card input').nth(0).fill('smoke-user')
-    await page.locator('.login-card input').nth(1).fill(smokePassword)
+    await page.locator('.login-form input').nth(0).fill('smoke-user')
+    await page.locator('.login-form input').nth(1).fill(smokePassword)
     await page.locator('.submit-btn').click()
     await expect(page).toHaveURL(`${baseUrl}/watchlist`)
     console.log('ok login form posts mocked API and follows redirect')
@@ -613,7 +787,75 @@ async function runSmoke() {
     await expect(page.locator('.stock-detail')).toBeVisible()
     await expect(page.locator('.quote-warning')).toBeVisible()
     await expect(page.locator('.quote-panel .quality-item').filter({ hasText: 'mock-fallback' })).toBeVisible()
-    console.log('ok stock detail surfaces fallback quote quality signals')
+    await expect(page.getByRole('button', { name: '刷新缓存' })).toBeVisible()
+    await page.getByRole('button', { name: '采集最新新闻' }).click()
+    await expect(page.getByText('5分钟前已更新，无需重复采集')).toBeVisible()
+    console.log('ok stock detail surfaces quote quality and manual news crawl cooldown signals')
+
+    await page.goto('/about')
+    await expect(page.locator('.about-page')).toBeVisible()
+    await expect(page.locator('.about-hero')).toBeVisible()
+    await expect(page.locator('.disclaimer-card')).toBeVisible()
+    console.log('ok /about renders product and disclaimer content')
+
+    await page.goto('/settings')
+    await expect(page.locator('.settings-page')).toBeVisible()
+    await expect(page.locator('.setting-card')).toHaveCount(3)
+    await page.locator('.settings-page .el-button--success').click()
+    await expect(page.locator('.test-result.success')).toBeVisible()
+    console.log('ok /settings renders and tests mocked gateway connection')
+
+    await page.goto('/profile')
+    await expect(page.locator('.profile-page')).toBeVisible()
+    await expect(page.locator('.profile-card')).toBeVisible()
+    await expect(page.locator('.el-dialog:visible')).toHaveCount(0)
+    await page.locator('.profile-page .edit-btn').click()
+    const passwordDialog = page.locator('.el-dialog:visible')
+    await expect(passwordDialog).toBeVisible()
+    await passwordDialog.locator('input').nth(0).fill(smokePassword)
+    await passwordDialog.locator('input').nth(1).fill('NewPass123')
+    await passwordDialog.locator('input').nth(2).fill('NewPass123')
+    await passwordDialog.locator('.el-dialog__footer .el-button--primary').click()
+    await expect(passwordDialog).toBeHidden()
+    console.log('ok /profile hides password form until requested and submits mocked change')
+
+    await page.goto('/403')
+    await expect(page.locator('.forbidden-page')).toBeVisible()
+    await expect(page.locator('.status-code')).toHaveText('403')
+    console.log('ok /403 renders forbidden page')
+
+    await page.evaluate(() => {
+      localStorage.setItem('access_token', 'admin-token')
+    })
+
+    await page.goto('/admin/stats')
+    await expect(page.locator('.admin-layout')).toBeVisible()
+    await expect(page.locator('.admin-stats')).toBeVisible()
+    await expect(page.getByText('Smoke Admin Model')).toBeVisible()
+    await expect(page.getByText('regular-smoke')).toBeVisible()
+    console.log('ok /admin/stats renders mocked admin overview')
+
+    await page.goto('/admin/models')
+    await expect(page.locator('.admin-models')).toBeVisible()
+    await expect(page.locator('.model-card .model-name', { hasText: 'Smoke Admin Model' })).toBeVisible()
+    await page.locator('.model-card .model-actions .el-button').nth(2).click()
+    await expect(page.locator('.model-card .test-result.success')).toBeVisible()
+    console.log('ok /admin/models renders and tests mocked model connection')
+
+    await page.goto('/admin/users')
+    await expect(page.locator('.admin-users')).toBeVisible()
+    await expect(page.locator('.user-card .user-name', { hasText: 'admin-smoke' })).toBeVisible()
+    await expect(page.locator('.user-card .user-name', { hasText: 'regular-smoke' })).toBeVisible()
+    const adminUserRow = page.locator('.user-card').filter({ hasText: 'admin-smoke' }).first()
+    await expect(adminUserRow.locator('.user-actions .el-button').nth(2)).toBeDisabled()
+    console.log('ok /admin/users renders and protects admin account delete action')
+
+    await page.goto('/admin/logs')
+    await expect(page.locator('.admin-logs')).toBeVisible()
+    await expect(page.getByText('600000.SH')).toBeVisible()
+    await page.locator('.admin-logs .tab-button').nth(1).click()
+    await expect(page.getByText('login')).toBeVisible()
+    console.log('ok /admin/logs renders usage and activity tabs')
   } finally {
     await page.close().catch(() => {})
     await browser.close().catch(() => {})

@@ -3,6 +3,7 @@
 提供: 实时行情 / 日K线 / 股票搜索 / 资金流向 / 龙虎榜
 使用东方财富公开API (无需Token)
 """
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -30,6 +31,7 @@ class EastMoneySource(BaseDataSource):
     MONEY_FLOW_URL = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
     MONEY_FLOW_LATEST_URL = "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get"
     BATCH_QUOTE_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+    STOCK_LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
     KLINE_PERIOD_MAP = {
         "1m": "1",
         "5m": "5",
@@ -218,6 +220,81 @@ class EastMoneySource(BaseDataSource):
                     "pinyin": item.get("PinYin", ""),
                 })
         return result
+
+    async def fetch_stock_master(self, page_size: int = 200, max_pages: int = 80) -> list[dict]:
+        """Fetch SH/SZ A-share master data from EastMoney public list API."""
+        page_size = max(50, min(page_size, 500))
+        max_pages = max(1, min(max_pages, 200))
+        base_params = {
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f12",
+            "fs": "m:1+t:2,m:1+t:23,m:0+t:6,m:0+t:80",
+            "fields": "f12,f13,f14,f26,f100",
+            "pz": str(page_size),
+        }
+        import requests
+
+        def _get_page(query: dict) -> dict:
+            resp = requests.get(
+                self.STOCK_LIST_URL,
+                params=query,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://quote.eastmoney.com/",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        loop = asyncio.get_running_loop()
+        rows: list[dict] = []
+        total_pages = max_pages
+        for page in range(1, max_pages + 1):
+            params = dict(base_params)
+            params["pn"] = str(page)
+            last_error: Exception | None = None
+            payload = None
+            for attempt in range(1, 4):
+                try:
+                    payload = await loop.run_in_executor(None, lambda: _get_page(params))
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt >= 3:
+                        raise
+                    await asyncio.sleep(0.5 * attempt)
+            if payload is None:
+                raise RuntimeError(f"EastMoney stock master page {page} failed: {last_error}")
+            data = payload.get("data") or {}
+            if page == 1 and data.get("total"):
+                total_pages = min(max_pages, int((int(data["total"]) + page_size - 1) / page_size))
+            diff = data.get("diff") or []
+            if not diff:
+                break
+            for item in diff:
+                code = str(item.get("f12") or "").strip()
+                market_id = str(item.get("f13") or "")
+                if market_id == "1":
+                    market = "SH"
+                elif market_id == "0":
+                    market = "SZ"
+                else:
+                    market = "SH" if code.startswith(("6", "9")) else "SZ"
+                rows.append({
+                    "symbol": code,
+                    "name": item.get("f14") or "",
+                    "market": market,
+                    "sector": item.get("f100") or "",
+                    "list_date": item.get("f26"),
+                })
+            if page >= total_pages:
+                break
+        return rows
 
     async def fetch_money_flow(self, symbol: str, limit: int = 20) -> list[dict]:
         """获取A股资金流向数据（东方财富特色）"""

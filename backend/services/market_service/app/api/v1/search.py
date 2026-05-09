@@ -12,6 +12,18 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 sys.path.insert(0, _PROJECT_ROOT)
 
 
+def _count_query(query) -> int:
+    count = getattr(query, "count", None)
+    if callable(count):
+        return count()
+
+    rows = query.all()
+    try:
+        return len(rows)
+    except TypeError:
+        return 0
+
+
 @router.get("")
 async def search_stocks(
     q: str = Query(..., min_length=1, max_length=50, description="搜索关键词"),
@@ -40,6 +52,7 @@ async def search_stocks(
         )
         if market:
             query = query.filter(Stock.market == market)
+        total = _count_query(query)
         stocks = query.limit(limit).all()
 
         results = []
@@ -56,7 +69,7 @@ async def search_stocks(
                 "pinyin": "",
             })
 
-        response = {"results": results, "total": len(results), "query": q}
+        response = {"results": results, "total": total, "count": len(results), "query": q}
         await cache.set("search_result", cache_key, value=response)
         return response
     finally:

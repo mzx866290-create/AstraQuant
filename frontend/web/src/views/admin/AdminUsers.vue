@@ -1,62 +1,103 @@
 <template>
   <div class="admin-users">
-    <h1>用户管理</h1>
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">用户管理</h1>
+        <p class="page-subtitle">管理系统用户和配额</p>
+      </div>
+    </div>
 
-    <div v-if="loading" class="loading">加载中...</div>
+    <div v-if="loading" class="skeleton-list">
+      <div v-for="i in 6" :key="i" class="skeleton-user">
+        <div class="skeleton-avatar"></div>
+        <div class="skeleton-body">
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line short"></div>
+        </div>
+      </div>
+    </div>
 
-    <table v-else class="users-table">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>用户名</th>
-          <th>邮箱</th>
-          <th>角色</th>
-          <th>状态</th>
-          <th>今日用量</th>
-          <th>本月用量</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="user in users" :key="user.id">
-          <td>{{ user.id }}</td>
-          <td>{{ user.username }}</td>
-          <td>{{ user.email }}</td>
-          <td>
-            <span :class="'role-' + user.role">{{ user.role }}</span>
-          </td>
-          <td>
-            <span :class="user.is_active ? 'status-active' : 'status-inactive'">
-              {{ user.is_active ? '正常' : '禁用' }}
+    <div v-else-if="users.length" class="users-list">
+      <div
+        v-for="user in users"
+        :key="user.id"
+        class="user-card"
+        :class="{ inactive: !user.is_active }"
+      >
+        <div class="user-header">
+          <div class="user-avatar">
+            <span class="avatar-text">{{ user.username?.charAt(0)?.toUpperCase() }}</span>
+          </div>
+          <div class="user-info">
+            <div class="user-name-row">
+              <h3 class="user-name">{{ user.username }}</h3>
+              <el-tag
+                size="small"
+                :type="user.is_active ? 'success' : 'info'"
+                effect="light"
+                class="status-tag"
+              >
+                {{ user.is_active ? '正常' : '禁用' }}
+              </el-tag>
+            </div>
+            <span class="user-email">{{ user.email || '-' }}</span>
+          </div>
+          <div class="user-role">
+            <span class="role-badge" :class="user.role">{{ roleLabel(user.role) }}</span>
+          </div>
+        </div>
+
+        <div class="user-metrics">
+          <div class="metric">
+            <span class="metric-label">今日用量</span>
+            <span class="metric-value" :class="quotaClass(user.daily_used, user.daily_limit)">
+              {{ user.daily_used }} / {{ user.daily_limit }}
             </span>
-          </td>
-          <td>{{ user.daily_used }} / {{ user.daily_limit }}</td>
-          <td>{{ user.monthly_used }} / {{ user.monthly_limit }}</td>
-          <td>
-            <button @click="editQuota(user)" class="btn-small">配额</button>
-            <button @click="resetQuota(user)" class="btn-small">重置</button>
-            <button
-              @click="deleteUser(user)"
-              class="btn-small btn-danger"
-              :disabled="!canDeleteUser(user)"
-              :title="deleteDisabledReason(user)"
-            >
-              删除
-            </button>
-          </td>
-        </tr>
-        <tr v-if="!users.length">
-          <td colspan="8" class="no-data">暂无用户</td>
-        </tr>
-      </tbody>
-    </table>
+          </div>
+          <div class="metric">
+            <span class="metric-label">本月用量</span>
+            <span class="metric-value" :class="quotaClass(user.monthly_used, user.monthly_limit)">
+              {{ user.monthly_used }} / {{ user.monthly_limit }}
+            </span>
+          </div>
+        </div>
+
+        <div class="user-actions" @click.stop>
+          <el-button type="primary" link @click="editQuota(user)">
+            <el-icon><Edit /></el-icon>
+            <span>配额</span>
+          </el-button>
+          <el-button type="warning" link @click="resetQuota(user)">
+            <el-icon><Refresh /></el-icon>
+            <span>重置</span>
+          </el-button>
+          <el-button
+            type="danger"
+            link
+            :disabled="!canDeleteUser(user)"
+            :title="deleteDisabledReason(user)"
+            @click="deleteUser(user)"
+          >
+            <el-icon><Delete /></el-icon>
+            <span>删除</span>
+          </el-button>
+        </div>
+      </div>
+    </div>
+
+    <div v-else class="empty-state">
+      <el-icon :size="64" class="empty-icon"><User /></el-icon>
+      <h3>暂无用户</h3>
+      <p>还没有用户注册</p>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { adminApi } from '@/api'
+import { Edit, Refresh, Delete, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { adminApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 
 interface AdminUser {
@@ -82,6 +123,32 @@ interface ApiErrorLike {
 const loading = ref(true)
 const users = ref<AdminUser[]>([])
 const userStore = useUserStore()
+
+function roleLabel(role: string) {
+  const labels: Record<string, string> = {
+    admin: '管理员',
+    premium: '付费会员',
+    free: '免费用户',
+  }
+  return labels[role] || role
+}
+
+function quotaClass(used: number, limit: number) {
+  const ratio = used / limit
+  if (ratio >= 0.9) return 'danger'
+  if (ratio >= 0.7) return 'warning'
+  return ''
+}
+
+function canDeleteUser(user: AdminUser) {
+  return user.id !== userStore.userInfo?.id && user.role !== 'admin'
+}
+
+function deleteDisabledReason(user: AdminUser) {
+  if (user.id === userStore.userInfo?.id) return '不能删除当前登录账号'
+  if (user.role === 'admin') return '不能删除管理员账号'
+  return '删除用户'
+}
 
 async function loadUsers() {
   try {
@@ -119,7 +186,11 @@ async function editQuota(user: AdminUser) {
 
 async function resetQuota(user: AdminUser) {
   try {
-    await ElMessageBox.confirm(`确定重置用户 "${user.username}" 的配额吗?`, '确认重置', { type: 'warning' })
+    await ElMessageBox.confirm(
+      `确定重置用户 "${user.username}" 的配额吗?`,
+      '确认重置',
+      { type: 'warning' }
+    )
     await adminApi.resetUserQuota(user.id)
     ElMessage.success('配额已重置')
     loadUsers()
@@ -128,23 +199,17 @@ async function resetQuota(user: AdminUser) {
   }
 }
 
-function canDeleteUser(user: AdminUser) {
-  return user.id !== userStore.userInfo?.id && user.role !== 'admin'
-}
-
-function deleteDisabledReason(user: AdminUser) {
-  if (user.id === userStore.userInfo?.id) return '不能删除当前登录账号'
-  if (user.role === 'admin') return '不能删除管理员账号'
-  return '删除用户'
-}
-
 async function deleteUser(user: AdminUser) {
   if (!canDeleteUser(user)) {
     ElMessage.warning(deleteDisabledReason(user))
     return
   }
   try {
-    await ElMessageBox.confirm(`确定要删除用户 "${user.username}" 吗？此操作不可撤销！`, '确认删除', { type: 'warning' })
+    await ElMessageBox.confirm(
+      `确定要删除用户 "${user.username}" 吗？此操作不可撤销！`,
+      '确认删除',
+      { type: 'warning' }
+    )
     await adminApi.deleteUser(user.id)
     ElMessage.success(`用户 "${user.username}" 已删除`)
     loadUsers()
@@ -159,68 +224,303 @@ onMounted(loadUsers)
 </script>
 
 <style scoped>
-h1 { margin-bottom: 20px; }
-
-.loading, .no-data {
-  text-align: center;
-  padding: 40px;
-  color: #999;
+.admin-users {
+  max-width: 1200px;
 }
 
-.users-table {
-  width: 100%;
-  background: #fff;
-  border-radius: 8px;
-  border-collapse: collapse;
+.page-header {
+  margin-bottom: var(--space-6);
+}
+
+.page-title {
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--color-text);
+  margin: 0 0 var(--space-1);
+  letter-spacing: -0.02em;
+}
+
+.page-subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 14px;
+}
+
+/* Skeleton */
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.skeleton-user {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.skeleton-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.skeleton-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.skeleton-line {
+  width: 60%;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+}
+
+.skeleton-line.short {
+  width: 30%;
+}
+
+@keyframes skeleton-loading {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* User cards */
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.user-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  transition: all var(--transition-base);
+  position: relative;
   overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 
-.users-table th,
-.users-table td {
-  padding: 12px 15px;
-  text-align: left;
-  border-bottom: 1px solid #eee;
+.user-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%);
+  opacity: 0;
+  transition: opacity var(--transition-base);
 }
 
-.users-table th {
-  background: #f9f9f9;
+.user-card:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-1px);
+}
+
+.user-card:hover::before {
+  opacity: 1;
+}
+
+.user-card.inactive {
+  opacity: 0.7;
+  background: var(--color-surface-muted);
+}
+
+.user-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.user-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.avatar-text {
+  color: #fff;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.user-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.user-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 2px;
+}
+
+.user-name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--color-text);
+  letter-spacing: -0.01em;
+}
+
+.status-tag {
+  font-weight: 700;
+}
+
+.user-email {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.user-role {
+  flex-shrink: 0;
+}
+
+.role-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.role-badge.admin {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.role-badge.premium {
+  background: rgba(217, 119, 6, 0.1);
+  color: #d97706;
+  border: 1px solid rgba(217, 119, 6, 0.2);
+}
+
+.role-badge.free {
+  background: rgba(16, 163, 127, 0.1);
+  color: #10a37f;
+  border: 1px solid rgba(16, 163, 127, 0.2);
+}
+
+/* Metrics */
+.user-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-3);
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metric-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.metric-value {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--color-text);
+  font-family: var(--font-number);
+}
+
+.metric-value.danger {
+  color: var(--color-up);
+}
+
+.metric-value.warning {
+  color: var(--color-warning);
+}
+
+/* Actions */
+.user-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.user-actions .el-button {
+  padding: 6px 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
-.role-free { background: #10a37f; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-.role-premium { background: #d97706; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-.role-admin { background: #dc2626; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-
-.status-active { color: #10a37f; }
-.status-inactive { color: #dc2626; }
-
-.btn-small {
-  padding: 4px 8px;
-  margin-right: 5px;
-  border: 1px solid #ddd;
-  background: #fff;
-  border-radius: 4px;
-  cursor: pointer;
+/* Empty state */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-16) 0;
+  text-align: center;
+  color: var(--color-text-muted);
 }
 
-.btn-danger {
-  border-color: #dc2626;
-  color: #dc2626;
+.empty-state h3 {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text);
 }
 
-.btn-danger:hover {
-  background: #dc2626;
-  color: #fff;
+.empty-state p {
+  margin: 0;
+  font-size: 14px;
 }
 
-.btn-small:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.empty-icon {
+  color: var(--color-border-strong);
 }
 
-.btn-danger:disabled:hover {
-  background: #fff;
-  color: #dc2626;
+/* Responsive */
+@media (max-width: 768px) {
+  .user-header {
+    flex-wrap: wrap;
+  }
+
+  .user-role {
+    width: 100%;
+    margin-top: var(--space-2);
+  }
+
+  .user-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .user-actions {
+    flex-wrap: wrap;
+  }
 }
 </style>

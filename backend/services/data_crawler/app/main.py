@@ -49,6 +49,7 @@ from backend.services.data_crawler.pipeline.financial_etl import (  # noqa: E402
     FinancialReportETL,
 )
 from backend.services.data_crawler.pipeline.news_etl import NewsETL  # noqa: E402
+from backend.services.data_crawler.pipeline.stock_master import StockMasterETL  # noqa: E402
 from backend.services.data_crawler.sources import (  # noqa: E402
     AKShareSource,
     DataSourceChain,
@@ -354,6 +355,10 @@ def scheduler_enabled() -> bool:
     return os.getenv("DATA_CRAWLER_ENABLE_SCHEDULER", "true").strip().lower() not in {"0", "false", "no"}
 
 
+def scheduled_news_enabled() -> bool:
+    return os.getenv("DATA_CRAWLER_ENABLE_SCHEDULED_NEWS", "false").strip().lower() in {"1", "true", "yes"}
+
+
 class DataCrawler:
     """Multi-source A-share data crawler."""
 
@@ -372,6 +377,7 @@ class DataCrawler:
         self.announcement_etl = AnnouncementETL()
         self.financial_etl = FinancialReportETL()
         self.news_etl = NewsETL()
+        self.stock_master_etl = StockMasterETL()
         self._init_sources()
 
     def _init_sources(self):
@@ -392,6 +398,15 @@ class DataCrawler:
         except Exception as exc:
             logger.warning("database initialization skipped: %s", exc)
 
+        self.scheduler.add_job(
+            self.collect_stock_master,
+            "cron",
+            day_of_week="0-4",
+            hour=8,
+            minute=30,
+            id="collect_stock_master",
+            replace_existing=True,
+        )
         self.scheduler.add_job(
             self.collect_daily_kline_for_all,
             "cron",
@@ -446,24 +461,27 @@ class DataCrawler:
             id="collect_dragon_tiger",
             replace_existing=True,
         )
-        self.scheduler.add_job(
-            self.collect_stock_news,
-            "cron",
-            day_of_week="0-4",
-            hour="9-14",
-            minute="*/5",
-            id="collect_stock_news",
-            replace_existing=True,
-        )
-        self.scheduler.add_job(
-            self.collect_stock_news_close,
-            "cron",
-            day_of_week="0-4",
-            hour=15,
-            minute=30,
-            id="collect_stock_news_close",
-            replace_existing=True,
-        )
+        if scheduled_news_enabled():
+            self.scheduler.add_job(
+                self.collect_stock_news,
+                "cron",
+                day_of_week="0-4",
+                hour="9-14",
+                minute="*/5",
+                id="collect_stock_news",
+                replace_existing=True,
+            )
+            self.scheduler.add_job(
+                self.collect_stock_news_close,
+                "cron",
+                day_of_week="0-4",
+                hour=15,
+                minute=30,
+                id="collect_stock_news_close",
+                replace_existing=True,
+            )
+        else:
+            logger.info("scheduled stock news collection disabled; manual crawl endpoint remains available")
         self.scheduler.add_job(
             self.collect_announcements,
             "cron",
@@ -493,6 +511,39 @@ class DataCrawler:
         observe_scheduler_state(self.runtime, self.scheduler.running)
         logger.info("scheduled data crawler jobs registered")
         atexit.register(self.shutdown)
+
+    async def collect_stock_master(self, deactivate_missing: bool = False):
+        logger.info("[%s] collecting stock master data", datetime.now())
+        started_at = now_utc()
+        try:
+            result = await self.source_chain.fetch_with_fallback("fetch_stock_master", _timeout_seconds=90.0)
+            rows = result.get("data") or []
+            source = result.get("source", "unknown")
+            from backend.shared.database import SessionLocal, init_db
+
+            init_db()
+            db = SessionLocal()
+            try:
+                saved = self.stock_master_etl.save(db, rows, deactivate_missing=deactivate_missing)
+            finally:
+                db.close()
+            status = "success" if saved.fetched > 0 else "empty"
+            self._record_status(
+                "GLOBAL",
+                "stock_master",
+                status,
+                started_at,
+                source=source,
+                fetched=saved.fetched,
+                saved=saved.saved,
+            )
+            payload = {"task": "stock_master", "source": source, "status": status, **saved.as_dict()}
+            logger.info("stock master sync finished: %s", payload)
+            return payload
+        except Exception as exc:
+            self._record_status("GLOBAL", "stock_master", "error", started_at, error_message=str(exc))
+            logger.error("stock master sync failed: %s", exc)
+            return {"task": "stock_master", "status": "error", "error": str(exc)}
 
     async def collect_daily_kline_for_all(self):
         logger.info("[%s] collecting daily K-line data", datetime.now())

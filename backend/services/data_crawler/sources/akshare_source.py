@@ -222,7 +222,6 @@ class AKShareSource(BaseDataSource):
 
     async def search_stocks(self, query: str) -> list[dict]:
         """搜索A股股票"""
-        import pandas as pd
         ak = self._get_ak()
 
         loop = self._get_event_loop()
@@ -247,6 +246,27 @@ class AKShareSource(BaseDataSource):
                 "market": "SH" if code.startswith(("6", "9")) else "SZ",
             })
         return result
+
+    async def fetch_stock_master(self, **_kwargs) -> list[dict]:
+        """获取A股股票主数据，作为东方财富分页接口失败时的备用源。"""
+        ak = self._get_ak()
+        loop = self._get_event_loop()
+        df = await loop.run_in_executor(None, lambda: ak.stock_info_a_code_name())
+        if df is None or df.empty:
+            return []
+
+        code_col = "code" if "code" in df.columns else "代码"
+        name_col = "name" if "name" in df.columns else "名称"
+        rows = []
+        for _, row in df.iterrows():
+            code = str(row.get(code_col) or "").zfill(6)[:6]
+            rows.append({
+                "symbol": code,
+                "name": row.get(name_col) or "",
+                "market": self._get_market(code),
+                "sector": "",
+            })
+        return rows
 
     async def fetch_sector_list(self) -> list[dict]:
         """获取行业板块列表 (AKShare特色)"""

@@ -2,10 +2,12 @@
 按股票即时采集接口 — 用于详情页空状态一键补数据
 """
 import logging
+import os
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.shared.auth import get_current_user, require_admin
+from backend.shared.auth import get_current_user, require_active_user, require_admin
 from backend.shared.models import User
 from backend.services.data_crawler.pipeline.crawl_status import (
     crawl_status_for_counts,
@@ -19,6 +21,67 @@ router = APIRouter(tags=["数据采集"])
 
 
 logger = logging.getLogger(__name__)
+RECENT_NEWS_CRAWL_STATUSES = {"success", "partial", "no_saved", "empty"}
+
+
+def _news_crawl_cooldown_seconds() -> int:
+    raw = os.getenv("NEWS_CRAWL_COOLDOWN_SECONDS", "300").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 300
+
+
+def _as_utc_datetime(value) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _format_recent_age(seconds: int) -> str:
+    if seconds < 60:
+        return "刚刚"
+    if seconds < 3600:
+        return f"{max(1, seconds // 60)}分钟前"
+    return f"{max(1, seconds // 3600)}小时前"
+
+
+def _latest_crawl_status(db, symbol: str, data_type: str):
+    from backend.shared.models import CrawlStatus
+
+    return db.query(CrawlStatus).filter(
+        CrawlStatus.stock_symbol == symbol,
+        CrawlStatus.data_type == data_type,
+    ).first()
+
+
+def _fresh_crawl_payload(row, *, now: datetime, cooldown_seconds: int) -> dict | None:
+    if cooldown_seconds <= 0 or row is None:
+        return None
+    if getattr(row, "status", None) not in RECENT_NEWS_CRAWL_STATUSES:
+        return None
+
+    finished_at = _as_utc_datetime(getattr(row, "finished_at", None))
+    if finished_at is None:
+        return None
+
+    age_seconds = max(0, int((now - finished_at).total_seconds()))
+    if age_seconds >= cooldown_seconds:
+        return None
+
+    next_allowed_at = finished_at + timedelta(seconds=cooldown_seconds)
+    payload = crawl_status_payload(row)
+    message = f"{_format_recent_age(age_seconds)}已更新，无需重复采集"
+    return {
+        **payload,
+        "status": "fresh",
+        "message": message,
+        "age_seconds": age_seconds,
+        "cooldown_seconds": cooldown_seconds,
+        "next_allowed_at": next_allowed_at.isoformat(),
+    }
 
 
 def _save_crawl_status(db, symbol: str, data_type: str, status: str, started_at, **kwargs):
@@ -88,7 +151,8 @@ async def get_crawl_status(
 @router.post("/{symbol}/news")
 async def crawl_stock_news(
     symbol: str,
-    current_user: User = Depends(require_admin()),
+    force: bool = False,
+    current_user: User = Depends(require_active_user()),
 ):
     """即时采集单只股票新闻"""
     from backend.shared.database import SessionLocal
@@ -97,10 +161,35 @@ async def crawl_stock_news(
 
     code = normalize_symbol(symbol)
     started_at = now_utc()
-    chain = create_news_chain()
-    etl = NewsETL()
     db = SessionLocal()
+    chain = None
     try:
+        if force and getattr(current_user, "role", "") != "admin":
+            raise HTTPException(status_code=403, detail="只有管理员可以强制绕过新闻采集冷却时间")
+
+        if not force:
+            fresh_payload = _fresh_crawl_payload(
+                _latest_crawl_status(db, code, "news"),
+                now=started_at,
+                cooldown_seconds=_news_crawl_cooldown_seconds(),
+            )
+            if fresh_payload is not None:
+                return {
+                    "symbol": code,
+                    "data_type": "news",
+                    "status": "fresh",
+                    "skipped": True,
+                    "from_cache": True,
+                    "message": fresh_payload["message"],
+                    "fetched": fresh_payload.get("fetched", 0),
+                    "saved": fresh_payload.get("saved", 0),
+                    "updated_at": fresh_payload["finished_at"],
+                    "next_allowed_at": fresh_payload["next_allowed_at"],
+                    "crawl_status": fresh_payload,
+                }
+
+        chain = create_news_chain()
+        etl = NewsETL()
         news = await chain.fetch_stock_news(code, limit=30)
         saved = await etl.save(db, code, news)
         status = crawl_status_for_counts(len(news), saved)
@@ -116,17 +205,22 @@ async def crawl_stock_news(
             "symbol": code,
             "data_type": "news",
             "status": status,
+            "skipped": False,
+            "message": "已采集最新新闻",
             "fetched": len(news),
             "saved": saved,
             "updated_at": status_payload["finished_at"],
             "crawl_status": status_payload,
         }
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         db.rollback()
         _save_crawl_status(db, code, "news", "error", started_at, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"新闻采集失败: {e}")
     finally:
-        await chain.close()
+        if chain is not None:
+            await chain.close()
         db.close()
 
 

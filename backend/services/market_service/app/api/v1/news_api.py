@@ -3,7 +3,7 @@
 """
 from fastapi import APIRouter, Query, HTTPException
 from datetime import datetime
-from typing import Optional
+from typing import Annotated, Optional
 
 router = APIRouter(tags=["新闻"])
 
@@ -27,7 +27,7 @@ async def get_stock_news(
     limit: int = Query(20, ge=5, le=100),
     sentiment: Optional[str] = Query(None, description="筛选情感: 正面/中性/负面"),
     min_impact: Optional[str] = Query(None, description="最低影响力: 高/中/低"),
-    live_fallback: bool = Query(True, description="本地无数据时尝试即时采集"),
+    live_fallback: Annotated[bool, Query(description="本地无数据时尝试即时采集")] = False,
 ):
     """
     获取个股实时新闻流，含情感标签和影响力评分

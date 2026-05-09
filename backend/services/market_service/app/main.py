@@ -10,6 +10,7 @@ import time
 import logging
 import sys
 import os
+from dotenv import load_dotenv
 
 _SERVICE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
@@ -24,6 +25,10 @@ from backend.shared.observability import (
     readiness_response,
     redis_check,
 )
+
+dotenv_path = os.path.join(_PROJECT_ROOT, ".env")
+if not is_production() and os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path, override=True)
 
 # 本地运行：检测并启用 SQLite 模式
 if not is_production():

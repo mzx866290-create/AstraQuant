@@ -2,7 +2,7 @@ COMPOSE ?= docker compose
 PYTHON ?= python
 NPM ?= npm
 
-.PHONY: help dev stack up down logs build dev-market dev-user dev-analysis dev-frontend dev-all test test-cov lint smoke verify secret-hygiene clean-runtime clean-runtime-apply clean
+.PHONY: help dev sync-stock-master stack up down logs build dev-market dev-user dev-analysis dev-frontend dev-all test test-cov lint smoke verify secret-hygiene clean-runtime clean-runtime-apply clean
 
 help:
 	@echo "股票数据分析平台 - 开发命令"
@@ -39,6 +39,9 @@ help:
 
 dev:
 	$(PYTHON) scripts/start_local.py
+
+sync-stock-master:
+	$(PYTHON) scripts/sync_stock_master.py
 
 stack: up
 

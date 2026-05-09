@@ -12,6 +12,61 @@ logger = logging.getLogger(__name__)
 _FALLBACK_CANDIDATE_WARNING = (
     "recommendation candidate pool is empty; using static development fallback candidates"
 )
+_SMALL_CANDIDATE_POOL_WARNING = (
+    "database candidate pool is small; supplemented with static development fallback candidates"
+)
+_PRODUCTION_SMALL_CANDIDATE_POOL_WARNING = (
+    "database candidate pool is small; production recommendations use database candidates only"
+)
+
+
+def _candidate_code(row: dict) -> str:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    base = symbol.split(".", 1)[0]
+    digits = "".join(ch for ch in base if ch.isdigit())
+    return digits[:6]
+
+
+def _supplement_development_candidates(
+    db_candidates: list[dict],
+    fallback_candidates: list[dict],
+    candidate_limit: int,
+) -> tuple[list[dict], str, list[str], set[str]]:
+    if not db_candidates:
+        candidates = [dict(row) for row in fallback_candidates[:candidate_limit]]
+        fallback_codes = {_candidate_code(row) for row in candidates if _candidate_code(row)}
+        return candidates, "fallback", [_FALLBACK_CANDIDATE_WARNING], fallback_codes
+
+    if len(db_candidates) >= candidate_limit:
+        return db_candidates, "db", [], set()
+
+    merged = [dict(row) for row in db_candidates]
+    seen_codes = {_candidate_code(row) for row in merged if _candidate_code(row)}
+    fallback_codes: set[str] = set()
+
+    for row in fallback_candidates:
+        code = _candidate_code(row)
+        if not code or code in seen_codes:
+            continue
+        merged.append(dict(row))
+        seen_codes.add(code)
+        fallback_codes.add(code)
+        if len(merged) >= candidate_limit:
+            break
+
+    if not fallback_codes:
+        return db_candidates, "db", [], set()
+
+    return merged, "mixed", [_SMALL_CANDIDATE_POOL_WARNING], fallback_codes
+
+
+def _mark_fallback_recommendations(scored: list[dict], fallback_codes: set[str]) -> list[dict]:
+    if not fallback_codes:
+        return scored
+    return [
+        _mark_fallback_recommendation(item) if _candidate_code(item) in fallback_codes else item
+        for item in scored
+    ]
 
 
 def _empty_recommendations_result(
@@ -169,6 +224,28 @@ def _fallback_recommendation_candidates(market: str) -> list[dict]:
         {"symbol": "002271.SZ", "name": "东方雨虹", "market": "SZ", "sector": "建筑材料"},
         {"symbol": "002415.SZ", "name": "海康威视", "market": "SZ", "sector": "计算机"},
         {"symbol": "000002.SZ", "name": "万科A", "market": "SZ", "sector": "房地产"},
+        {"symbol": "600019.SH", "name": "宝钢股份", "market": "SH", "sector": "钢铁"},
+        {"symbol": "600031.SH", "name": "三一重工", "market": "SH", "sector": "机械设备"},
+        {"symbol": "600048.SH", "name": "保利发展", "market": "SH", "sector": "房地产"},
+        {"symbol": "600089.SH", "name": "特变电工", "market": "SH", "sector": "电力设备"},
+        {"symbol": "600406.SH", "name": "国电南瑞", "market": "SH", "sector": "电力设备"},
+        {"symbol": "600585.SH", "name": "海螺水泥", "market": "SH", "sector": "建筑材料"},
+        {"symbol": "600703.SH", "name": "三安光电", "market": "SH", "sector": "电子"},
+        {"symbol": "601186.SH", "name": "中国铁建", "market": "SH", "sector": "建筑装饰"},
+        {"symbol": "601390.SH", "name": "中国中铁", "market": "SH", "sector": "建筑装饰"},
+        {"symbol": "601899.SH", "name": "紫金矿业", "market": "SH", "sector": "有色金属"},
+        {"symbol": "000001.SZ", "name": "平安银行", "market": "SZ", "sector": "银行"},
+        {"symbol": "000100.SZ", "name": "TCL科技", "market": "SZ", "sector": "电子"},
+        {"symbol": "000157.SZ", "name": "中联重科", "market": "SZ", "sector": "机械设备"},
+        {"symbol": "000338.SZ", "name": "潍柴动力", "market": "SZ", "sector": "汽车"},
+        {"symbol": "000425.SZ", "name": "徐工机械", "market": "SZ", "sector": "机械设备"},
+        {"symbol": "000625.SZ", "name": "长安汽车", "market": "SZ", "sector": "汽车"},
+        {"symbol": "000725.SZ", "name": "京东方A", "market": "SZ", "sector": "电子"},
+        {"symbol": "002027.SZ", "name": "分众传媒", "market": "SZ", "sector": "传媒"},
+        {"symbol": "002120.SZ", "name": "韵达股份", "market": "SZ", "sector": "交通运输"},
+        {"symbol": "002241.SZ", "name": "歌尔股份", "market": "SZ", "sector": "电子"},
+        {"symbol": "002475.SZ", "name": "立讯精密", "market": "SZ", "sector": "电子"},
+        {"symbol": "002555.SZ", "name": "三七互娱", "market": "SZ", "sector": "传媒"},
     ]
     return [row for row in rows if market == "ALL" or row["market"] == market]
 

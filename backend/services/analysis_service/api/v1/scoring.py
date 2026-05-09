@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query, HTTPException, Request
 
 from backend.shared.rate_limit import client_ip, enforce_rate_limit
 from backend.services.analysis_service.engine.recommendation_engine import (
-    _FALLBACK_CANDIDATE_WARNING,
+    _PRODUCTION_SMALL_CANDIDATE_POOL_WARNING,
     _build_score_breakdown,
     _daily_rating,
     _empty_recommendations_result,
@@ -18,7 +18,9 @@ from backend.services.analysis_service.engine.recommendation_engine import (
     _fallback_recommendation_candidates,
     _load_recommendation_candidates,
     _mark_fallback_recommendation,
+    _mark_fallback_recommendations,
     _score_daily_candidate,
+    _supplement_development_candidates,
     _valid_mv,
     is_valid_score_number,
 )
@@ -178,7 +180,7 @@ async def get_recommendations(
 
     candidate_limit = min(max(max_candidates, limit * 4), 120)
     env_name = app_env().lower()
-    cache_key = f"v2:{date.today().isoformat()}:{env_name}:{market}:{limit}:{strategy}:{candidate_limit}:{concurrency}"
+    cache_key = f"v3:{date.today().isoformat()}:{env_name}:{market}:{limit}:{strategy}:{candidate_limit}:{concurrency}"
     cache = await get_cache_manager()
     cached = None if force_refresh else await cache.get("daily_recommendations", cache_key)
     if cached:
@@ -187,6 +189,7 @@ async def get_recommendations(
 
     candidates = _load_recommendation_candidates(market, candidate_limit)
     candidate_source = "db"
+    fallback_codes: set[str] = set()
     warnings: list[str] = []
     if not candidates:
         if is_production():
@@ -200,16 +203,30 @@ async def get_recommendations(
             await cache.set("daily_recommendations", cache_key, value=result)
             return result
 
-        candidate_source = "fallback"
-        warnings.append(_FALLBACK_CANDIDATE_WARNING)
-        candidates = _fallback_recommendation_candidates(market)
+        candidates, candidate_source, warnings, fallback_codes = _supplement_development_candidates(
+            candidates,
+            _fallback_recommendation_candidates(market),
+            candidate_limit,
+        )
+    elif is_production() and len(candidates) < limit:
+        warnings.append(_PRODUCTION_SMALL_CANDIDATE_POOL_WARNING)
+    elif not is_production() and len(candidates) < candidate_limit:
+        candidates, candidate_source, warnings, fallback_codes = _supplement_development_candidates(
+            candidates,
+            _fallback_recommendation_candidates(market),
+            candidate_limit,
+        )
 
     scored = await _evaluate_candidates_parallel(candidates, strategy, concurrency=concurrency)
     if candidate_source == "fallback":
         scored = [_mark_fallback_recommendation(item) for item in scored]
+    elif candidate_source == "mixed":
+        scored = _mark_fallback_recommendations(scored, fallback_codes)
     scored.sort(key=lambda x: (x["score"], x["data_grade"].get("grade") == "A", -len(x.get("risk_flags", []))), reverse=True)
 
     recommendations = scored[:limit]
+    if is_production() and len(recommendations) < limit and _PRODUCTION_SMALL_CANDIDATE_POOL_WARNING not in warnings:
+        warnings.append(_PRODUCTION_SMALL_CANDIDATE_POOL_WARNING)
     result = {
         "recommendations": recommendations,
         "market": market,

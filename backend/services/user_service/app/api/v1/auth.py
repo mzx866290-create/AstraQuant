@@ -10,7 +10,7 @@ from backend.shared.database import get_db
 from backend.shared.audit import audit_log
 from backend.shared.models import User, UserQuota
 from backend.shared.security import hash_password, verify_password, create_access_token, decode_access_token
-from backend.shared.schemas import UserCreate, UserLogin, UserResponse, TokenResponse
+from backend.shared.schemas import UserCreate, UserLogin, UserPasswordChange, UserResponse, TokenResponse
 from backend.shared.exceptions import raise_unauthorized, raise_bad_request
 from backend.shared.auth import get_current_user
 from backend.shared.rate_limit import client_ip, enforce_rate_limit, user_identity
@@ -129,3 +129,41 @@ async def get_me(request: Request, current_user: User = Depends(get_current_user
         fail_closed=False,
     )
     return current_user
+
+
+@router.put("/me/password")
+async def change_password(
+    data: UserPasswordChange,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """修改当前用户密码"""
+    await enforce_rate_limit(
+        scope="auth:password:user",
+        identity=user_identity(current_user),
+        limit=5,
+        window_seconds=300,
+        fail_closed=True,
+    )
+
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user or not user.is_active:
+        raise_unauthorized()
+
+    if not verify_password(data.current_password, user.password_hash):
+        audit_log(db, action="auth.password_change_failed", actor=user, request=request, target=f"user:{user.username}")
+        db.commit()
+        raise_bad_request("当前密码不正确")
+
+    pwd_error = _validate_password(data.new_password)
+    if pwd_error:
+        raise_bad_request(pwd_error)
+
+    if verify_password(data.new_password, user.password_hash):
+        raise_bad_request("新密码不能和当前密码相同")
+
+    user.password_hash = hash_password(data.new_password)
+    audit_log(db, action="auth.password_changed", actor=user, request=request, target=f"user:{user.username}")
+    db.commit()
+    return {"message": "密码已修改"}

@@ -13,6 +13,7 @@ export interface ScoreBreakdownItem {
 export interface RecommendationItem {
   symbol: string
   name?: string
+  market?: string
   sector?: string
   candidate_source?: string
   source?: string
@@ -89,12 +90,13 @@ export function dataGradeTag(grade?: string): TagProps['type'] {
 
 export function candidateSourceLabel(source?: string) {
   if (source === 'fallback') return '开发兜底'
+  if (source === 'mixed') return '数据库+开发兜底'
   if (source === 'db') return '数据库候选'
   return source || '未知来源'
 }
 
 export function isFallbackCandidate(row: Pick<RecommendationItem, 'candidate_source' | 'source'>, metaSource?: string) {
-  return row.candidate_source === 'fallback' || row.source === 'fallback' || metaSource === 'fallback'
+  return row.candidate_source === 'fallback' || row.source === 'fallback' || (metaSource === 'fallback' && !row.candidate_source && !row.source)
 }
 
 export function recommendationTrustState(meta: RecommendationsResponse | null | undefined): RecommendationTrustState {
@@ -128,6 +130,16 @@ export function recommendationTrustState(meta: RecommendationsResponse | null | 
     }
   }
 
+  if (meta.candidate_source === 'mixed') {
+    return {
+      level: 'warning',
+      label: '混合候选',
+      message: '数据库候选池偏小，系统已用开发兜底候选补足；真实数据库候选与兜底候选已在单行标明。',
+      reasons: meta.warnings || [],
+      actionable: true,
+    }
+  }
+
   const warnings = meta.warnings || []
   if (warnings.length > 0 || Number(meta.scored_count || 0) <= 0) {
     return {
@@ -152,9 +164,12 @@ export function recommendationActionBlockedReason(
   row: Pick<RecommendationItem, 'candidate_source' | 'source'>,
   meta: RecommendationsResponse | null | undefined,
 ) {
-  const trust = recommendationTrustState(meta)
-  if (!trust.actionable) return trust.message
-  if (isFallbackCandidate(row, meta?.candidate_source)) return '开发兜底候选不可加入自选'
+  if (meta?.status === 'unavailable') {
+    return '候选池不可用，暂无法添加'
+  }
+  if (isFallbackCandidate(row, meta?.candidate_source)) {
+    return '开发兜底候选仅用于界面调试，不能直接加入自选'
+  }
   return ''
 }
 
@@ -162,6 +177,7 @@ export function recommendationEmptyReason(meta: RecommendationsResponse | null |
   if (!meta) return '请先确认分析服务已启动，或点击刷新重新计算。'
   if (meta.status === 'unavailable') return '数据库候选池为空，系统没有生成真实候选结果。'
   if (meta.candidate_source === 'fallback') return '当前只有开发兜底候选池，仅用于调试展示。'
+  if (meta.candidate_source === 'mixed') return '数据库候选池偏小，已用开发兜底候选补足，但当前没有通过评分的结果。'
   return (meta.warnings || [])[0] || '请先确认分析服务已启动，或点击刷新重新计算。'
 }
 

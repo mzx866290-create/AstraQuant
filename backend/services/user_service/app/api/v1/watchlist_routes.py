@@ -1,10 +1,12 @@
 """
 自选股 API - 多分组管理
 """
-from fastapi import APIRouter, Depends, HTTPException, Body
-from sqlalchemy.orm import Session
+import re
 from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Body
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from backend.shared.database import get_db
 from backend.shared.models import Watchlist, WatchlistItem, Stock, User
@@ -20,11 +22,73 @@ router = APIRouter(prefix="/watchlists", tags=["自选股"])
 class AddItemRequest(BaseModel):
     stock_id: Optional[int] = None
     symbol: Optional[str] = None
+    name: Optional[str] = None
+    market: Optional[str] = None
+    sector: Optional[str] = None
 
 
 def _api_symbol(stock: Stock) -> str:
     code = stock.symbol[:6]
     return f"{code}.{stock.market}"
+
+
+def _normalize_stock_code(symbol: str | None) -> str:
+    """Extract a 6-digit A-share code from 600519, 600519.SH, or SH600519."""
+    match = re.search(r"\d{6}", (symbol or "").strip().upper())
+    return match.group(0) if match else ""
+
+
+def _infer_market(code: str) -> str:
+    if code.startswith(("6", "9", "5")):
+        return "SH"
+    if code.startswith(("0", "1", "2", "3")):
+        return "SZ"
+    if code.startswith(("4", "8")):
+        return "BJ"
+    return ""
+
+
+def _clean_optional_text(value: str | None, max_length: int) -> str | None:
+    text = (value or "").strip()
+    return text[:max_length] if text else None
+
+
+def _find_stock_by_code(db: Session, code: str) -> Optional[Stock]:
+    return db.query(Stock).filter(Stock.symbol.like(f"{code}%")).first()
+
+
+def _ensure_stock_for_symbol(db: Session, body: AddItemRequest) -> Stock:
+    symbol = body.symbol
+    code = _normalize_stock_code(symbol)
+    if not code:
+        raise_bad_request("请输入有效的6位股票代码")
+
+    stock = _find_stock_by_code(db, code)
+    if stock:
+        fallback_name = _clean_optional_text(body.name, 100)
+        fallback_sector = _clean_optional_text(body.sector, 100)
+        if fallback_name and stock.name == stock.symbol[:6]:
+            stock.name = fallback_name
+        if fallback_sector and not stock.sector:
+            stock.sector = fallback_sector
+        return stock
+
+    market = (body.market or "").strip().upper()
+    if market not in {"SH", "SZ", "BJ"}:
+        market = _infer_market(code)
+    if not market:
+        raise_bad_request("暂只支持A股6位股票代码")
+
+    stock = Stock(
+        symbol=code,
+        name=_clean_optional_text(body.name, 100) or code,
+        market=market,
+        sector=_clean_optional_text(body.sector, 100),
+        is_active=True,
+    )
+    db.add(stock)
+    db.flush()
+    return stock
 
 
 @router.get("")
@@ -118,8 +182,7 @@ async def add_to_watchlist(
     if body.stock_id:
         stock = db.query(Stock).filter(Stock.id == body.stock_id).first()
     elif body.symbol:
-        code = body.symbol[:6] if len(body.symbol) >= 6 else body.symbol
-        stock = db.query(Stock).filter(Stock.symbol.like(f"{code}%")).first()
+        stock = _ensure_stock_for_symbol(db, body)
 
     if not stock:
         raise_not_found("股票，请检查代码是否正确，或联系管理员导入数据")

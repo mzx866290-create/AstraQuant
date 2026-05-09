@@ -224,9 +224,7 @@ const marketOptions = [
 ]
 
 const candidateSourceText = computed(() => {
-  if (meta.value?.candidate_source === 'fallback') return '开发兜底'
-  if (meta.value?.candidate_source === 'db') return '数据库'
-  return '未知'
+  return candidateSourceLabel(meta.value?.candidate_source)
 })
 
 const recommendationWarning = computed(() => {
@@ -235,6 +233,9 @@ const recommendationWarning = computed(() => {
   const warnings = meta.value.warnings || []
   if (meta.value.candidate_source === 'fallback') {
     return '当前观察池使用开发兜底候选池，仅用于调试展示，不代表真实市场筛选结果。'
+  }
+  if (meta.value.candidate_source === 'mixed') {
+    return '数据库候选池偏小，已用开发兜底候选补足；每只标的会单独标明来源。'
   }
   return warnings[0] || ''
 })

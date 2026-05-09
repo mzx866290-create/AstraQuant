@@ -22,7 +22,11 @@
       </el-header>
       <el-main class="app-main">
         <div class="main-shell">
-          <router-view />
+          <router-view v-slot="{ Component }">
+            <transition name="page-fade" mode="out-in">
+              <component :is="Component" />
+            </transition>
+          </router-view>
         </div>
       </el-main>
       <el-footer class="app-footer">
@@ -91,6 +95,11 @@ function logout() {
   color: var(--color-text);
   text-decoration: none;
   white-space: nowrap;
+  transition: transform var(--transition-fast);
+}
+
+.brand:hover {
+  transform: scale(1.02);
 }
 
 .brand-mark {
@@ -104,6 +113,13 @@ function logout() {
   color: #fff;
   font-weight: 800;
   letter-spacing: -0.05em;
+  transition: all var(--transition-fast);
+  box-shadow: 0 2px 8px rgba(29, 78, 216, 0.2);
+}
+
+.brand:hover .brand-mark {
+  box-shadow: 0 4px 16px rgba(29, 78, 216, 0.3);
+  transform: rotate(-3deg);
 }
 
 .brand-text {
@@ -138,15 +154,41 @@ function logout() {
   font: inherit;
 }
 
-.nav-link:hover,
+.nav-link:hover {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
 .nav-link.router-link-active {
   background: var(--color-primary-soft);
   color: var(--color-primary);
+  font-weight: 700;
+}
+
+.nav-link.router-link-active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 3px;
+  background: var(--color-primary);
+  border-radius: 999px;
+}
+
+.nav-link:active {
+  transform: scale(0.95);
 }
 
 .admin-link {
   color: #7c3aed;
   background: #f5f3ff;
+}
+
+.admin-link:hover {
+  background: #ede9fe;
+  color: #6d28d9;
 }
 
 .app-main {
@@ -171,6 +213,22 @@ function logout() {
 .app-footer p {
   margin: 0;
   font-size: 12px;
+}
+
+/* Page transition */
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.page-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
 }
 
 @media (max-width: 960px) {

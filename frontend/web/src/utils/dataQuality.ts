@@ -13,6 +13,9 @@ export interface CrawlStatus {
   status?: string
   finished_at?: string
   error_message?: string
+  message?: string
+  next_allowed_at?: string
+  cooldown_seconds?: number
   saved?: number
   saved_count?: number
 }
@@ -73,6 +76,7 @@ const crawlStatusText: Record<string, string> = {
   no_saved: '采集完成，但没有新增或更新数据',
   partial: '采集部分成功，仍有部分数据缺失',
   empty: '采集完成，但数据源返回为空',
+  fresh: '近期已更新，无需重复采集',
   not_implemented: '当前采集能力尚未实现',
   empty_symbol_pool: '候选股票池为空，无法开始采集',
   error: '采集失败',
@@ -85,11 +89,13 @@ export function crawlStatusLevel(status: CrawlStatus | string | null | undefined
   if (statusText === 'error' || statusText === 'unavailable') return 'error'
   if (statusText === 'no_saved' || statusText === 'partial' || statusText === 'empty' || statusText === 'empty_symbol_pool') return 'warning'
   if (statusText === 'not_implemented') return 'info'
+  if (statusText === 'fresh') return 'info'
   return 'info'
 }
 
 export function crawlStatusReason(status: CrawlStatus | null | undefined) {
   if (!status?.status) return ''
+  if (status.status === 'fresh' && status.message) return status.message
   if (status.status === 'error') return status.error_message || crawlStatusText.error
   return crawlStatusText[status.status] || `采集状态：${status.status}`
 }

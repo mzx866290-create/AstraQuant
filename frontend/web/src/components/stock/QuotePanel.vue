@@ -102,8 +102,59 @@ const quoteQuality = computed(() => props.quote?.data_quality || null)
 
 .quote-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(112px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: var(--space-3);
+}
+
+/* Primary metric spans 2 columns on desktop */
+.quote-item.primary {
+  grid-column: span 2;
+  grid-row: span 2;
+  background: linear-gradient(135deg, #fff7f7 0%, #f8fbff 100%);
+  border-color: var(--color-border);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.quote-item.primary .quote-label {
+  font-size: 14px;
+  margin-bottom: var(--space-3);
+}
+
+.quote-item.primary .quote-value {
+  font-size: 36px;
+}
+
+@media (max-width: 1180px) {
+  .quote-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+
+  .quote-item.primary {
+    grid-column: span 2;
+    grid-row: span 1;
+  }
+
+  .quote-item.primary .quote-value {
+    font-size: 28px;
+  }
+}
+
+@media (max-width: 720px) {
+  .quote-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .quote-item.primary {
+    grid-column: span 2;
+    grid-row: span 1;
+  }
+
+  .quote-item.limit {
+    grid-column: span 2;
+  }
 }
 
 .quote-item {

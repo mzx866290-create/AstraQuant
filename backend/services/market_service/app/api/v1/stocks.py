@@ -137,8 +137,9 @@ def _fetch_public_stock_info(code: str) -> dict:
 
 @router.get("")
 async def get_stocks(
-    market: Optional[str] = Query(None, description="市场筛选: SH/SZ"),
+    market: Optional[str] = Query(None, description="市场筛选: SH/SZ/BJ"),
     limit: int = Query(50, ge=1, le=500, description="返回条数"),
+    offset: int = Query(0, ge=0, description="分页偏移量"),
 ):
     """获取A股股票列表"""
     try:
@@ -149,8 +150,9 @@ async def get_stocks(
         try:
             query = db.query(Stock).filter(Stock.is_active == True)
             if market:
-                query = query.filter(Stock.market == market)
-            stocks = query.limit(limit * 2).all()
+                query = query.filter(Stock.market == market.upper())
+            total = query.count()
+            stocks = query.order_by(Stock.symbol.asc()).offset(offset).limit(limit * 2).all()
             seen_codes = set()
             items = []
             for s in stocks:
@@ -169,7 +171,10 @@ async def get_stocks(
                     break
             return {
                 "stocks": items,
-                "total": len(items),
+                "total": total,
+                "count": len(items),
+                "limit": limit,
+                "offset": offset,
             }
         finally:
             db.close()

@@ -83,7 +83,10 @@ class RecommendationCandidateSourceTests(unittest.TestCase):
 
         cache = MemoryCache()
         env = {"APP_ENV": "development"}
-        db_rows = [{"symbol": "000001.SZ", "name": "Unit Test Bank", "market": "SZ"}]
+        db_rows = [
+            {"symbol": f"000{i:03d}.SZ", "name": f"Unit Test {i}", "market": "SZ"}
+            for i in range(1, 21)
+        ]
         with patch.dict("os.environ", env, clear=False), patch(
             "backend.shared.cache.get_cache_manager", AsyncMock(return_value=cache)
         ), patch.object(scoring, "_load_recommendation_candidates", return_value=db_rows), patch.object(
@@ -96,6 +99,68 @@ class RecommendationCandidateSourceTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["candidate_source"], "db")
         self.assertEqual(result["warnings"], [])
+        self.assertNotIn("candidate_source", result["recommendations"][0])
+        fallback.assert_not_called()
+
+    def test_development_small_db_candidate_pool_uses_mixed_source(self) -> None:
+        from backend.services.analysis_service.api.v1 import scoring
+
+        cache = MemoryCache()
+        env = {"APP_ENV": "development"}
+        db_rows = [{"symbol": "000001.SZ", "name": "Unit Test Bank", "market": "SZ"}]
+        fallback_rows = [
+            {"symbol": "000001.SZ", "name": "Duplicate Bank", "market": "SZ"},
+            {"symbol": "000002.SZ", "name": "Fallback A", "market": "SZ"},
+            {"symbol": "600001.SH", "name": "Fallback B", "market": "SH"},
+        ]
+        captured_symbols: list[str] = []
+
+        async def fake_evaluate(candidates, strategy, concurrency=16):
+            captured_symbols.extend(row["symbol"] for row in candidates)
+            return [
+                _scored_candidate("000001.SZ"),
+                _scored_candidate("000002.SZ"),
+                _scored_candidate("600001.SH"),
+            ]
+
+        with patch.dict("os.environ", env, clear=False), patch(
+            "backend.shared.cache.get_cache_manager", AsyncMock(return_value=cache)
+        ), patch.object(scoring, "_load_recommendation_candidates", return_value=db_rows), patch.object(
+            scoring, "_fallback_recommendation_candidates", return_value=fallback_rows
+        ), patch.object(
+            scoring, "_evaluate_candidates_parallel", fake_evaluate
+        ):
+            result = asyncio.run(scoring.get_recommendations(market="ALL", limit=5, max_candidates=20, force_refresh=True, strategy="retail_small", concurrency=16))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["candidate_source"], "mixed")
+        self.assertTrue(result["warnings"])
+        self.assertEqual(captured_symbols, ["000001.SZ", "000002.SZ", "600001.SH"])
+
+        by_symbol = {item["symbol"]: item for item in result["recommendations"]}
+        self.assertNotIn("candidate_source", by_symbol["000001.SZ"])
+        self.assertEqual(by_symbol["000002.SZ"]["candidate_source"], "fallback")
+        self.assertEqual(by_symbol["600001.SH"]["source"], "fallback")
+
+    def test_production_small_db_candidate_pool_never_uses_fallback(self) -> None:
+        from backend.services.analysis_service.api.v1 import scoring
+
+        cache = MemoryCache()
+        env = {"APP_ENV": "production"}
+        db_rows = [{"symbol": "000001.SZ", "name": "Unit Test Bank", "market": "SZ"}]
+        with patch.dict("os.environ", env, clear=False), patch(
+            "backend.shared.cache.get_cache_manager", AsyncMock(return_value=cache)
+        ), patch.object(scoring, "_load_recommendation_candidates", return_value=db_rows), patch.object(
+            scoring, "_fallback_recommendation_candidates"
+        ) as fallback, patch.object(
+            scoring, "_evaluate_candidates_parallel", AsyncMock(return_value=[_scored_candidate()])
+        ):
+            result = asyncio.run(scoring.get_recommendations(market="ALL", limit=5, max_candidates=20, force_refresh=True, strategy="retail_small", concurrency=16))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["candidate_source"], "db")
+        self.assertEqual(result["count"], 1)
+        self.assertTrue(result["warnings"])
         self.assertNotIn("candidate_source", result["recommendations"][0])
         fallback.assert_not_called()
 

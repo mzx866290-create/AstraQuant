@@ -7,6 +7,8 @@ import { useUserStore } from '@/stores/user'
 type WatchlistStockRow = {
   symbol: string
   name?: string
+  market?: string
+  sector?: string
 }
 
 type WatchlistGroup = {
@@ -46,7 +48,12 @@ export function useWatchlistActions() {
         const created = await watchlistApi.createWatchlist<WatchlistResponse>('默认自选')
         watchlistId = created.id || created.data?.id
       }
-      await watchlistApi.addToWatchlist(watchlistId, undefined, row.symbol)
+      await watchlistApi.addToWatchlist(watchlistId, {
+        symbol: row.symbol,
+        name: row.name,
+        market: row.market,
+        sector: row.sector,
+      })
       ElMessage.success(`${row.name || row.symbol} 已加入自选股`)
     } catch (error) {
       const detail = (error as { response?: { data?: { detail?: string | ApiValidationError[] } } })?.response?.data?.detail

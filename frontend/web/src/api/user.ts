@@ -12,4 +12,10 @@ export const userApi = {
 
   updateProfile: <T = unknown>(data: unknown) =>
     api.put<T>('/api/v1/auth/me', data),
+
+  changePassword: <T = { message: string }>(currentPassword: string, newPassword: string) =>
+    api.put<T>('/api/v1/auth/me/password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
 }

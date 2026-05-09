@@ -76,17 +76,28 @@ class RuntimeConfigQualityTests(unittest.TestCase):
 
     def test_fastapi_docs_kwargs_disable_docs_only_in_production(self) -> None:
         with patch.dict("os.environ", {"APP_ENV": "production"}, clear=True):
-            self.assertEqual(config.fastapi_docs_kwargs(), {"docs_url": None, "redoc_url": None, "openapi_url": None})
+            self.assertEqual(
+                config.fastapi_docs_kwargs(),
+                {
+                    "default_response_class": config.UTF8JSONResponse,
+                    "docs_url": None,
+                    "redoc_url": None,
+                    "openapi_url": None,
+                },
+            )
 
         with patch.dict("os.environ", {"APP_ENV": "development"}, clear=True):
             self.assertEqual(
                 config.fastapi_docs_kwargs(),
                 {
+                    "default_response_class": config.UTF8JSONResponse,
                     "docs_url": "/api/v1/docs",
                     "redoc_url": "/api/v1/redoc",
                     "openapi_url": "/api/v1/openapi.json",
                 },
             )
+
+        self.assertEqual(config.UTF8JSONResponse.media_type, "application/json; charset=utf-8")
 
 
 if __name__ == "__main__":

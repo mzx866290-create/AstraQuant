@@ -5,6 +5,8 @@ import base64
 import os
 from typing import Iterable
 
+from fastapi.responses import JSONResponse
+
 
 DEFAULT_JWT_SECRET = "your-super-secret-jwt-key-change-in-production"
 DEV_JWT_SECRET = "dev-only-insecure-jwt-secret-change-me"
@@ -22,6 +24,10 @@ PLACEHOLDER_VALUES = {
     DEFAULT_JWT_SECRET,
     DEV_JWT_SECRET,
 }
+
+
+class UTF8JSONResponse(JSONResponse):
+    media_type = "application/json; charset=utf-8"
 
 
 def app_env() -> str:
@@ -82,9 +88,11 @@ def validate_production_settings(service_name: str, *, require_ai_encryption: bo
 
 
 def fastapi_docs_kwargs() -> dict:
+    kwargs = {"default_response_class": UTF8JSONResponse}
     if is_production():
-        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+        return {**kwargs, "docs_url": None, "redoc_url": None, "openapi_url": None}
     return {
+        **kwargs,
         "docs_url": "/api/v1/docs",
         "redoc_url": "/api/v1/redoc",
         "openapi_url": "/api/v1/openapi.json",

@@ -255,4 +255,11 @@
 ### 仍未完成
 - 代码侧已完成 PG/CH integration、Alert Webhook Drill、CI/部署演练记录模板、渲染脚本、CI artifact 自动留痕、告警记录预填与校验、ops drill readiness preflight、标准归档包准备脚本、双 artifact 归档目录校验，以及带 `manifest.json`/`.sealed`/zip/sha256 的归档封存包生成；剩余 1 项不属于本地代码可直接完成：需要在真实 GitHub Actions/部署环境执行一次完整演练，发布窗口前先运行 `scripts/ops/verify_ops_drill_readiness.py --env-file .env.production`，再用 `scripts/ops/prepare_ops_drill_archive.py` 生成归档包、补全 `completed/` 下两份记录，最后用 `scripts/ops/finalize_ops_drill_archive.py <archive-dir>` 封存并归档正式演练证据。
 
+## 九、本轮数据闭环修复（2026-05-08）
+
+- 已补股票主数据同步闭环：新增 `scripts/sync_stock_master.py`，通过数据源降级链拉取沪深 A 股主数据并按 6 位代码 upsert；新增 `StockMasterETL`，默认不删除用户、自选股、预警或旧股票记录，只有显式 `--deactivate-missing` 才会停用源端缺失股票。
+- 已将股票主数据同步接入 data-crawler 调度任务 `collect_stock_master`，工作日 08:30 自动刷新主数据；EastMoney 分页接口短断时会降级到 AKShare。
+- 已完成本地 SQLite 主数据恢复：当前 `stocks` 表活跃股票数为 5247；每日观察接口验证为 `candidate_source=db`、`count=10`、`candidate_count=50`、`scored_count=40`，不再依赖开发兜底候选。
+- 已加固生产态候选策略：生产环境候选池为空时返回 `unavailable`，候选不足时只使用数据库真实候选并返回明确 warning，绝不自动混入开发兜底数据。
+
 > 以上结论基于目录结构与少量关键文件抽样，落地前建议针对每一项再做一次代码级核对。
