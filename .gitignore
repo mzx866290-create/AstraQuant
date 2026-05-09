@@ -56,3 +56,8 @@ htmlcov/
 # 临时文件
 temp/
 tmp/
+
+# Local planning notes (kept off GitHub)
+PLAN.md
+PLAN_AI_MODEL.md
+PROJECT_ISSUES.md
