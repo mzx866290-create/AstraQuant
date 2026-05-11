@@ -64,7 +64,7 @@ make clean-runtime-apply
 
 ### 交付与密钥卫生门禁
 
-本地交付验证统一走 `python scripts/verify_delivery.py` 或 `make verify`，会先运行 ops drill readiness preflight，再运行密钥卫生门禁，随后执行后端编译/单测/coverage 和前端 lint/type-check/API 兼容/数据质量契约/build/smoke。
+本地交付验证统一走 `python scripts/verify_delivery.py` 或 `make verify`，会先运行 ops drill readiness preflight，再运行密钥卫生门禁，随后执行后端编译/单测/coverage、研究复盘 smoke/readiness/runner 检查，以及前端 lint/type-check/API 兼容/数据质量契约/build/smoke。
 
 密钥卫生门禁也可以单独运行，用于提交前或发布前快速检查误提交的 token、默认密码和生产密钥痕迹：
 
@@ -110,6 +110,16 @@ GET http://localhost:8003/api/v1/analysis/public-health
 
 管理员完整健康检查接口为 `GET /api/v1/analysis/system-health`，需要管理员登录态；未登录直接访问会返回 401。
 
+本地管理员账号通过私有 `.env` 引导创建，仓库不会提交可用默认密码：
+
+```bash
+BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_EMAIL=admin@example.local
+BOOTSTRAP_ADMIN_PASSWORD=<set-a-local-password>
+```
+
+账号默认用户名为 `admin`，密码以你本机 `.env` 中的 `BOOTSTRAP_ADMIN_PASSWORD` 为准。若本地 SQLite 已经初始化过，需要先重建数据库或手动更新用户密码后再重新引导。
+
 ### 每日观察池说明
 
 首页的“今日观察”不是买入推荐，也不是模型直接喊单。它是基于公开行情/K线、估值、财务、新闻情绪、行业/社会事件和数据质量的规则筛选池，偏向单手成本友好、市值不过分庞大、风险灯较少的沪深 A 股候选标的。
@@ -121,14 +131,39 @@ GET http://localhost:8003/api/v1/analysis/public-health
 - `risk_flags`：需要先看的风险点。
 - `score_breakdown`：结构化加分/扣分明细。
 - `data_grade`：数据完整度等级。
+- `evidence_chain`：结构化证据链，可解释每项判断来自什么数据。
+- `bull_case` / `bear_case` / `falsification`：多空论点与证伪条件。
 
 接口：
 
 ```http
-GET /api/v1/analysis/score/batch/recommend?market=ALL&limit=10&strategy=retail_small
+GET /api/v1/analysis/score/batch/recommend?market=ALL&limit=10&strategy=auto&include_evidence=true&include_debate=true
 ```
 
 重要提醒：观察池只用于发现值得继续研究的线索，不构成证券买卖建议。
+
+### 研究快照与复盘表
+
+当前项目已为每日研究观察池预留两张业务表：
+
+- `research_observations`
+- `observation_reviews`
+
+本地 SQLite 环境会在服务启动时通过 `Base.metadata.create_all(...)` 自动补齐缺失表；PostgreSQL 环境应通过：
+
+```bash
+alembic upgrade head
+```
+
+或容器首次初始化时的 `infra/postgres/init.sql` 建表逻辑完成落地。
+
+生产复盘闭环验收见 [`docs/ops/research-review-runbook.md`](docs/ops/research-review-runbook.md)。常用检查命令：
+
+```bash
+python backend/scripts/review_readiness_check.py --date 2026-05-11 --strict
+python backend/scripts/review_tracker_run.py --date 2026-05-11 --offsets T+1 --include-readiness
+python backend/scripts/review_tracker_run.py --date 2026-05-11 --report-only --require-reviewed --require-no-pending
+```
 
 ### 价格预警
 

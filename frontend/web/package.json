@@ -10,6 +10,7 @@
     "smoke:frontend": "node ../../scripts/frontend_smoke.mjs",
     "test:api-compat": "node scripts/api-compat.mjs",
     "test:data-quality": "node scripts/data-quality.mjs",
+    "test:recommendations-contract": "node scripts/recommendations-contract.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "type-check": "vue-tsc --noEmit"

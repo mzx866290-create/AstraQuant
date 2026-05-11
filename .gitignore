@@ -13,6 +13,7 @@ venv/
 .vscode/
 .idea/
 .claude/
+.codex/
 .continue/
 .mcp.json
 .claude/worktrees/

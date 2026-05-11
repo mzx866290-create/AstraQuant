@@ -239,3 +239,105 @@ class StockNews(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (UniqueConstraint("stock_symbol", "title", "publish_time", name="uix_stock_news"),)
+
+
+class ResearchObservation(Base):
+    """每日研究观察快照表"""
+    __tablename__ = "research_observations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_date = Column(DateTime, nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    strategy_id = Column(String(50), nullable=False, index=True)
+    regime = Column(String(30), nullable=False, index=True)
+    score = Column(Float, nullable=False)
+    score_breakdown_json = Column(JSON, nullable=True)
+    evidence_chain_json = Column(JSON, nullable=True)
+    debate_json = Column(JSON, nullable=True)
+    veto_result_json = Column(JSON, nullable=True)
+    close_price = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    __table_args__ = (UniqueConstraint("snapshot_date", "symbol", "strategy_id", name="uix_research_observation"),)
+
+
+class ObservationReview(Base):
+    """研究观察复盘记录表"""
+    __tablename__ = "observation_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    observation_id = Column(Integer, ForeignKey("research_observations.id", ondelete="CASCADE"), nullable=False, index=True)
+    review_offset = Column(String(10), nullable=False, index=True)
+    review_date = Column(DateTime, nullable=False, index=True)
+    close_price = Column(Float, nullable=True)
+    return_pct = Column(Float, nullable=True)
+    max_drawdown_pct = Column(Float, nullable=True)
+    falsification_triggered = Column(Boolean, default=False)
+    risk_signal_valid = Column(Boolean, default=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    __table_args__ = (UniqueConstraint("observation_id", "review_offset", name="uix_observation_review"),)
+
+
+class WeightSuggestionAudit(Base):
+    """Admin weight suggestion audit trail."""
+    __tablename__ = "weight_suggestion_audits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    snapshot_from = Column(DateTime, nullable=True)
+    snapshot_to = Column(DateTime, nullable=True)
+    min_reviews = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False)
+    suggestions_json = Column(JSON, nullable=True)
+    summary_json = Column(JSON, nullable=True)
+    accepted = Column(Boolean, nullable=True)
+    accepted_by = Column(Integer, nullable=True)
+    accepted_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class StrategyWeightPatchProposal(Base):
+    """Pending strategy weight patch generated from an accepted audit."""
+    __tablename__ = "strategy_weight_patch_proposals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    audit_id = Column(Integer, ForeignKey("weight_suggestion_audits.id", ondelete="CASCADE"), nullable=False, index=True)
+    strategy_id = Column(String(50), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    step = Column(Float, nullable=False)
+    max_delta = Column(Float, nullable=False)
+    before_json = Column(JSON, nullable=True)
+    after_json = Column(JSON, nullable=True)
+    delta_json = Column(JSON, nullable=True)
+    items_json = Column(JSON, nullable=True)
+    preview_json = Column(JSON, nullable=True)
+    created_by = Column(Integer, nullable=True)
+    decided_by = Column(Integer, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    applied_by = Column(Integer, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+    applied_error = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+
+class StrategyWeightVersion(Base):
+    """Applied strategy weight config version for rollback."""
+    __tablename__ = "strategy_weight_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    strategy_id = Column(String(50), nullable=False, index=True)
+    proposal_id = Column(Integer, ForeignKey("strategy_weight_patch_proposals.id", ondelete="SET NULL"), nullable=True, index=True)
+    version = Column(Integer, nullable=False, index=True)
+    before_json = Column(JSON, nullable=True)
+    after_json = Column(JSON, nullable=True)
+    applied_by = Column(Integer, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+    rolled_back_by = Column(Integer, nullable=True)
+    rolled_back_at = Column(DateTime, nullable=True)
+    rollback_error = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)

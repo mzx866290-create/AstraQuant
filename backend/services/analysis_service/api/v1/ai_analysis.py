@@ -40,6 +40,7 @@ from backend.services.analysis_service.engine.ai_analysis_fallbacks import (
 from backend.services.analysis_service.engine.ai_analysis_support import (
     attach_trust_boundary_section as _attach_trust_boundary_section,
 )
+from backend.services.analysis_service.engine.review_scheduler import review_scheduler
 
 router = APIRouter(prefix="/ai", tags=["AI分析"])
 
@@ -64,6 +65,13 @@ async def get_model_health(
     db: Session = Depends(get_db),
 ):
     return await ai_analysis_service.get_model_health(refresh, analysis_grade, current_user, db)
+
+
+@router.get("/review-scheduler")
+async def get_review_scheduler_status(
+    current_user: User = Depends(get_current_user),
+):
+    return review_scheduler.status()
 
 
 @router.get("/quota", response_model=UserQuotaResponse)

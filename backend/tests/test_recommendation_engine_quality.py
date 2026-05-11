@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import unittest
+from datetime import date
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -168,10 +169,29 @@ class RecommendationEngineQualityTests(unittest.TestCase):
         with _install_candidate_db_modules(session):
             candidates = engine._load_recommendation_candidates("ALL", sample_size=5)
 
-        self.assertEqual([item["symbol"] for item in candidates], ["600100.SH", "000001.SZ", "000002.SZ"])
-        self.assertEqual(candidates[2]["name"], "000002")
+        self.assertCountEqual([item["symbol"] for item in candidates], ["600100.SH", "000001.SZ", "000002.SZ"])
+        self.assertEqual({item["symbol"]: item["name"] for item in candidates}["000002.SZ"], "000002")
         self.assertEqual(session.queried_markets, ["SH", "SZ"])
         self.assertTrue(session.closed)
+
+    def test_load_candidates_rotates_through_full_database_universe_by_day(self) -> None:
+        session = _FakeSession(
+            {
+                "SH": [_stock_row(f"600{i:03d}", f"Alpha {i}", "SH", f"sector-{i % 5}") for i in range(30)],
+                "SZ": [],
+            }
+        )
+
+        with _install_candidate_db_modules(session):
+            day_one = engine._load_recommendation_candidates("SH", sample_size=6, rotation_date=date(2026, 5, 9))
+            day_two = engine._load_recommendation_candidates("SH", sample_size=6, rotation_date=date(2026, 5, 10))
+
+        self.assertEqual(len(day_one), 6)
+        self.assertEqual(len(day_two), 6)
+        self.assertEqual(day_one[0]["_candidate_universe_count"], 30)
+        self.assertEqual(day_one[0]["_candidate_rotation_date"], "2026-05-09")
+        self.assertEqual(day_one[0]["_candidate_selection"], "daily_rotating_db_sample")
+        self.assertNotEqual({item["symbol"] for item in day_one}, {item["symbol"] for item in day_two})
 
     def test_fallback_candidate_pool_honors_market_filter(self) -> None:
         all_candidates = engine._fallback_recommendation_candidates("ALL")

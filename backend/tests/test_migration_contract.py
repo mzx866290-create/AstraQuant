@@ -36,8 +36,60 @@ class MigrationContractTests(unittest.TestCase):
         self.assertRegex(baseline, r"def upgrade\(\) -> None:\n    pass")
         self.assertRegex(baseline, r"def downgrade\(\) -> None:\n    pass")
 
-        for table in ("stocks", "users", "watchlists", "ai_models", "crawl_status"):
+        for table in ("stocks", "users", "watchlists", "ai_models", "crawl_status", "research_observations", "observation_reviews"):
             self.assertIn(f"- {table}", baseline)
+
+    def test_research_observation_revision_exists_and_targets_baseline(self) -> None:
+        revision = (self.ROOT / "backend/migrations/versions/20260510_0002_research_observations.py").read_text(encoding="utf-8")
+
+        self.assertIn('revision = "20260510_0002"', revision)
+        self.assertIn('down_revision = "20260507_0001"', revision)
+        self.assertIn('op.create_table(\n        "research_observations"', revision)
+        self.assertIn('op.create_table(\n        "observation_reviews"', revision)
+
+    def test_weight_suggestion_audit_revision_exists_and_targets_research_revision(self) -> None:
+        revision = (self.ROOT / "backend/migrations/versions/20260510_0003_weight_suggestion_audits.py").read_text(encoding="utf-8")
+
+        self.assertIn('revision = "20260510_0003"', revision)
+        self.assertIn('down_revision = "20260510_0002"', revision)
+        self.assertIn('op.create_table(\n        "weight_suggestion_audits"', revision)
+        self.assertIn('"suggestions_json"', revision)
+        self.assertIn('"summary_json"', revision)
+
+    def test_strategy_weight_patch_proposal_revision_exists_and_targets_audit_revision(self) -> None:
+        revision = (self.ROOT / "backend/migrations/versions/20260510_0004_strategy_weight_patch_proposals.py").read_text(encoding="utf-8")
+
+        self.assertIn('revision = "20260510_0004"', revision)
+        self.assertIn('down_revision = "20260510_0003"', revision)
+        self.assertIn('op.create_table(\n        "strategy_weight_patch_proposals"', revision)
+        self.assertIn('"preview_json"', revision)
+
+    def test_strategy_weight_patch_apply_revision_exists_and_targets_proposal_revision(self) -> None:
+        revision = (self.ROOT / "backend/migrations/versions/20260510_0005_strategy_weight_patch_apply.py").read_text(encoding="utf-8")
+
+        self.assertIn('revision = "20260510_0005"', revision)
+        self.assertIn('down_revision = "20260510_0004"', revision)
+        self.assertIn('"applied_at"', revision)
+        self.assertIn('"applied_error"', revision)
+
+    def test_strategy_weight_versions_revision_exists_and_targets_apply_revision(self) -> None:
+        revision = (self.ROOT / "backend/migrations/versions/20260510_0006_strategy_weight_versions.py").read_text(encoding="utf-8")
+
+        self.assertIn('revision = "20260510_0006"', revision)
+        self.assertIn('down_revision = "20260510_0005"', revision)
+        self.assertIn('op.create_table(\n        "strategy_weight_versions"', revision)
+        self.assertIn('"rollback_error"', revision)
+
+    def test_postgres_init_sql_bootstraps_research_tables(self) -> None:
+        init_sql = (self.ROOT / "infra/postgres/init.sql").read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS research_observations", init_sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS observation_reviews", init_sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS weight_suggestion_audits", init_sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS strategy_weight_patch_proposals", init_sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS strategy_weight_versions", init_sql)
+        self.assertIn("applied_error TEXT", init_sql)
+        self.assertIn("rollback_error  TEXT", init_sql)
 
     def test_service_requirements_include_alembic(self) -> None:
         requirement_files = (

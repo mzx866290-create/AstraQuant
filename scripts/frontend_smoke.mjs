@@ -85,6 +85,10 @@ function mockJson(route, data, status = 200) {
   })
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function installApiMocks(page) {
   let nextAlertId = 12
   const alertRows = [{
@@ -160,6 +164,83 @@ async function installApiMocks(page) {
     ip_address: '127.0.0.1',
     user_agent: 'frontend-smoke',
   }]
+  const reviewScheduler = {
+    enabled: true,
+    running: false,
+    interval_seconds: 600,
+    last_run_at: '2026-05-07T09:45:00Z',
+    last_error: null,
+    last_result: {
+      status: 'ok',
+      processed: 1,
+      created: 1,
+    },
+  }
+  const reviewReadiness = {
+    status: 'no_pending_reviews',
+    review_date: '2026-05-07',
+    offsets: ['T+1', 'T+5', 'T+20'],
+    tables: {
+      research_observations: true,
+      observation_reviews: true,
+    },
+    summary: {
+      observations: 1,
+      reviews: 1,
+      pending_reviews: 0,
+      strategies_with_reviews: 1,
+    },
+    latest_snapshot_date: '2026-05-06',
+    latest_review_date: '2026-05-07',
+    pending_reviews: [],
+    review_report_summary: {},
+  }
+  const reviewReport = {
+    status: 'ok',
+    summary: {
+      reviews: 1,
+      strategies: 1,
+      avg_return_pct: 1.2,
+    },
+    by_strategy: [{
+      strategy_id: 'retail_small',
+      reviews: 1,
+      positive_reviews: 1,
+      avg_return_pct: 1.2,
+      falsification_triggered: 0,
+      risk_signal_valid: 1,
+      win_rate: 1,
+    }],
+  }
+  const reviewFactorReport = {
+    status: 'ok',
+    summary: {
+      factors: 1,
+      reviews: 1,
+    },
+    by_factor: [{
+      factor: 'valuation',
+      label: 'Valuation',
+      reviews: 1,
+      positive_reviews: 1,
+      win_rate: 1,
+      avg_return_pct: 1.2,
+      avg_impact: 0.4,
+      positive_impact_reviews: 1,
+      negative_impact_reviews: 0,
+      falsification_triggered: 0,
+      risk_signal_valid: 1,
+    }],
+  }
+  const weightSuggestions = {
+    status: 'ok',
+    summary: {
+      suggestions: 0,
+      eligible_factors: 0,
+      min_reviews: 3,
+    },
+    suggestions: [],
+  }
 
   const quoteQuality = {
     source: 'mock-fallback',
@@ -177,6 +258,21 @@ async function installApiMocks(page) {
     scored_count: 1,
     cache_hit: false,
     updated_at: '2026-05-07T09:40:00Z',
+    market_regime: {
+      regime: 'range_bound',
+      confidence: 'medium',
+      signals: [
+        { indicator: 'hs300_trend', value: 'neutral', detail: '沪深300围绕MA20震荡' },
+      ],
+      suggested_strategies: ['retail_small', 'value_quality'],
+    },
+    active_strategy: {
+      id: 'retail_small',
+      name: '小而美观察',
+      selection_mode: 'auto',
+      selection_reason: 'market_regime:range_bound',
+      engine_strategy: 'retail_small',
+    },
     recommendations: [{
       symbol: '600000.SH',
       name: 'Smoke SH Bank',
@@ -200,6 +296,11 @@ async function installApiMocks(page) {
         label: '开发兜底',
         analysis_scope: '仅用于烟测',
         warnings: ['smoke fallback candidate'],
+      },
+      veto_result: {
+        passed: true,
+        level: 'soft',
+        warnings: [{ type: 'fallback', severity: 'soft', detail: '烟测软警告' }],
       },
     }],
   }
@@ -307,6 +408,41 @@ async function installApiMocks(page) {
           { username: 'regular-smoke', count: 5 },
         ],
       })
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-scheduler' && method === 'GET') {
+      await mockJson(route, reviewScheduler)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-readiness' && method === 'GET') {
+      await mockJson(route, reviewReadiness)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-report' && method === 'GET') {
+      await mockJson(route, reviewReport)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-factor-report' && method === 'GET') {
+      await mockJson(route, reviewFactorReport)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-weight-suggestions' && method === 'GET') {
+      await mockJson(route, weightSuggestions)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-weight-suggestion-audits' && method === 'GET') {
+      await mockJson(route, [])
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/strategy-weight-patch-proposals' && method === 'GET') {
+      await mockJson(route, [])
       return
     }
 
@@ -438,6 +574,7 @@ async function installApiMocks(page) {
   })
 
   await page.route('**/api/v1/analysis/score/batch/recommend**', async (route) => {
+    await delay(500)
     await mockJson(route, recommendationPayload)
   })
 
@@ -711,6 +848,17 @@ async function runSmoke() {
     await expect(page.locator('.submit-btn')).toBeVisible()
     console.log('ok /login renders in browser')
 
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'AstraQuant' })).toBeVisible()
+    await expect(page.getByText('AI 驱动的 A 股观察平台')).toBeVisible()
+    await expect(page.getByText('每日观察池、自选同步与预警管理需要登录后使用。')).toBeVisible()
+    await expect(page.getByRole('button', { name: '登录查看观察池' }).first()).toBeVisible()
+    console.log('ok public home hides observation rows before login')
+
+    await page.goto('/recommendations')
+    await expect(page).toHaveURL(/\/login\?redirect=(%2F|\/)recommendations$/)
+    console.log('ok daily observation route requires login')
+
     await page.goto('/watchlist')
     await expect(page).toHaveURL(/\/login\?redirect=(%2F|\/)watchlist$/)
     console.log('ok protected route redirects to login')
@@ -763,11 +911,13 @@ async function runSmoke() {
     console.log('ok non-admin user is blocked from /admin')
 
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: '今日观察' })).toBeVisible()
+    await expect(page.getByTestId('recommendations-loading')).toBeVisible()
+    await expect(page.getByText('首次会先展示一批观察股，通常需要 10-30 秒；随后后台扩展到 50 只，可能还需要 1-3 分钟，请不要重复刷新页面。')).toBeVisible()
+    await expect(page.getByRole('heading', { name: '每日观察池' }).first()).toBeVisible()
     await expect(page.getByText('可信状态：调试数据')).toBeVisible()
-    await expect(page.getByText('当前观察池使用开发兜底候选池，仅用于调试展示，不代表真实市场筛选结果。')).toBeVisible()
+    await expect(page.getByText('Smoke SH Bank')).toBeVisible()
     await expect(page.getByRole('button', { name: '加自选' }).first()).toBeDisabled()
-    console.log('ok home daily observation exposes fallback trust boundary')
+    console.log('ok signed-in home renders protected daily observation pool')
 
     await page.goto('/recommendations')
     await expect(page.getByRole('heading', { name: '每日观察池' })).toBeVisible()
@@ -789,7 +939,7 @@ async function runSmoke() {
     await expect(page.locator('.quote-panel .quality-item').filter({ hasText: 'mock-fallback' })).toBeVisible()
     await expect(page.getByRole('button', { name: '刷新缓存' })).toBeVisible()
     await page.getByRole('button', { name: '采集最新新闻' }).click()
-    await expect(page.getByText('5分钟前已更新，无需重复采集')).toBeVisible()
+    await expect(page.getByText('5分钟前已更新，无需重复采集', { exact: true })).toBeVisible()
     console.log('ok stock detail surfaces quote quality and manual news crawl cooldown signals')
 
     await page.goto('/about')

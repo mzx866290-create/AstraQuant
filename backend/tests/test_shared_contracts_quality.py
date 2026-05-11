@@ -43,6 +43,11 @@ class SharedModelsQualityTests(unittest.TestCase):
                 "financial_reports",
                 "crawl_status",
                 "stock_news",
+                "research_observations",
+                "observation_reviews",
+                "weight_suggestion_audits",
+                "strategy_weight_patch_proposals",
+                "strategy_weight_versions",
             }
 
             self.assertEqual(set(models.Base.metadata.tables), expected_tables)

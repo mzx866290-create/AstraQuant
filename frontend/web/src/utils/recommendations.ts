@@ -10,15 +10,86 @@ export interface ScoreBreakdownItem {
   message?: string
 }
 
+export interface StrategyWeightedFactor {
+  factor?: string
+  dimension?: string
+  delta?: number | string
+  weight?: number | null
+  neutral_weight?: number
+  multiplier?: number
+  weighted_delta?: number
+  label?: string
+}
+
+export interface StrategyScoreBlending {
+  base_weight?: number | null
+  weighted_weight?: number | null
+  multiplier_min?: number | null
+  multiplier_max?: number | null
+  anchor?: number | null
+}
+
+export interface RiskVetoItem {
+  key?: string
+  type?: string
+  severity?: string
+  detail?: string
+  score_delta?: number | string | null
+  handling?: string
+}
+
+export type ReviewOffset = 'T+1' | 'T+5' | 'T+20'
+
+export interface ReviewResultItem {
+  review_date?: string
+  close_price?: number | string | null
+  return_pct?: number | null
+  falsification_triggered?: boolean
+  risk_signal_valid?: boolean
+}
+
+export interface ReviewSummary {
+  latest_snapshot_date?: string
+  strategy_id?: string
+  base_price?: number | string | null
+  reviews?: Partial<Record<ReviewOffset, ReviewResultItem | null>>
+}
+
+export interface RecentReviewsResponse {
+  status: string
+  items?: Record<string, ReviewSummary>
+  missing_symbols?: string[]
+}
+
 export interface RecommendationItem {
   symbol: string
   name?: string
   market?: string
   sector?: string
+  strategy_id?: string
+  market_regime?: string
+  pe_ttm?: number | string | null
+  pb?: number | string | null
+  total_mv?: number | string | null
+  industry_themes?: string[]
+  updated_at?: string
   candidate_source?: string
   source?: string
   warnings?: string[]
+  review_summary?: ReviewSummary
+  review_unavailable?: boolean
   score?: number
+  base_score?: number | null
+  strategy_score?: number | null
+  strategy_score_delta?: number | null
+  strategy_score_blending?: StrategyScoreBlending
+  strategy_weighted_factors?: StrategyWeightedFactor[]
+  strategy_filter_result?: {
+    passed?: boolean
+    reasons?: string[]
+    warnings?: string[]
+    [key: string]: unknown
+  }
   rating?: {
     level?: RatingLevel
     text?: string
@@ -36,6 +107,82 @@ export interface RecommendationItem {
     warnings?: string[]
   }
   data_source_summary?: Record<string, string>
+  evidence_chain?: Array<{
+    factor?: string
+    dimension?: string
+    label?: string
+    value?: unknown
+    threshold?: string
+    source?: string
+    freshness?: string
+    confidence?: string
+    impact?: number
+    direction?: string
+    explanation?: string
+    strategy_id?: string
+  }>
+  theme_validation?: {
+    status?: string
+    theme_heat?: {
+      level?: string
+      themes?: string[]
+      evidence?: Array<{
+        title?: string
+        source?: string
+        date?: string
+      }>
+    }
+    chain_position?: {
+      stage?: string
+      sector?: string
+      reason?: string
+    }
+    business_relevance?: {
+      level?: string
+      reason?: string
+    }
+    verification?: {
+      level?: string
+      signals?: string[]
+      evidence?: Array<{
+        type?: string
+        title?: string
+        source?: string
+        date?: string
+        matched?: string
+      }>
+    }
+    concept_risk?: {
+      level?: string
+      warnings?: string[]
+    }
+    strategy_id?: string
+  }
+  bull_case?: Array<{
+    factor?: string
+    argument?: string
+    strength?: string
+  }>
+  bear_case?: Array<{
+    factor?: string
+    argument?: string
+    strength?: string
+  }>
+  key_disagreement?: Array<{
+    topic?: string
+    bull_view?: string
+    bear_view?: string
+  }>
+  falsification?: Array<{
+    condition?: string
+  }>
+  veto_result?: {
+    passed?: boolean
+    level?: string
+    veto_reason?: string | null
+    vetoes?: RiskVetoItem[]
+    warnings?: RiskVetoItem[]
+  }
 }
 
 export interface RecommendationsResponse {
@@ -43,8 +190,53 @@ export interface RecommendationsResponse {
   status?: string
   candidate_source?: string
   warnings?: string[]
+  market?: string
+  count?: number
   candidate_count?: number
+  candidate_universe_count?: number
   scored_count?: number
+  max_candidates?: number
+  concurrency?: number
+  market_regime?: {
+    regime?: string
+    confidence?: string
+    signals?: Array<{
+      indicator?: string
+      value?: string
+      detail?: string
+    }>
+    suggested_strategies?: string[]
+  }
+  active_strategy?: {
+    id?: string
+    name?: string
+    selection_mode?: string
+    selection_reason?: string
+    engine_strategy?: string
+  }
+  selection?: {
+    mode?: string
+    rotation_date?: string
+    universe_count?: number
+    evaluated_count?: number
+  }
+  initial_full_scan?: {
+    enabled?: boolean
+    used?: boolean
+    status?: string
+    scanned_count?: number
+    universe_count?: number
+    cap?: number
+    next_mode?: string
+  }
+  method?: {
+    name?: string
+    description?: string
+    strategy?: string
+    strategy_label?: string
+  }
+  phase?: string
+  disclaimer?: string
   cache_hit?: boolean
   updated_at?: string
 }
@@ -187,5 +379,81 @@ export function recommendationRowWarnings(row: RecommendationItem, metaSource?: 
   if (row.data_grade?.grade) warnings.push(`数据等级 ${row.data_grade.grade}：${row.data_grade.label || '未说明'}`)
   if (row.data_grade?.analysis_scope) warnings.push(row.data_grade.analysis_scope)
   if (Array.isArray(row.data_grade?.warnings)) warnings.push(...row.data_grade.warnings)
+  if (Array.isArray(row.veto_result?.warnings)) warnings.push(...row.veto_result.warnings.map((item) => item.detail || item.type || '').filter(Boolean))
   return Array.from(new Set(warnings.filter(Boolean)))
+}
+
+export function strategyLabel(id?: string) {
+  const mapping: Record<string, string> = {
+    auto: '自动策略',
+    retail_small: '小而美观察',
+    value_quality: '价值质量',
+    growth_momentum: '成长动量',
+    reversal_watch: '反转观察',
+    event_driven: '事件驱动',
+    dividend_defensive: '红利防御',
+    quality: '质量优先',
+  }
+  return mapping[id || ''] || id || '未选择'
+}
+
+export function regimeLabel(regime?: string) {
+  const mapping: Record<string, string> = {
+    strong_trend: '强趋势',
+    range_bound: '震荡市',
+    weak_market: '弱市场',
+  }
+  return mapping[regime || ''] || regime || '未知'
+}
+
+export function regimeTagType(regime?: string): TagProps['type'] {
+  if (regime === 'strong_trend') return 'success'
+  if (regime === 'weak_market') return 'danger'
+  return 'warning'
+}
+
+export function vetoTagType(veto?: RecommendationItem['veto_result']): TagProps['type'] {
+  if (!veto) return 'info'
+  if (veto.passed === false || veto.level === 'hard') return 'danger'
+  if ((veto.warnings || []).length || veto.level === 'soft') return 'warning'
+  return 'success'
+}
+
+export function vetoLabel(veto?: RecommendationItem['veto_result']) {
+  if (!veto) return '未校验'
+  if (veto.passed === false || veto.level === 'hard') return '已否决'
+  if ((veto.warnings || []).length || veto.level === 'soft') return '软警告'
+  return '已通过'
+}
+
+export function vetoDetailItems(veto?: RecommendationItem['veto_result']) {
+  return [...(veto?.vetoes || []), ...(veto?.warnings || [])]
+}
+
+export function evidenceTopItems(row: RecommendationItem, limit = 4) {
+  const items = Array.isArray(row.evidence_chain) ? row.evidence_chain : []
+  return items
+    .filter((item) => item.factor !== 'base')
+    .sort((a, b) => Math.abs(Number(b.impact || 0)) - Math.abs(Number(a.impact || 0)))
+    .slice(0, limit)
+}
+
+export function evidenceType(item: NonNullable<RecommendationItem['evidence_chain']>[number]): TagProps['type'] {
+  const impact = Number(item?.impact)
+  if (impact > 0) return 'success'
+  if (impact < 0) return 'warning'
+  return 'info'
+}
+
+export function evidenceValueText(value: unknown) {
+  if (value == null) return 'N/A'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+export function resolveRecentReviewStrategy(uiStrategy?: string, activeStrategyId?: string) {
+  if (uiStrategy === 'auto' && activeStrategyId && activeStrategyId !== 'auto') {
+    return activeStrategyId
+  }
+  return uiStrategy || 'auto'
 }

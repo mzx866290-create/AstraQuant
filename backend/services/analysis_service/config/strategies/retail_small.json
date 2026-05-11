@@ -1,0 +1,284 @@
+{
+  "id": "retail_small",
+  "name": "小而美观察",
+  "description": "偏向单手成本友好、小中盘、数据质量较好的观察策略。",
+  "preferred_regimes": [
+    "range_bound"
+  ],
+  "engine_strategy": "retail_small",
+  "filters": {
+    "min_data_grade": "C",
+    "price_range": [
+      3,
+      80
+    ],
+    "market_cap_range_yi": [
+      20,
+      1500
+    ]
+  },
+  "score_threshold": 55,
+  "weights": {
+    "retail_affordability": 0.18,
+    "market_cap": 0.12,
+    "data_quality": 0.14,
+    "technical": 0.18,
+    "valuation": 0.12,
+    "financial_quality": 0.12,
+    "sentiment": 0.08,
+    "industry_theme": 0.06
+  },
+  "scoring_rules": {
+    "retail_affordability": {
+      "ranges": [
+        {
+          "max": 0,
+          "delta": -25,
+          "message": "价格不可用，不能判断散户友好程度",
+          "status": "negative"
+        },
+        {
+          "min": 0,
+          "max": 3,
+          "delta": -16,
+          "message": "价格过低，需警惕退市或基本面风险",
+          "status": "negative"
+        },
+        {
+          "min": 3,
+          "max": 5,
+          "delta": 0,
+          "message": "股价不加分也不排除",
+          "status": "neutral"
+        },
+        {
+          "min": 5,
+          "max": 35,
+          "delta": 14,
+          "message": "单手成本适合分批观察",
+          "status": "positive"
+        },
+        {
+          "min": 35,
+          "max": 60,
+          "delta": 6,
+          "message": "单手成本仍在可观察区间",
+          "status": "positive"
+        },
+        {
+          "min": 60,
+          "max": 80,
+          "delta": 0,
+          "message": "股价不加分也不排除",
+          "status": "neutral"
+        },
+        {
+          "min": 80,
+          "delta": -18,
+          "message": "单手成本偏高",
+          "status": "negative"
+        }
+      ]
+    },
+    "market_cap": {
+      "items": [
+        {
+          "value": "missing",
+          "delta": -3,
+          "message": "市值字段缺失，小而美判断不完整",
+          "status": "negative"
+        }
+      ],
+      "ranges": [
+        {
+          "max": 20,
+          "delta": -8,
+          "message": "市值过小，流动性和波动风险更高",
+          "status": "negative"
+        },
+        {
+          "min": 20,
+          "max": 30,
+          "delta": 0,
+          "message": "市值保持中性",
+          "status": "neutral"
+        },
+        {
+          "min": 30,
+          "max": 500,
+          "delta": 10,
+          "message": "市值处于小中盘观察范围",
+          "status": "positive"
+        },
+        {
+          "min": 500,
+          "max": 1500,
+          "delta": 0,
+          "message": "市值保持中性",
+          "status": "neutral"
+        },
+        {
+          "min": 1500,
+          "delta": -14,
+          "message": "市值偏大，不符合小而美筛选",
+          "status": "negative"
+        }
+      ]
+    },
+    "valuation": {
+      "items": [
+        {
+          "value": "missing_pe_or_pb",
+          "delta": -4,
+          "message": "PE/PB缺失，估值无法判断",
+          "status": "negative"
+        },
+        {
+          "min": 0,
+          "max": 35,
+          "pb_max": 5,
+          "delta": 10,
+          "message": "PE/PB估值字段可用",
+          "status": "positive"
+        },
+        {
+          "max": 0,
+          "delta": -8,
+          "message": "PE/PB显示估值或盈利质量需谨慎",
+          "status": "negative"
+        },
+        {
+          "min": 80,
+          "delta": -8,
+          "message": "PE/PB显示估值或盈利质量需谨慎",
+          "status": "negative"
+        },
+        {
+          "pb_min": 10,
+          "delta": -8,
+          "message": "PE/PB显示估值或盈利质量需谨慎",
+          "status": "negative"
+        },
+        {
+          "value": "otherwise",
+          "delta": 0,
+          "message": "估值保持中性",
+          "status": "neutral"
+        }
+      ]
+    },
+    "technical": {
+      "close_window": 20,
+      "stable": {
+        "ret5_min": -3,
+        "ret5_max": 12,
+        "ret20_min": -8,
+        "delta": 13
+      },
+      "overextended": {
+        "ret5_min": 18,
+        "delta": -8
+      },
+      "weak": {
+        "ret20_max": -15,
+        "delta": -6
+      },
+      "default": {
+        "delta": 0
+      }
+    },
+    "volume": {
+      "volume_window": 10,
+      "items": [
+        {
+          "ratio_min": 1.15,
+          "ratio_max": 2.8,
+          "delta": 5
+        },
+        {
+          "value": "otherwise",
+          "delta": 0
+        }
+      ]
+    },
+    "financial_quality": {
+      "missing": {
+        "key": "financial",
+        "delta": -5,
+        "message": "financial data missing",
+        "status": "negative"
+      },
+      "items": [
+        {
+          "key": "financial_revenue",
+          "label": "financial",
+          "metric": "revenue_yoy",
+          "operator": "gt",
+          "threshold": 0,
+          "delta": 4,
+          "message": "revenue yoy is positive",
+          "status": "positive"
+        },
+        {
+          "key": "financial_profit",
+          "label": "financial",
+          "metric": "net_profit_yoy",
+          "operator": "gt",
+          "threshold": 0,
+          "delta": 6,
+          "message": "net profit yoy is positive",
+          "status": "positive"
+        },
+        {
+          "key": "financial_cashflow",
+          "label": "cashflow",
+          "metric": "operating_cf",
+          "operator": "lt",
+          "threshold": 0,
+          "delta": -5,
+          "message": "operating cash flow is negative",
+          "status": "negative"
+        }
+      ]
+    }
+  },
+  "risk_policy": {
+    "default_red_severity": "hard",
+    "default_yellow_severity": "soft",
+    "by_key": {
+      "data": {
+        "severity": "hard",
+        "score_delta": -20,
+        "handling": "exclude when quote or tradability data is unreliable"
+      },
+      "technical": {
+        "severity": "soft",
+        "score_delta": -8,
+        "handling": "allow only as a watchlist candidate"
+      },
+      "valuation": {
+        "severity": "soft",
+        "score_delta": -6,
+        "handling": "small-cap valuation gaps require position sizing caution"
+      }
+    },
+    "by_type": {
+      "negative_operating_cashflow": {
+        "severity": "soft",
+        "score_delta": -8,
+        "handling": "keep as warning for small-cap observation"
+      },
+      "financial_deterioration": {
+        "severity": "soft",
+        "score_delta": -10,
+        "handling": "keep only with stronger technical confirmation"
+      }
+    }
+  },
+  "score_blending": {
+    "base_weight": 0.65,
+    "weighted_weight": 0.35,
+    "multiplier_min": 0.35,
+    "multiplier_max": 2.25
+  }
+}

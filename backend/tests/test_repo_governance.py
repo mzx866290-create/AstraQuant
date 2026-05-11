@@ -165,6 +165,9 @@ class RepoGovernanceTests(unittest.TestCase):
             '"secret hygiene gate"',
             '"backend unit tests"',
             '"backend coverage gate"',
+            '"research review smoke"',
+            '"research review readiness check"',
+            '"research review runner check"',
             '"frontend lint"',
             '"frontend type-check"',
             '"frontend API compatibility"',
@@ -176,9 +179,13 @@ class RepoGovernanceTests(unittest.TestCase):
 
         self.assertIn("scripts/ops/verify_ops_drill_readiness.py", verifier)
         self.assertIn("scripts/verify_secret_hygiene.py", verifier)
+        self.assertIn("backend/scripts/review_tracker_run.py", verifier)
+        self.assertIn("--include-readiness", verifier)
         self.assertIn("test:data-quality", verifier)
         self.assertLess(verifier.index('"ops drill readiness preflight"'), verifier.index('"backend compile"'))
         self.assertLess(verifier.index('"secret hygiene gate"'), verifier.index('"backend compile"'))
+        self.assertLess(verifier.index('"research review smoke"'), verifier.index('"research review runner check"'))
+        self.assertLess(verifier.index('"research review readiness check"'), verifier.index('"research review runner check"'))
         self.assertLess(verifier.index('"frontend API compatibility"'), verifier.index('"frontend data quality contract"'))
         self.assertLess(verifier.index('"frontend build"'), verifier.index('"frontend smoke"'))
 

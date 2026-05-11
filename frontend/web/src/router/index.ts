@@ -16,7 +16,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/recommendations',
     name: 'Recommendations',
-    component: () => import('../views/Recommendations.vue')
+    component: () => import('../views/Recommendations.vue'),
+    meta: { requiresAuth: true }
   },
   {
     path: '/stocks/:symbol',

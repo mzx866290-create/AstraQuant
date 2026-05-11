@@ -7,7 +7,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from backend.services.analysis_service.api.v1.scoring import _build_score_breakdown, _score_daily_candidate
+from backend.services.analysis_service.engine.recommendation_engine import _build_score_breakdown, _score_daily_candidate
 
 
 def main() -> None:

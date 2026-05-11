@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
+
+from backend.services.analysis_service.engine.strategy_rule_scoring import configured_rule_result
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,51 @@ def _candidate_code(row: dict) -> str:
     base = symbol.split(".", 1)[0]
     digits = "".join(ch for ch in base if ch.isdigit())
     return digits[:6]
+
+
+def _candidate_rotation_key(row: dict, rotation_date: date) -> tuple[int, str]:
+    code = _candidate_code(row)
+    try:
+        code_number = int(code)
+    except ValueError:
+        code_number = sum(ord(ch) for ch in code)
+    market_salt = 0x9E3779B9 if row.get("market") == "SH" else 0x85EBCA6B
+    day_seed = rotation_date.toordinal()
+    return ((code_number * 1103515245 + day_seed * 2654435761 + market_salt) & 0xFFFFFFFF, code)
+
+
+def _select_rotated_candidates(universe: list[dict], sample_size: int, rotation_date: date) -> list[dict]:
+    if sample_size <= 0 or not universe:
+        return []
+
+    ordered = sorted((dict(row) for row in universe), key=lambda row: _candidate_rotation_key(row, rotation_date))
+    selected: list[dict] = []
+    overflow: list[dict] = []
+    sector_counts: dict[str, int] = {}
+    sector_cap = max(2, math.ceil(sample_size / 10))
+
+    for row in ordered:
+        sector = row.get("sector") or "__unknown__"
+        if sector_counts.get(sector, 0) < sector_cap:
+            selected.append(row)
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+        else:
+            overflow.append(row)
+        if len(selected) >= sample_size:
+            break
+
+    if len(selected) < sample_size:
+        seen_codes = {_candidate_code(row) for row in selected}
+        for row in overflow:
+            code = _candidate_code(row)
+            if not code or code in seen_codes:
+                continue
+            selected.append(row)
+            seen_codes.add(code)
+            if len(selected) >= sample_size:
+                break
+
+    return selected[:sample_size]
 
 
 def _supplement_development_candidates(
@@ -85,9 +132,16 @@ def _empty_recommendations_result(
         "warnings": warnings,
         "count": 0,
         "candidate_count": 0,
+        "candidate_universe_count": 0,
         "scored_count": 0,
         "concurrency": concurrency,
         "max_candidates": candidate_limit,
+        "selection": {
+            "mode": "none",
+            "rotation_date": datetime.now().date().isoformat(),
+            "universe_count": 0,
+            "evaluated_count": 0,
+        },
         "cache_hit": False,
         "updated_at": datetime.now().isoformat(),
         "method": {
@@ -150,62 +204,79 @@ async def _evaluate_candidates_parallel(
     return scored
 
 
-def _load_recommendation_candidates(market: str, sample_size: int) -> list[dict]:
+def _load_recommendation_candidates(market: str, sample_size: int, rotation_date: date | None = None) -> list[dict]:
     from backend.shared.database import SessionLocal
     from backend.shared.models import Stock
 
-    result = []
     seen = set()
+    rotation_date = rotation_date or datetime.now().date()
 
-    def add(row: dict) -> None:
+    def normalize(row: dict) -> dict | None:
         code = (row.get("symbol") or "")[:6]
         if not code or code in seen:
-            return
+            return None
         row_market = row.get("market") or ("SH" if code.startswith(("6", "9")) else "SZ")
         if row_market not in ("SH", "SZ"):
-            return
+            return None
         if market != "ALL" and row_market != market:
-            return
+            return None
         name = row.get("name") or code
         if "退" in name or name.startswith(("*ST", "ST")):
             return
         seen.add(code)
-        result.append({
+        return {
             "symbol": f"{code}.{row_market}",
             "name": name,
             "market": row_market,
             "sector": row.get("sector") or "",
-        })
+        }
 
     db = SessionLocal()
     try:
         markets = [market] if market in ("SH", "SZ") else ["SH", "SZ"]
-        per_market = max(10, sample_size // len(markets))
+        per_market = max(1, math.ceil(sample_size / len(markets)))
+        universes_by_market: dict[str, list[dict]] = {m: [] for m in markets}
         for m in markets:
             rows = (
                 db.query(Stock)
                 .filter(Stock.is_active == True, Stock.market == m)
                 .order_by(Stock.id.asc())
-                .limit(per_market * 3)
                 .all()
             )
-            sector_seen = set()
             for row in rows:
-                if len(result) >= sample_size:
-                    break
-                sector = row.sector or ""
-                # Keep the candidate pool broad instead of letting one sector dominate.
-                if sector and sector in sector_seen and len(sector_seen) >= 8:
-                    continue
-                add({
+                candidate = normalize({
                     "symbol": row.symbol,
                     "name": row.name,
                     "market": row.market,
-                    "sector": sector,
+                    "sector": row.sector or "",
                 })
-                if sector:
-                    sector_seen.add(sector)
-        return result
+                if candidate:
+                    universes_by_market[m].append(candidate)
+
+        universe_count = sum(len(items) for items in universes_by_market.values())
+        result: list[dict] = []
+        for m in markets:
+            result.extend(_select_rotated_candidates(universes_by_market[m], per_market, rotation_date))
+
+        if len(result) < sample_size:
+            selected_codes = {_candidate_code(row) for row in result}
+            remainder = [
+                row
+                for rows in universes_by_market.values()
+                for row in rows
+                if _candidate_code(row) not in selected_codes
+            ]
+            for row in _select_rotated_candidates(remainder, sample_size - len(result), rotation_date):
+                selected_codes.add(_candidate_code(row))
+                result.append(row)
+                if len(result) >= sample_size:
+                    break
+
+        for row in result[:sample_size]:
+            row["_candidate_universe_count"] = universe_count
+            row["_candidate_rotation_date"] = rotation_date.isoformat()
+            row["_candidate_selection"] = "daily_rotating_db_sample"
+        return result[:sample_size]
     finally:
         db.close()
 
@@ -293,6 +364,7 @@ async def _evaluate_daily_candidate(row: dict, strategy: str = "retail_small") -
             "score_breakdown": score_breakdown,
             "data_grade": data_grade,
             "risk_lights": risk_lights,
+            "stock_data": stock_data,
             "industry_themes": [t.get("theme") for t in (industry.get("themes") or [])[:3] if t.get("theme")],
             "updated_at": datetime.now().isoformat(),
         }
@@ -301,283 +373,151 @@ async def _evaluate_daily_candidate(row: dict, strategy: str = "retail_small") -
         return None
 
 
+
+def _configured_daily_factor_keys(strategy: str) -> tuple[str, ...]:
+    keys = ["data_quality", "technical", "volume", "valuation", "financial_quality"]
+    if strategy == "retail_small":
+        keys = ["retail_affordability", "market_cap", *keys]
+    return tuple(keys)
+
+
+def _configured_daily_rule_result(stock_data: dict, strategy: str, factor: str) -> dict | None:
+    result = configured_rule_result(stock_data, strategy, factor)
+    if not result:
+        return None
+    result.setdefault("key", factor)
+    result.setdefault("label", factor)
+    result.setdefault("delta", 0)
+    result.setdefault("status", "positive" if result["delta"] > 0 else "negative" if result["delta"] < 0 else "neutral")
+    result.setdefault("message", f"{factor}: {result.get('bucket') or 'matched'}")
+    return result
+
+
+def _append_configured_daily_rule(
+    stock_data: dict,
+    strategy: str,
+    factor: str,
+    reasons: list[str],
+    risk_flags: list[str],
+) -> int:
+    result = _configured_daily_rule_result(stock_data, strategy, factor)
+    if not result:
+        return 0
+    delta = int(result.get("delta") or 0)
+    components = result.get("components") if isinstance(result.get("components"), list) else []
+    messages = components or [result]
+    for item in messages:
+        item_delta = int(item.get("delta") or 0)
+        message = str(item.get("message") or item.get("bucket") or factor)
+        value = item.get("value")
+        if item.get("metric") and isinstance(value, (int, float)):
+            message = f"{message}: {float(value):.1f}"
+        if item_delta > 0:
+            reasons.append(message)
+        elif item_delta < 0:
+            risk_flags.append(message)
+    return delta
+
+
 def _score_daily_candidate(stock_data: dict, risk_lights: dict, strategy: str = "retail_small") -> tuple[int, list[str], list[str]]:
-    quote = stock_data.get("quote") or {}
-    financial = stock_data.get("financial") or {}
-    kline = stock_data.get("kline_data") or []
     sentiment = stock_data.get("news_sentiment") or {}
     industry = stock_data.get("industry_event_context") or {}
-    readiness = stock_data.get("readiness") or {}
-    data_grade = (readiness.get("data_grade") or {}).get("grade", "D")
-
     score = 50.0
     reasons: list[str] = []
     risk_flags: list[str] = []
 
-    price = float(stock_data.get("price") or 0)
-    total_mv = financial.get("total_mv") or quote.get("total_mv")
-    circ_mv = financial.get("circ_mv") or quote.get("circ_mv")
-
-    if strategy == "retail_small":
-        if price <= 0:
-            score -= 25
-            risk_flags.append("价格不可用")
-        elif price < 3:
-            score -= 16
-            risk_flags.append("价格过低，需警惕退市或基本面风险")
-        elif 5 <= price <= 35:
-            score += 14
-            reasons.append(f"单手成本约{price * 100:.0f}元，散户更容易分批配置")
-        elif 35 < price <= 60:
-            score += 6
-            reasons.append(f"单手成本约{price * 100:.0f}元，仍在可观察区间")
-        elif price > 80:
-            score -= 18
-            risk_flags.append(f"股价{price:.2f}元，单手成本偏高，不符合散户友好筛选")
-
-        mv = _valid_mv(total_mv) or _valid_mv(circ_mv)
-        if mv:
-            yi = mv / 1e8
-            if 30 <= yi <= 500:
-                score += 10
-                reasons.append(f"市值约{yi:.0f}亿元，偏小中盘观察范围")
-            elif yi < 20:
-                score -= 8
-                risk_flags.append("市值过小，流动性和波动风险更高")
-            elif yi > 1500:
-                score -= 14
-                risk_flags.append("市值偏大，不符合小而美筛选")
-        else:
-            score -= 3
-            risk_flags.append("市值字段缺失，小而美判断不完整")
-
-    if data_grade == "A":
-        score += 12
-        reasons.append("数据较完整，适合继续深入研究")
-    elif data_grade == "B":
-        score += 7
-        reasons.append("行情/K线可用，部分基本面或消息面数据可参考")
-    elif data_grade == "C":
-        score += 2
-        risk_flags.append("仅行情和K线较可用，基本面不足")
-
-    if len(kline) >= 20:
-        closes = [float(x.get("close") or 0) for x in kline if x.get("close") is not None]
-        volumes = [float(x.get("volume") or 0) for x in kline if x.get("volume") is not None]
-        if len(closes) >= 20:
-            ret5 = (closes[-1] - closes[-5]) / closes[-5] * 100 if closes[-5] else 0
-            ret20 = (closes[-1] - closes[-20]) / closes[-20] * 100 if closes[-20] else 0
-            ma20 = sum(closes[-20:]) / 20
-            if closes[-1] >= ma20 and -3 <= ret5 <= 12 and ret20 > -8:
-                score += 13
-                reasons.append(f"技术面相对稳健：5日{ret5:+.1f}%，20日{ret20:+.1f}%")
-            elif ret5 > 18:
-                score -= 8
-                risk_flags.append("短期涨幅过快，追高风险较高")
-            elif ret20 < -15:
-                score -= 6
-                risk_flags.append("20日趋势偏弱")
-        if len(volumes) >= 10 and sum(volumes[-10:-5]) > 0:
-            recent_vol = sum(volumes[-5:]) / 5
-            prev_vol = sum(volumes[-10:-5]) / 5
-            if 1.15 <= recent_vol / prev_vol <= 2.8:
-                score += 5
-                reasons.append("近5日成交活跃度温和提升")
-
-    pe = financial.get("pe_ttm") or quote.get("pe_ttm")
-    pb = financial.get("pb") or quote.get("pb")
-    if is_valid_score_number(pe) and is_valid_score_number(pb):
-        pe = float(pe)
-        pb = float(pb)
-        if pe > 0 and pe <= 35 and pb <= 5:
-            score += 10
-            reasons.append(f"估值字段可用：PE {pe:.1f}，PB {pb:.2f}")
-        elif pe <= 0 or pe > 80 or pb > 10:
-            score -= 8
-            risk_flags.append("PE/PB显示估值或盈利质量需谨慎")
-    else:
-        score -= 4
-        risk_flags.append("PE/PB缺失，估值无法判断")
-
-    if financial:
-        revenue_yoy = financial.get("revenue_yoy")
-        profit_yoy = financial.get("net_profit_yoy")
-        operating_cf = financial.get("operating_cf")
-        if is_valid_score_number(revenue_yoy) and float(revenue_yoy) > 0:
-            score += 4
-            reasons.append(f"营收同比为正：{float(revenue_yoy):.1f}%")
-        if is_valid_score_number(profit_yoy) and float(profit_yoy) > 0:
-            score += 6
-            reasons.append(f"归母净利润同比为正：{float(profit_yoy):.1f}%")
-        if operating_cf is not None and float(operating_cf) < 0:
-            score -= 5
-            risk_flags.append("经营现金流为负")
-    else:
-        score -= 5
-        risk_flags.append("财务数据缺失")
+    for factor in _configured_daily_factor_keys(strategy):
+        score += _append_configured_daily_rule(stock_data, strategy, factor, reasons, risk_flags)
 
     weighted = sentiment.get("weighted_dominant_sentiment")
-    if weighted in ("正面", "positive"):
+    if weighted in ("姝ｉ潰", "positive"):
         score += 5
-        reasons.append("新闻加权情绪偏正面")
-    elif weighted in ("负面", "negative"):
+        reasons.append("weighted news sentiment is positive")
+    elif weighted in ("璐熼潰", "negative"):
         score -= 8
-        risk_flags.append(sentiment.get("validation_note") or "新闻加权情绪偏负面")
+        risk_flags.append(sentiment.get("validation_note") or "weighted news sentiment is negative")
 
     if industry.get("available"):
         score += 3
-        themes = "、".join(t.get("theme", "") for t in (industry.get("themes") or [])[:2] if t.get("theme"))
+        themes = ", ".join(t.get("theme", "") for t in (industry.get("themes") or [])[:2] if t.get("theme"))
         if themes:
-            reasons.append(f"行业/社会事件线索：{themes}")
+            reasons.append(f"industry/theme evidence available: {themes}")
 
     for key, item in risk_lights.items():
         level = item.get("level")
         if level == "red":
             score -= 18
-            risk_flags.append(item.get("message") or f"{key}红灯")
+            risk_flags.append(item.get("message") or f"{key} red light")
         elif level == "yellow":
             score -= 2
 
     score = int(max(0, min(100, round(score))))
     if not reasons:
-        reasons.append("综合数据未出现明显排除项，但仍需进一步研究")
+        reasons.append("no clear exclusion signal found, but further research is still required")
     if not risk_flags:
-        risk_flags.append("未发现明显红灯，但仍需关注市场波动")
+        risk_flags.append("no obvious red light found, but market volatility still needs monitoring")
     return score, reasons, risk_flags
 
 
 def _build_score_breakdown(stock_data: dict, risk_lights: dict, strategy: str = "retail_small") -> list[dict]:
-    quote = stock_data.get("quote") or {}
-    financial = stock_data.get("financial") or {}
-    kline = stock_data.get("kline_data") or []
     sentiment = stock_data.get("news_sentiment") or {}
     industry = stock_data.get("industry_event_context") or {}
-    readiness = stock_data.get("readiness") or {}
-    data_grade = (readiness.get("data_grade") or {}).get("grade", "D")
-
-    items: list[dict] = [{"key": "base", "label": "基础分", "delta": 50, "status": "neutral", "message": "进入沪深A股候选池后的基础观察分"}]
+    items: list[dict] = [
+        {"key": "base", "label": "base", "delta": 50, "status": "neutral", "message": "base observation score"}
+    ]
 
     def add(key: str, label: str, delta: int, message: str, status: str | None = None) -> None:
         if status is None:
             status = "positive" if delta > 0 else "negative" if delta < 0 else "neutral"
         items.append({"key": key, "label": label, "delta": delta, "status": status, "message": message})
 
-    price = float(stock_data.get("price") or 0)
-    total_mv = financial.get("total_mv") or quote.get("total_mv")
-    circ_mv = financial.get("circ_mv") or quote.get("circ_mv")
-
-    if strategy == "retail_small":
-        if price <= 0:
-            add("retail_affordability", "单手成本", -25, "价格不可用，不能判断散户友好程度")
-        elif price < 3:
-            add("retail_affordability", "单手成本", -16, "价格过低，需警惕退市或基本面风险")
-        elif 5 <= price <= 35:
-            add("retail_affordability", "单手成本", 14, f"单手成本约{price * 100:.0f}元，适合分批观察")
-        elif 35 < price <= 60:
-            add("retail_affordability", "单手成本", 6, f"单手成本约{price * 100:.0f}元，仍在可观察区间")
-        elif price > 80:
-            add("retail_affordability", "单手成本", -18, f"股价{price:.2f}元，单手成本偏高")
-        else:
-            add("retail_affordability", "单手成本", 0, f"股价{price:.2f}元，不加分也不排除")
-
-        mv = _valid_mv(total_mv) or _valid_mv(circ_mv)
-        if mv:
-            yi = mv / 1e8
-            if 30 <= yi <= 500:
-                add("market_cap", "市值", 10, f"市值约{yi:.0f}亿元，处于小中盘观察范围")
-            elif yi < 20:
-                add("market_cap", "市值", -8, "市值过小，流动性和波动风险更高")
-            elif yi > 1500:
-                add("market_cap", "市值", -14, "市值偏大，不符合小而美筛选")
-            else:
-                add("market_cap", "市值", 0, f"市值约{yi:.0f}亿元，保持中性")
-        else:
-            add("market_cap", "市值", -3, "市值字段缺失，小而美判断不完整")
-
-    if data_grade == "A":
-        add("data_quality", "数据质量", 12, "行情、K线、估值或基本面数据较完整")
-    elif data_grade == "B":
-        add("data_quality", "数据质量", 7, "行情/K线可用，部分基本面或消息面数据可参考")
-    elif data_grade == "C":
-        add("data_quality", "数据质量", 2, "基础行情可用，但基本面完整度不足", "warning")
-    else:
-        add("data_quality", "数据质量", 0, "数据完整度不足，未加分", "warning")
-
-    if len(kline) >= 20:
-        closes = [float(x.get("close") or 0) for x in kline if x.get("close") is not None]
-        volumes = [float(x.get("volume") or 0) for x in kline if x.get("volume") is not None]
-        if len(closes) >= 20:
-            ret5 = (closes[-1] - closes[-5]) / closes[-5] * 100 if closes[-5] else 0
-            ret20 = (closes[-1] - closes[-20]) / closes[-20] * 100 if closes[-20] else 0
-            ma20 = sum(closes[-20:]) / 20
-            if closes[-1] >= ma20 and -3 <= ret5 <= 12 and ret20 > -8:
-                add("technical", "技术走势", 13, f"5日{ret5:+.1f}%，20日{ret20:+.1f}%，走势相对稳健")
-            elif ret5 > 18:
-                add("technical", "技术走势", -8, "短期涨幅过快，追高风险较高")
-            elif ret20 < -15:
-                add("technical", "技术走势", -6, "20日趋势偏弱")
-            else:
-                add("technical", "技术走势", 0, f"5日{ret5:+.1f}%，20日{ret20:+.1f}%，趋势中性")
-        if len(volumes) >= 10 and sum(volumes[-10:-5]) > 0:
-            recent_vol = sum(volumes[-5:]) / 5
-            prev_vol = sum(volumes[-10:-5]) / 5
-            ratio = recent_vol / prev_vol if prev_vol else 0
-            if 1.15 <= ratio <= 2.8:
-                add("volume", "成交活跃度", 5, "近5日成交活跃度温和提升")
-    else:
-        add("technical", "技术走势", 0, "K线不足20条，技术走势不加分", "warning")
-
-    pe = financial.get("pe_ttm") or quote.get("pe_ttm")
-    pb = financial.get("pb") or quote.get("pb")
-    if is_valid_score_number(pe) and is_valid_score_number(pb):
-        pe_float = float(pe)
-        pb_float = float(pb)
-        if pe_float > 0 and pe_float <= 35 and pb_float <= 5:
-            add("valuation", "估值", 10, f"PE {pe_float:.1f}，PB {pb_float:.2f}，估值字段可用")
-        elif pe_float <= 0 or pe_float > 80 or pb_float > 10:
-            add("valuation", "估值", -8, "PE/PB显示估值或盈利质量需谨慎")
-        else:
-            add("valuation", "估值", 0, f"PE {pe_float:.1f}，PB {pb_float:.2f}，估值保持中性")
-    else:
-        add("valuation", "估值", -4, "PE/PB缺失，估值无法判断")
-
-    if financial:
-        revenue_yoy = financial.get("revenue_yoy")
-        profit_yoy = financial.get("net_profit_yoy")
-        operating_cf = financial.get("operating_cf")
-        if is_valid_score_number(revenue_yoy) and float(revenue_yoy) > 0:
-            add("financial_revenue", "财务", 4, f"营收同比为正：{float(revenue_yoy):.1f}%")
-        if is_valid_score_number(profit_yoy) and float(profit_yoy) > 0:
-            add("financial_profit", "财务", 6, f"归母净利润同比为正：{float(profit_yoy):.1f}%")
-        if operating_cf is not None and float(operating_cf) < 0:
-            add("financial_cashflow", "现金流", -5, "经营现金流为负")
-    else:
-        add("financial", "财务", -5, "财务数据缺失")
+    for factor in _configured_daily_factor_keys(strategy):
+        result = _configured_daily_rule_result(stock_data, strategy, factor)
+        if result:
+            components = result.get("components") if isinstance(result.get("components"), list) else []
+            if components:
+                for component in components:
+                    message = str(component.get("message") or component.get("bucket") or factor)
+                    value = component.get("value")
+                    if component.get("metric") and isinstance(value, (int, float)):
+                        message = f"{message}: {float(value):.1f}"
+                    add(
+                        str(component.get("key") or factor),
+                        str(component.get("label") or result.get("label") or factor),
+                        int(component.get("delta") or 0),
+                        message,
+                        str(component.get("status") or "neutral"),
+                    )
+                continue
+            message = str(result.get("message") or result.get("bucket") or factor)
+            if factor == "technical" and result.get("ret5") is not None and result.get("ret20") is not None:
+                message = f"{message}: 5d {float(result['ret5']):+.1f}%, 20d {float(result['ret20']):+.1f}%"
+            elif factor == "volume" and result.get("ratio") is not None:
+                message = f"{message}: ratio {float(result['ratio']):.2f}"
+            add(
+                str(result.get("key") or factor),
+                str(result.get("label") or factor),
+                int(result.get("delta") or 0),
+                message,
+                str(result.get("status") or "neutral"),
+            )
 
     weighted = sentiment.get("weighted_dominant_sentiment")
-    if weighted in ("正面", "positive"):
-        add("news_sentiment", "新闻情绪", 5, "新闻加权情绪偏正面")
-    elif weighted in ("负面", "negative"):
-        add("news_sentiment", "新闻情绪", -8, sentiment.get("validation_note") or "新闻加权情绪偏负面")
-    else:
-        add("news_sentiment", "新闻情绪", 0, "新闻情绪中性或样本不足")
+    if weighted in ("姝ｉ潰", "positive"):
+        add("news_sentiment", "news_sentiment", 5, "weighted news sentiment is positive")
+    elif weighted in ("璐熼潰", "negative"):
+        add("news_sentiment", "news_sentiment", -8, sentiment.get("validation_note") or "weighted news sentiment is negative")
 
     if industry.get("available"):
-        themes = "、".join(t.get("theme", "") for t in (industry.get("themes") or [])[:2] if t.get("theme"))
-        add("industry_events", "行业/社会事件", 3, f"存在可跟踪事件线索：{themes or '行业事件'}")
+        themes = ", ".join(t.get("theme", "") for t in (industry.get("themes") or [])[:2] if t.get("theme"))
+        add("industry_theme", "industry_theme", 3, f"industry/theme evidence available: {themes}" if themes else "industry/theme evidence available")
 
-    red_count = 0
-    yellow_count = 0
     for key, item in risk_lights.items():
         level = item.get("level")
         if level == "red":
-            red_count += 1
-            add(f"risk_{key}", "风险灯", -18, item.get("message") or f"{key}红灯")
+            add(f"risk_{key}", "risk", -18, item.get("message") or f"{key} red light")
         elif level == "yellow":
-            yellow_count += 1
-            add(f"risk_{key}", "风险灯", -2, item.get("message") or f"{key}黄灯", "warning")
-    if red_count == 0 and yellow_count == 0:
-        add("risk_lights", "风险灯", 0, "未发现明显红灯或黄灯")
+            add(f"risk_{key}", "risk", -2, item.get("message") or f"{key} yellow light", "warning")
 
     return items
 

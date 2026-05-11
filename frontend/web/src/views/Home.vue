@@ -1,896 +1,694 @@
 <template>
-  <div class="home-page">
-    <section class="topbar">
+  <div v-if="isLoggedIn" class="signed-home">
+    <section class="member-hero">
       <div>
-        <h2>今日观察</h2>
-        <p>偏向单手成本友好、市值不过分庞大、数据风险较低的小中盘候选股。</p>
+        <span class="member-kicker">AstraQuant 工作台</span>
+        <h1>每日观察池</h1>
+        <p>登录成功后直接进入观察、复核、加入自选和设置预警的闭环流程。</p>
       </div>
-      <div class="topbar-actions">
-        <el-segmented v-model="market" :options="marketOptions" @change="loadRecommendations(false)" />
-        <el-button :icon="Refresh" :loading="loading" @click="loadRecommendations(true)">刷新</el-button>
+      <div class="member-actions">
+        <el-button type="primary" :icon="Search" @click="router.push('/stocks')">
+          浏览股票
+        </el-button>
+        <el-button :icon="Star" @click="router.push('/watchlist')">
+          我的自选
+        </el-button>
       </div>
     </section>
 
-    <el-alert
-      class="disclaimer"
-      type="warning"
-      show-icon
-      :closable="false"
-      title="今日观察不是买入建议。这里偏向小而美和散户友好价格，但仍需结合详情页、公告、估值和自身风险承受能力判断。"
-    />
+    <Recommendations />
+  </div>
 
-    <el-alert
-      v-if="recommendationWarning"
-      class="disclaimer"
-      type="warning"
-      show-icon
-      :closable="false"
-      :title="recommendationWarning"
-    />
-
-    <section class="trust-strip" :class="trustState.level">
-      <strong>可信状态：{{ trustState.label }}</strong>
-      <span>{{ trustState.message }}</span>
-      <span v-for="reason in trustState.reasons" :key="reason">{{ reason }}</span>
-    </section>
-
-    <section class="health-strip" :class="systemHealth?.status || 'unknown'">
-      <span>服务状态：{{ healthText }}</span>
-      <span v-for="svc in systemHealth?.services || []" :key="svc.service">
-        {{ serviceName(svc.service) }} {{ svc.status === 'ok' ? '正常' : '异常' }}
-      </span>
-      <span v-if="systemHealth?.status !== 'ok'" class="health-hint">
-        本地异常时运行：python scripts/start_local.py
-      </span>
-    </section>
-
-    <!-- 骨架屏 -->
-    <div v-if="loading" class="skeleton-grid">
-      <div v-for="i in 6" :key="i" class="skeleton-card">
-        <div class="skeleton-header">
-          <div class="skeleton-title"></div>
-          <div class="skeleton-circle"></div>
+  <div v-else class="landing-page">
+    <section class="hero-section">
+      <div class="market-backdrop" aria-hidden="true">
+        <div class="grid-lines"></div>
+        <div class="glow glow-red"></div>
+        <div class="glow glow-green"></div>
+        <div class="ticker-strip top">
+          <span v-for="item in tickerItems" :key="`top-${item.symbol}`">
+            {{ item.symbol }} {{ item.change }}
+          </span>
         </div>
-        <div class="skeleton-body">
-          <div class="skeleton-line skeleton-line-lg"></div>
-          <div class="skeleton-line"></div>
-          <div class="skeleton-tags">
-            <div class="skeleton-tag"></div>
-            <div class="skeleton-tag"></div>
-          </div>
+        <div class="ticker-strip bottom">
+          <span v-for="item in tickerItems" :key="`bottom-${item.symbol}`">
+            {{ item.name }} {{ item.signal }}
+          </span>
         </div>
       </div>
-    </div>
 
-    <!-- 卡片网格 -->
-    <div v-else-if="recommendations.length > 0" class="recommendation-grid">
-      <div
-        v-for="(row, index) in recommendations"
-        :key="row.symbol"
-        class="stock-card"
-        :style="{ animationDelay: `${index * 0.05}s` }"
-        @click="goDetail(row)"
-      >
-        <div class="card-header">
-          <div class="stock-info">
-            <strong class="stock-name">{{ row.name }}</strong>
-            <div class="stock-meta">
-              <span class="stock-symbol">{{ row.symbol }}</span>
-              <el-tag v-if="row.sector" size="small" effect="plain" class="sector-tag">{{ row.sector }}</el-tag>
-            </div>
-          </div>
-          <div class="score-ring" :class="scoreClass(row.score)">
-            <span class="score-value">{{ row.score }}</span>
-            <span class="score-label">{{ row.rating?.text }}</span>
-          </div>
+      <div class="hero-copy">
+        <div class="hero-kicker">
+          <span class="live-dot"></span>
+          <span>A 股观察与风险工作台</span>
         </div>
+        <h1>AstraQuant</h1>
+        <p class="hero-tagline">AI 驱动的 A 股观察平台</p>
+        <p class="hero-lead">
+          把行情、公告、新闻、财报和 AI 评分收敛成一套可解释、可追踪、可复核的观察流程。
+        </p>
 
-        <div class="card-metrics">
-          <div class="metric">
-            <span class="metric-label">最新价</span>
-            <strong class="metric-value">{{ formatPrice(row.price) }}</strong>
-          </div>
-          <div class="metric">
-            <span class="metric-label">涨跌幅</span>
-            <strong class="metric-value" :class="changeClass(row.change_pct)">
-              {{ formatPct(row.change_pct) }}
-            </strong>
-          </div>
-          <div class="metric">
-            <span class="metric-label">单手成本</span>
-            <strong class="metric-value">{{ formatMoney(row.lot_cost) }}</strong>
-          </div>
-        </div>
-
-        <div class="card-data-grade">
-          <el-tag
-            size="small"
-            :type="dataGradeTag(row.data_grade?.grade)"
-            effect="light"
-            class="grade-tag"
-          >
-            {{ row.data_grade?.grade || 'D' }}
-          </el-tag>
-          <span class="grade-label">{{ row.data_grade?.label || '数据不足' }}</span>
-          <el-tag
-            v-if="row.candidate_source || meta?.candidate_source"
-            size="small"
-            :type="isFallbackCandidate(row, meta?.candidate_source) ? 'danger' : 'info'"
-            effect="plain"
-            class="source-tag"
-          >
-            {{ candidateSourceLabel(row.candidate_source || meta?.candidate_source) }}
-          </el-tag>
-        </div>
-
-        <div v-if="row.reasons?.length" class="card-section">
-          <span class="section-label">观察理由</span>
-          <div class="chips">
-            <el-tag
-              v-for="reason in row.reasons.slice(0, 3)"
-              :key="reason"
-              size="small"
-              effect="plain"
-              class="reason-tag"
-            >
-              {{ reason }}
-            </el-tag>
-          </div>
-        </div>
-
-        <div v-if="topBreakdown(row).length" class="card-section">
-          <span class="section-label">评分明细</span>
-          <div class="chips">
-            <el-tag
-              v-for="item in topBreakdown(row).slice(0, 4)"
-              :key="item.key"
-              size="small"
-              :type="breakdownType(item)"
-              effect="light"
-              class="breakdown-tag"
-            >
-              {{ item.label }} {{ formatDelta(item.delta) }}
-            </el-tag>
-          </div>
-        </div>
-
-        <div v-if="(row.risk_flags || []).length || recommendationRowWarnings(row, meta?.candidate_source).length" class="card-section">
-          <span class="section-label">风险</span>
-          <div class="chips">
-            <el-tag
-              v-for="risk in (row.risk_flags || []).slice(0, 2)"
-              :key="risk"
-              size="small"
-              type="warning"
-              effect="plain"
-              class="risk-tag"
-            >
-              {{ risk }}
-            </el-tag>
-            <el-tag
-              v-for="warning in recommendationRowWarnings(row, meta?.candidate_source).slice(0, 2)"
-              :key="warning"
-              size="small"
-              type="danger"
-              effect="plain"
-              class="risk-tag"
-            >
-              {{ warning }}
-            </el-tag>
-          </div>
-        </div>
-
-        <div class="card-actions" @click.stop>
-          <el-button type="primary" link @click="goDetail(row)">详情</el-button>
-          <el-button
-            type="success"
-            link
-            :loading="addingSymbol === row.symbol"
-            :disabled="Boolean(actionBlockedReason(row))"
-            :title="actionBlockedReason(row)"
-            @click="handleAddToWatchlist(row)"
-          >
-            加自选
+        <div class="hero-actions">
+          <el-button type="primary" size="large" :icon="observationIcon" @click="openObservationPool">
+            {{ observationButtonText }}
+          </el-button>
+          <el-button size="large" class="ghost-button" :icon="Search" @click="router.push('/stocks')">
+            浏览股票数据
           </el-button>
         </div>
-      </div>
-    </div>
 
-    <!-- 空状态 -->
-    <div v-else class="empty-state-card">
-      <div class="empty-content">
-        <el-icon :size="56" class="empty-icon"><TrendCharts /></el-icon>
-        <strong>暂无今日观察数据</strong>
-        <span>{{ emptyReason }}</span>
+        <div class="access-note">
+          <el-icon><Lock /></el-icon>
+          <span>每日观察池、自选同步与预警管理需要登录后使用。</span>
+        </div>
       </div>
-    </div>
 
-    <section class="home-actions">
-      <router-link to="/recommendations" class="action-link">
-        <el-icon><TrendCharts /></el-icon>
-        <span>完整观察池</span>
-      </router-link>
-      <router-link to="/stocks" class="action-link">
-        <el-icon><Search /></el-icon>
-        <span>搜索股票</span>
-      </router-link>
-      <router-link to="/watchlist" class="action-link">
-        <el-icon><Star /></el-icon>
-        <span>我的自选</span>
-      </router-link>
+      <div class="hero-terminal" aria-label="AstraQuant market intelligence preview">
+        <div class="terminal-header">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>Signal Desk</strong>
+        </div>
+        <div class="terminal-score">
+          <span>Observation Score</span>
+          <strong>82</strong>
+          <small>数据质量 A / 风险中性</small>
+        </div>
+        <div class="terminal-chart">
+          <i v-for="bar in chartBars" :key="bar" :style="{ height: `${bar}%` }"></i>
+        </div>
+        <div class="signal-list">
+          <div v-for="item in signalItems" :key="item.title" class="signal-item">
+            <span :class="['signal-icon', item.tone]"></span>
+            <div>
+              <strong>{{ item.title }}</strong>
+              <small>{{ item.desc }}</small>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <div class="meta" v-if="meta">
-      <span>候选来源 {{ candidateSourceText }}</span>
-      <span>候选 {{ meta.candidate_count || 0 }} 只</span>
-      <span>有效评分 {{ meta.scored_count || 0 }} 只</span>
-      <span>{{ meta.cache_hit ? '缓存命中' : '重新计算' }}</span>
-      <span>{{ meta.updated_at }}</span>
-      <span>本页为观察池，不是买入建议</span>
-    </div>
+    <section class="workflow-section">
+      <div class="section-heading">
+        <span>核心闭环</span>
+        <h2>从发现到跟踪，不把用户丢在半路</h2>
+      </div>
+
+      <div class="workflow-grid">
+        <article v-for="item in capabilityItems" :key="item.title" class="workflow-card">
+          <div class="card-icon">
+            <el-icon><component :is="item.icon" /></el-icon>
+          </div>
+          <h3>{{ item.title }}</h3>
+          <p>{{ item.desc }}</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="guard-section">
+      <div class="guard-copy">
+        <span class="guard-label">访问控制</span>
+        <h2>观察池只给登录用户看</h2>
+        <p>
+          首页只展示产品能力，不暴露候选股票。真正的每日观察池、添加自选、设置预警和 AI 分析入口都会走登录校验。
+        </p>
+      </div>
+      <div class="guard-actions">
+        <el-button type="primary" :icon="observationIcon" @click="openObservationPool">
+          {{ observationButtonText }}
+        </el-button>
+        <el-button :icon="Star" @click="router.push('/watchlist')">
+          我的自选
+        </el-button>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { Refresh, Search, Star, TrendCharts } from '@element-plus/icons-vue'
-import { analysisApi } from '@/api'
-import { useWatchlistActions } from '@/composables/useWatchlistActions'
-import { formatDelta, formatMoney, formatPct, formatPrice } from '@/utils/formatters'
 import {
-  breakdownType,
-  candidateSourceLabel,
-  dataGradeTag,
-  isFallbackCandidate,
-  recommendationActionBlockedReason,
-  recommendationEmptyReason,
-  recommendationRowWarnings,
-  recommendationTrustState,
-  topBreakdown,
-  type RecommendationItem,
-  type RecommendationsResponse,
-} from '@/utils/recommendations'
-
-interface SystemHealth {
-  status?: string
-  services?: {
-    service: string
-    status: string
-  }[]
-}
-
-interface ApiErrorLike {
-  response?: {
-    data?: {
-      detail?: string
-    }
-  }
-}
+  ArrowRight,
+  Bell,
+  DataAnalysis,
+  DataLine,
+  Lock,
+  Search,
+  Star,
+  TrendCharts,
+} from '@element-plus/icons-vue'
+import { useUserStore } from '@/stores/user'
+import Recommendations from './Recommendations.vue'
 
 const router = useRouter()
-const loading = ref(false)
-const market = ref('ALL')
-const recommendations = ref<RecommendationItem[]>([])
-const meta = ref<RecommendationsResponse | null>(null)
-const systemHealth = ref<SystemHealth | null>(null)
-const { addingSymbol, addToWatchlist } = useWatchlistActions()
+const userStore = useUserStore()
 
-const marketOptions = [
-  { label: '沪深', value: 'ALL' },
-  { label: '沪市', value: 'SH' },
-  { label: '深市', value: 'SZ' },
+const isLoggedIn = computed(() => userStore.isLoggedIn)
+const observationButtonText = computed(() => (isLoggedIn.value ? '进入每日观察池' : '登录查看观察池'))
+const observationIcon = computed(() => (isLoggedIn.value ? ArrowRight : Lock))
+
+const tickerItems = [
+  { symbol: 'SH000001', name: '上证指数', change: '+0.82%', signal: '趋势观察' },
+  { symbol: 'SZ399001', name: '深证成指', change: '-0.18%', signal: '波动收敛' },
+  { symbol: 'CY399006', name: '创业板指', change: '+1.24%', signal: '量能回暖' },
+  { symbol: 'BK-AI', name: '科技成长', change: '+2.06%', signal: '情绪偏强' },
 ]
 
-async function loadRecommendations(forceRefresh = false) {
-  loading.value = true
-  try {
-    const res = await analysisApi.getRecommendations(market.value, 10, forceRefresh, 'retail_small')
-    recommendations.value = res.recommendations || []
-    meta.value = res
-  } catch (error) {
-    ElMessage.error((error as ApiErrorLike)?.response?.data?.detail || '今日观察加载失败')
-    recommendations.value = []
-    meta.value = null
-  } finally {
-    loading.value = false
-  }
-}
+const chartBars = [34, 56, 48, 68, 62, 76, 58, 82, 74, 88, 66, 72]
 
-async function loadSystemHealth() {
-  try {
-    systemHealth.value = await analysisApi.getPublicSystemHealth<SystemHealth>()
-  } catch {
-    systemHealth.value = { status: 'degraded', services: [] }
-  }
-}
+const signalItems = [
+  { title: '数据可信度', desc: '标记缓存、降级与更新时间', tone: 'green' },
+  { title: '风险解释', desc: '区分事实数据、规则评分和模型推断', tone: 'red' },
+  { title: '观察闭环', desc: '从观察池进入自选、预警和详情复核', tone: 'blue' },
+]
 
-const healthText = computed(() => {
-  if (!systemHealth.value) return '检查中'
-  return systemHealth.value.status === 'ok' ? '全部正常' : '部分异常'
-})
+const capabilityItems = [
+  {
+    title: '每日观察池',
+    desc: '登录后查看筛选结果，保留评分来源、候选池规模和更新时间。',
+    icon: TrendCharts,
+  },
+  {
+    title: '数据可信度',
+    desc: '把实时数据、缓存数据和兜底数据分层展示，降低误判风险。',
+    icon: DataLine,
+  },
+  {
+    title: '自选与预警',
+    desc: '围绕关注股票建立持续跟踪，不让一次性分析停在页面上。',
+    icon: Bell,
+  },
+  {
+    title: 'AI 风控分析',
+    desc: '强调证据来源和限制说明，避免把模型输出包装成买入建议。',
+    icon: DataAnalysis,
+  },
+]
 
-const candidateSourceText = computed(() => {
-  return candidateSourceLabel(meta.value?.candidate_source)
-})
-
-const recommendationWarning = computed(() => {
-  if (!meta.value) return ''
-  if (meta.value.status === 'unavailable') return '今日观察池不可用：数据库候选池为空，系统没有生成候选结果。'
-  const warnings = meta.value.warnings || []
-  if (meta.value.candidate_source === 'fallback') {
-    return '当前观察池使用开发兜底候选池，仅用于调试展示，不代表真实市场筛选结果。'
-  }
-  if (meta.value.candidate_source === 'mixed') {
-    return '数据库候选池偏小，已用开发兜底候选补足；每只标的会单独标明来源。'
-  }
-  return warnings[0] || ''
-})
-
-const trustState = computed(() => recommendationTrustState(meta.value))
-const emptyReason = computed(() => recommendationEmptyReason(meta.value))
-
-function serviceName(name: string) {
-  if (name === 'market-service') return '行情'
-  if (name === 'user-service') return '用户'
-  if (name === 'analysis-service') return '分析'
-  return name
-}
-
-function changeClass(value?: number | string) {
-  const number = Number(value)
-  if (!Number.isFinite(number)) return ''
-  return number >= 0 ? 'up' : 'down'
-}
-
-function scoreClass(score?: number) {
-  if (!score || !Number.isFinite(score)) return ''
-  if (score >= 70) return 'high'
-  if (score >= 40) return 'medium'
-  return 'low'
-}
-
-function goDetail(row: RecommendationItem) {
-  router.push(`/stocks/${row.symbol}`)
-}
-
-function handleAddToWatchlist(row: RecommendationItem) {
-  const reason = actionBlockedReason(row)
-  if (reason) {
-    ElMessage.warning(reason)
+function openObservationPool() {
+  if (isLoggedIn.value) {
+    router.push('/recommendations')
     return
   }
-  addToWatchlist(row)
-}
 
-function actionBlockedReason(row: RecommendationItem) {
-  return recommendationActionBlockedReason(row, meta.value)
+  router.push({ path: '/login', query: { redirect: '/recommendations' } })
 }
-
-onMounted(() => {
-  loadSystemHealth()
-  loadRecommendations(false)
-})
 </script>
 
 <style scoped>
-.home-page {
+.landing-page {
   display: flex;
   flex-direction: column;
+  gap: var(--space-6);
+}
+
+.signed-home {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.member-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  overflow: hidden;
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 12% 20%, rgba(226, 59, 59, 0.22), transparent 28%),
+    radial-gradient(circle at 88% 18%, rgba(22, 163, 106, 0.18), transparent 30%),
+    linear-gradient(135deg, #05070d 0%, #111827 58%, #060b13 100%);
+  color: #f8fafc;
+  box-shadow: 0 18px 60px rgba(15, 23, 42, 0.18);
+}
+
+.member-kicker {
+  color: rgba(248, 250, 252, 0.68);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.member-hero h1 {
+  margin: var(--space-2) 0;
+  color: #fff;
+  font-size: clamp(32px, 5vw, 54px);
+  line-height: 1.05;
+  font-weight: 900;
+}
+
+.member-hero p {
+  max-width: 640px;
+  margin: 0;
+  color: rgba(248, 250, 252, 0.78);
+  line-height: 1.7;
+}
+
+.member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.hero-section {
+  position: relative;
+  min-height: min(720px, calc(100vh - 150px));
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 24% 18%, rgba(226, 59, 59, 0.22), transparent 28%),
+    radial-gradient(circle at 78% 18%, rgba(22, 163, 106, 0.2), transparent 30%),
+    linear-gradient(135deg, #05070d 0%, #111827 52%, #060b13 100%);
+  color: #f8fafc;
+  padding: clamp(32px, 6vw, 82px);
+  box-shadow: 0 28px 90px rgba(15, 23, 42, 0.28);
+}
+
+.market-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.grid-lines {
+  position: absolute;
+  inset: 0;
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 54px 54px;
+}
+
+.glow {
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  filter: blur(20px);
+  opacity: 0.42;
+}
+
+.glow-red {
+  left: -120px;
+  bottom: 8%;
+  background: rgba(226, 59, 59, 0.22);
+}
+
+.glow-green {
+  right: -100px;
+  top: 14%;
+  background: rgba(22, 163, 106, 0.2);
+}
+
+.ticker-strip {
+  position: absolute;
+  left: -4%;
+  right: -4%;
+  display: flex;
+  gap: 28px;
+  color: rgba(248, 250, 252, 0.24);
+  font-family: var(--font-number);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.ticker-strip.top {
+  top: 24px;
+}
+
+.ticker-strip.bottom {
+  bottom: 24px;
+  justify-content: flex-end;
+}
+
+.hero-copy {
+  position: relative;
+  z-index: 1;
+  max-width: 760px;
+  padding-top: clamp(10px, 5vh, 44px);
+}
+
+.hero-kicker,
+.access-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: rgba(248, 250, 252, 0.78);
+}
+
+.hero-kicker {
+  padding: 8px 12px;
+  border: 1px solid rgba(248, 250, 252, 0.14);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.5);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #16a36a;
+  box-shadow: 0 0 0 6px rgba(22, 163, 106, 0.16);
+}
+
+.hero-copy h1 {
+  margin: var(--space-5) 0 var(--space-3);
+  color: #fff;
+  font-size: clamp(56px, 9vw, 118px);
+  line-height: 0.95;
+  font-weight: 900;
+}
+
+.hero-tagline {
+  margin: 0 0 var(--space-3);
+  color: #f97316;
+  font-size: clamp(22px, 3vw, 34px);
+  line-height: 1.2;
+  font-weight: 900;
+}
+
+.hero-lead {
+  max-width: 680px;
+  margin: 0;
+  color: rgba(248, 250, 252, 0.82);
+  font-size: clamp(18px, 2.2vw, 26px);
+  line-height: 1.55;
+  font-weight: 600;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.hero-actions :deep(.el-button) {
+  min-height: 48px;
+  border-radius: var(--radius-sm);
+  padding: 0 22px;
+  font-weight: 800;
+}
+
+.ghost-button {
+  border-color: rgba(248, 250, 252, 0.22);
+  background: rgba(248, 250, 252, 0.08);
+  color: #fff;
+}
+
+.ghost-button:hover {
+  border-color: rgba(248, 250, 252, 0.38);
+  background: rgba(248, 250, 252, 0.14);
+  color: #fff;
+}
+
+.access-note {
+  margin-top: var(--space-4);
+  font-size: 13px;
+}
+
+.hero-terminal {
+  position: relative;
+  z-index: 1;
+  width: min(460px, 100%);
+  margin: clamp(36px, 7vh, 74px) 0 0 auto;
+  border: 1px solid rgba(248, 250, 252, 0.14);
+  border-radius: var(--radius-md);
+  background: rgba(7, 12, 22, 0.78);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(16px);
+}
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: var(--space-4);
+  border-bottom: 1px solid rgba(248, 250, 252, 0.1);
+  color: rgba(248, 250, 252, 0.58);
+  font-size: 12px;
+}
+
+.terminal-header span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(248, 250, 252, 0.24);
+}
+
+.terminal-header strong {
+  margin-left: auto;
+  font-family: var(--font-number);
+  font-weight: 600;
+}
+
+.terminal-score {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-5);
+}
+
+.terminal-score span,
+.terminal-score small {
+  color: rgba(248, 250, 252, 0.58);
+}
+
+.terminal-score strong {
+  grid-row: span 2;
+  align-self: center;
+  color: #fff;
+  font-family: var(--font-number);
+  font-size: 52px;
+}
+
+.terminal-chart {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  height: 140px;
+  padding: 0 var(--space-5) var(--space-5);
+}
+
+.terminal-chart i {
+  flex: 1;
+  min-width: 10px;
+  border-radius: 6px 6px 0 0;
+  background: linear-gradient(180deg, #f97316 0%, #e23b3b 55%, #16a36a 100%);
+  opacity: 0.88;
+}
+
+.signal-list {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0 var(--space-5) var(--space-5);
+}
+
+.signal-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-3);
+  border: 1px solid rgba(248, 250, 252, 0.1);
+  border-radius: var(--radius-sm);
+  background: rgba(248, 250, 252, 0.06);
+}
+
+.signal-icon {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+}
+
+.signal-icon.green {
+  background: #16a36a;
+}
+
+.signal-icon.red {
+  background: #e23b3b;
+}
+
+.signal-icon.blue {
+  background: #60a5fa;
+}
+
+.signal-item strong,
+.signal-item small {
+  display: block;
+}
+
+.signal-item strong {
+  color: #fff;
+  font-size: 14px;
+}
+
+.signal-item small {
+  margin-top: 2px;
+  color: rgba(248, 250, 252, 0.58);
+}
+
+.workflow-section {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.section-heading span,
+.guard-label {
+  color: var(--color-primary);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.section-heading h2,
+.guard-copy h2 {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text);
+  font-size: clamp(26px, 4vw, 42px);
+  line-height: 1.12;
+  font-weight: 900;
+}
+
+.workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
 }
 
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-4);
-  align-items: center;
+.workflow-card {
+  min-height: 214px;
   padding: var(--space-5);
-  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  background: var(--color-surface);
   box-shadow: var(--shadow-card);
 }
 
-.topbar h2 {
-  margin: 0 0 var(--space-1);
-  color: var(--color-text);
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
+.card-icon {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 22px;
 }
 
-.topbar p {
+.workflow-card h3 {
+  margin: var(--space-4) 0 var(--space-2);
+  color: var(--color-text);
+  font-size: 18px;
+}
+
+.workflow-card p,
+.guard-copy p {
   margin: 0;
   color: var(--color-text-secondary);
+  line-height: 1.7;
 }
 
-.topbar-actions {
+.guard-section {
   display: flex;
-  gap: var(--space-3);
   align-items: center;
-}
-
-.disclaimer {
-  border-radius: var(--radius-md);
-}
-
-.health-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text-secondary);
-  background: var(--color-surface);
-  font-size: 13px;
-  box-shadow: var(--shadow-card);
-}
-
-.health-strip.ok {
-  border-color: rgba(22, 163, 106, 0.24);
-  background: #f2fbf6;
-}
-
-.health-strip.degraded,
-.health-strip.unknown {
-  border-color: #f2d48b;
-  background: var(--color-warning-soft);
-}
-
-.health-hint {
-  font-family: var(--font-number);
-  color: var(--color-warning);
-}
-
-.trust-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text-secondary);
-  background: var(--color-surface);
-  font-size: 13px;
-  box-shadow: var(--shadow-card);
-}
-
-.trust-strip strong {
-  color: var(--color-text);
-}
-
-.trust-strip.stable {
-  border-color: rgba(22, 163, 106, 0.24);
-  background: #f2fbf6;
-}
-
-.trust-strip.warning {
-  border-color: #f2d48b;
-  background: var(--color-warning-soft);
-}
-
-.trust-strip.blocked {
-  border-color: #ffa39e;
-  background: #fff1f0;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: var(--space-6) 0;
-  color: var(--color-text-muted);
-}
-
-/* Skeleton loading */
-.skeleton-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: var(--space-4);
-}
-
-.skeleton-card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-5);
-  overflow: hidden;
-}
-
-.skeleton-header {
-  display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: var(--space-4);
-}
-
-.skeleton-title {
-  height: 20px;
-  width: 120px;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
-  background-size: 200% 100%;
-  animation: skeleton-loading 1.5s ease-in-out infinite;
-}
-
-.skeleton-circle {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
-  background-size: 200% 100%;
-  animation: skeleton-loading 1.5s ease-in-out infinite;
-}
-
-.skeleton-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.skeleton-line {
-  height: 16px;
-  width: 60%;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
-  background-size: 200% 100%;
-  animation: skeleton-loading 1.5s ease-in-out infinite;
-}
-
-.skeleton-line-lg {
-  width: 40%;
-  height: 28px;
-}
-
-.skeleton-tags {
-  display: flex;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-}
-
-.skeleton-tag {
-  width: 60px;
-  height: 24px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-muted) 50%, var(--color-border) 75%);
-  background-size: 200% 100%;
-  animation: skeleton-loading 1.5s ease-in-out infinite;
-}
-
-@keyframes skeleton-loading {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-/* Card grid */
-.recommendation-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: var(--space-4);
-}
-
-.stock-card {
-  background: var(--color-surface);
+  gap: var(--space-5);
+  padding: var(--space-6);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  padding: var(--space-5);
-  cursor: pointer;
-  transition: all var(--transition-base);
-  animation: card-enter 0.4s ease-out backwards;
+  background:
+    linear-gradient(135deg, rgba(29, 78, 216, 0.08), rgba(22, 163, 106, 0.08)),
+    var(--color-surface);
+  box-shadow: var(--shadow-card);
 }
 
-.stock-card:hover {
-  border-color: var(--color-primary);
-  box-shadow: 0 8px 24px rgba(29, 78, 216, 0.08);
-  transform: translateY(-2px);
+.guard-copy {
+  max-width: 760px;
 }
 
-@keyframes card-enter {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
+.guard-copy h2 {
+  font-size: clamp(24px, 3vw, 34px);
+}
+
+.guard-copy p {
+  margin-top: var(--space-3);
+}
+
+.guard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+
+@media (max-width: 1180px) {
+  .workflow-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-
-.stock-info {
-  min-width: 0;
-  flex: 1;
-}
-
-.stock-name {
-  display: block;
-  font-size: 16px;
-  font-weight: 800;
-  color: var(--color-text);
-  margin-bottom: var(--space-1);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.stock-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.stock-symbol {
-  font-family: var(--font-number);
-  font-size: 13px;
-  color: var(--color-text-muted);
-}
-
-.sector-tag {
-  font-size: 11px;
-}
-
-.score-ring {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: 3px solid var(--color-border);
-  flex-shrink: 0;
-  transition: all var(--transition-fast);
-}
-
-.score-ring:hover {
-  transform: scale(1.05);
-}
-
-.score-ring.high {
-  border-color: var(--color-down);
-  background: var(--color-success-bg);
-}
-
-.score-ring.medium {
-  border-color: var(--color-warning);
-  background: var(--color-warning-soft);
-}
-
-.score-ring.low {
-  border-color: var(--color-up);
-  background: var(--color-danger-soft);
-}
-
-.score-value {
-  font-size: 18px;
-  font-weight: 800;
-  font-family: var(--font-number);
-  line-height: 1;
-}
-
-.score-label {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--color-text-muted);
-  margin-top: 2px;
-}
-
-.card-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--space-3);
-  padding: var(--space-3);
-  background: var(--color-surface-muted);
-  border-radius: var(--radius-sm);
-  margin-bottom: var(--space-3);
-}
-
-.metric {
-  text-align: center;
-}
-
-.metric-label {
-  display: block;
-  font-size: 11px;
-  color: var(--color-text-muted);
-  margin-bottom: var(--space-1);
-}
-
-.metric-value {
-  display: block;
-  font-family: var(--font-number);
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--color-text);
-}
-
-.card-data-grade {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.grade-label {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-}
-
-.grade-tag {
-  font-weight: 700;
-}
-
-.card-section {
-  margin-bottom: var(--space-3);
-}
-
-.section-label {
-  display: block;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: var(--space-2);
-}
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-.reason-tag,
-.breakdown-tag,
-.risk-tag {
-  font-size: 11px;
-}
-
-.card-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border);
-  margin-top: var(--space-2);
-}
-
-.empty-state-card {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 320px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-8);
-}
-
-.empty-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-3);
-  color: var(--color-text-muted);
-  text-align: center;
-}
-
-.empty-content strong {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--color-text);
-}
-
-.empty-icon {
-  color: var(--color-border-strong);
-}
-
-.up {
-  color: var(--color-up);
-  font-family: var(--font-number);
-  font-weight: 700;
-}
-
-.down {
-  color: var(--color-down);
-  font-family: var(--font-number);
-  font-weight: 700;
-}
-
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.home-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-
-.action-link {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-height: 48px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-  text-decoration: none;
-  background: var(--color-surface);
-  box-shadow: var(--shadow-card);
-  transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
-}
-
-.action-link:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  transform: translateY(-1px);
-}
-
-.meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  color: var(--color-text-muted);
-  font-size: 13px;
-}
-
-:deep(.el-table__row) {
-  cursor: pointer;
 }
 
 @media (max-width: 760px) {
-  .topbar {
+  .member-hero {
     align-items: stretch;
     flex-direction: column;
+    padding: var(--space-5);
   }
 
-  .topbar-actions {
-    justify-content: space-between;
+  .member-actions {
+    justify-content: stretch;
   }
 
-  .home-actions {
+  .member-actions :deep(.el-button) {
+    width: 100%;
+  }
+
+  .hero-section {
+    min-height: auto;
+    padding: var(--space-6) var(--space-4);
+  }
+
+  .hero-copy h1 {
+    font-size: clamp(48px, 16vw, 76px);
+  }
+
+  .hero-actions :deep(.el-button) {
+    width: 100%;
+  }
+
+  .hero-terminal {
+    margin-top: var(--space-6);
+  }
+
+  .terminal-chart {
+    height: 110px;
+  }
+
+  .workflow-grid {
     grid-template-columns: 1fr;
   }
 
-  .recommendation-grid,
-  .skeleton-grid {
-    grid-template-columns: 1fr;
+  .guard-section {
+    align-items: stretch;
+    flex-direction: column;
+    padding: var(--space-5);
   }
 
-  .stock-card {
-    padding: var(--space-4);
+  .guard-actions {
+    justify-content: stretch;
   }
 
-  .card-metrics {
-    grid-template-columns: 1fr;
-    gap: var(--space-2);
-  }
-
-  .metric {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    text-align: left;
-  }
-
-  .metric-label {
-    margin-bottom: 0;
+  .guard-actions :deep(.el-button) {
+    width: 100%;
   }
 }
 </style>

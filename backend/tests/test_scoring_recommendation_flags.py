@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+import asyncio
+import unittest
+from unittest.mock import AsyncMock, patch
+
+
+class ScoringRecommendationFlagTests(unittest.TestCase):
+    @staticmethod
+    def _pipeline_result() -> dict:
+        return {
+            "recommendations": [
+                {
+                    "symbol": "000001.SZ",
+                    "score": 80,
+                    "data_grade": {"grade": "A"},
+                    "risk_flags": [],
+                }
+            ],
+            "market": "ALL",
+            "status": "ok",
+            "candidate_source": "db",
+            "warnings": [],
+            "count": 1,
+            "candidate_count": 1,
+            "candidate_universe_count": 1,
+            "scored_count": 1,
+            "selection": {"mode": "daily_rotating_db_sample"},
+            "market_regime": {"regime": "range_bound"},
+            "active_strategy": {"id": "retail_small"},
+            "updated_at": "2026-05-09T00:00:00",
+        }
+
+    def test_recommendations_can_disable_evidence_and_debate_fields(self) -> None:
+        from backend.services.analysis_service.api.v1 import scoring
+
+        with patch(
+            "backend.services.analysis_service.api.v1.scoring.run_research_pipeline",
+            AsyncMock(return_value=self._pipeline_result()),
+        ) as run_pipeline, patch(
+            "backend.shared.cache.get_cache_manager",
+            AsyncMock(return_value=type("Cache", (), {"get": AsyncMock(return_value=None), "set": AsyncMock(return_value=None)})()),
+        ):
+            result = asyncio.run(
+                scoring.get_recommendations(
+                    market="ALL",
+                    limit=5,
+                    max_candidates=20,
+                    force_refresh=True,
+                    strategy="auto",
+                    include_evidence=False,
+                    include_debate=False,
+                    concurrency=8,
+                )
+            )
+
+        self.assertEqual(result["count"], 1)
+        self.assertFalse(run_pipeline.await_args.kwargs["include_evidence"])
+        self.assertFalse(run_pipeline.await_args.kwargs["include_debate"])
+
+    def test_recommendation_cache_key_isolated_by_research_payload_flags(self) -> None:
+        from backend.services.analysis_service.api.v1 import scoring
+
+        cache = type("Cache", (), {"get": AsyncMock(return_value=None), "set": AsyncMock(return_value=None)})()
+        with patch(
+            "backend.services.analysis_service.api.v1.scoring.run_research_pipeline",
+            AsyncMock(return_value=self._pipeline_result()),
+        ), patch("backend.shared.cache.get_cache_manager", AsyncMock(return_value=cache)):
+            asyncio.run(
+                scoring.get_recommendations(
+                    market="ALL",
+                    limit=5,
+                    max_candidates=20,
+                    force_refresh=False,
+                    strategy="auto",
+                    include_evidence=False,
+                    include_debate=False,
+                    concurrency=8,
+                )
+            )
+            asyncio.run(
+                scoring.get_recommendations(
+                    market="ALL",
+                    limit=5,
+                    max_candidates=20,
+                    force_refresh=False,
+                    strategy="auto",
+                    include_evidence=True,
+                    include_debate=True,
+                    concurrency=8,
+                )
+            )
+
+        keys = [
+            call.args[1]
+            for call in cache.get.await_args_list
+            if call.args[0] == "daily_recommendations" and "evidence-" in call.args[1]
+        ]
+        self.assertIn("evidence-0:debate-0", keys[0])
+        self.assertIn("evidence-1:debate-1", keys[1])
+        self.assertNotEqual(keys[0], keys[1])
+
+
+if __name__ == "__main__":
+    unittest.main()

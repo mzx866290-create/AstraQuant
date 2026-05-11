@@ -11,7 +11,9 @@ Current ORM tables:
 - company_announcements
 - crawl_status
 - financial_reports
+- observation_reviews
 - price_alerts
+- research_observations
 - stock_news
 - stocks
 - user_activity_logs

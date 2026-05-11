@@ -102,6 +102,12 @@ for (const exportName of expectedApiObjects) {
   assert.ok(apiModule[exportName], `${exportName} should be defined`)
 }
 
+assert.equal(
+  typeof apiModule.adminApi.getResearchReviewReadiness,
+  'function',
+  'adminApi should expose getResearchReviewReadiness()',
+)
+
 assert.equal(apiModule.normalizeApiBaseUrl(' https://example.test/api/// '), 'https://example.test/api')
 assert.equal(apiModule.isDirectServiceBaseUrl('http://localhost:8001'), true)
 assert.equal(apiModule.isDirectServiceBaseUrl('http://127.0.0.1:8002/'), true)

@@ -35,6 +35,38 @@ export const adminApi = {
     api.get('/api/v1/admin/stats/calls-by-model'),
   getTopUsers: (limit?: number) =>
     api.get('/api/v1/admin/stats/top-users', { params: { limit } }),
+  getResearchReviewScheduler: <T = unknown>() =>
+    api.get<T>('/api/v1/admin/stats/review-scheduler'),
+  getResearchReviewReadiness: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/review-readiness', { params }),
+  getResearchReviewReport: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/review-report', { params }),
+  getResearchReviewFactorReport: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/review-factor-report', { params }),
+  getResearchWeightSuggestions: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/review-weight-suggestions', { params }),
+  getResearchWeightSuggestionAudits: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/review-weight-suggestion-audits', { params }),
+  getResearchWeightStrategyPatchPreview: <T = unknown>(auditId: number, params?: unknown) =>
+    api.get<T>(`/api/v1/admin/stats/review-weight-suggestion-audits/${auditId}/strategy-patch`, { params }),
+  createResearchWeightStrategyPatchProposal: <T = unknown>(auditId: number, data?: unknown) =>
+    api.post<T>(`/api/v1/admin/stats/review-weight-suggestion-audits/${auditId}/strategy-patch-proposals`, data || {}),
+  getResearchWeightStrategyPatchProposals: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/strategy-weight-patch-proposals', { params }),
+  updateResearchWeightStrategyPatchProposal: <T = unknown>(proposalId: number, data: unknown) =>
+    api.patch<T>(`/api/v1/admin/stats/strategy-weight-patch-proposals/${proposalId}`, data),
+  applyResearchWeightStrategyPatchProposal: <T = unknown>(proposalId: number, data?: unknown) =>
+    api.post<T>(`/api/v1/admin/stats/strategy-weight-patch-proposals/${proposalId}/apply`, data || {}),
+  getResearchWeightStrategyPatchImpactPreview: <T = unknown>(proposalId: number, params?: unknown) =>
+    api.get<T>(`/api/v1/admin/stats/strategy-weight-patch-proposals/${proposalId}/impact-preview`, { params }),
+  getResearchWeightStrategyVersions: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/strategy-weight-versions', { params }),
+  rollbackResearchWeightStrategyVersion: <T = unknown>(versionId: number) =>
+    api.post<T>(`/api/v1/admin/stats/strategy-weight-versions/${versionId}/rollback`),
+  updateResearchWeightSuggestionAudit: <T = unknown>(auditId: number, data: unknown) =>
+    api.patch<T>(`/api/v1/admin/stats/review-weight-suggestion-audits/${auditId}`, data),
+  runResearchReview: <T = unknown>(params?: unknown) =>
+    api.post<T>('/api/v1/admin/stats/review-scheduler/run-once', null, { params }),
 
   getLogs: <T = unknown>(params?: unknown) =>
     api.get<T>('/api/v1/admin/logs', { params }),

@@ -164,6 +164,92 @@ class RecommendationCandidateSourceTests(unittest.TestCase):
         self.assertNotIn("candidate_source", result["recommendations"][0])
         fallback.assert_not_called()
 
+    def test_full_observation_request_bootstraps_once_then_returns_to_rotation(self) -> None:
+        from backend.services.analysis_service.api.v1 import scoring
+
+        cache = MemoryCache()
+        env = {
+            "APP_ENV": "development",
+            "DAILY_RECOMMENDATIONS_INITIAL_FULL_SCAN": "true",
+            "DAILY_RECOMMENDATIONS_INITIAL_FULL_SCAN_MAX": "5000",
+        }
+        db_rows = [{"symbol": "000001.SZ", "name": "Unit Test Bank", "market": "SZ"}]
+        candidate_sizes: list[int] = []
+
+        def fake_load(_market: str, sample_size: int):
+            candidate_sizes.append(sample_size)
+            return [dict(row) for row in db_rows]
+
+        with patch.dict("os.environ", env, clear=False), patch(
+            "backend.shared.cache.get_cache_manager", AsyncMock(return_value=cache)
+        ), patch.object(scoring, "_load_recommendation_candidates", side_effect=fake_load), patch.object(
+            scoring, "_evaluate_candidates_parallel", AsyncMock(return_value=[_scored_candidate()])
+        ):
+            first = asyncio.run(
+                scoring.get_recommendations(
+                    market="ALL",
+                    limit=50,
+                    max_candidates=200,
+                    force_refresh=True,
+                    strategy="retail_small",
+                    concurrency=16,
+                    initial_full_scan=True,
+                )
+            )
+            second = asyncio.run(
+                scoring.get_recommendations(
+                    market="ALL",
+                    limit=50,
+                    max_candidates=200,
+                    force_refresh=True,
+                    strategy="retail_small",
+                    concurrency=16,
+                    initial_full_scan=True,
+                )
+            )
+
+        self.assertEqual(candidate_sizes, [5000, 200])
+        self.assertTrue(first["initial_full_scan"]["used"])
+        self.assertEqual(first["selection"]["mode"], "initial_full_scan")
+        self.assertFalse(second["initial_full_scan"]["used"])
+        self.assertEqual(second["initial_full_scan"]["status"], "already_completed")
+
+    def test_full_observation_page_load_does_not_block_on_initial_full_scan_by_default(self) -> None:
+        from backend.services.analysis_service.api.v1 import scoring
+
+        cache = MemoryCache()
+        env = {
+            "APP_ENV": "development",
+            "DAILY_RECOMMENDATIONS_INITIAL_FULL_SCAN": "true",
+            "DAILY_RECOMMENDATIONS_INITIAL_FULL_SCAN_MAX": "5000",
+        }
+        db_rows = [{"symbol": "000001.SZ", "name": "Unit Test Bank", "market": "SZ"}]
+        candidate_sizes: list[int] = []
+
+        def fake_load(_market: str, sample_size: int):
+            candidate_sizes.append(sample_size)
+            return [dict(row) for row in db_rows]
+
+        with patch.dict("os.environ", env, clear=False), patch(
+            "backend.shared.cache.get_cache_manager", AsyncMock(return_value=cache)
+        ), patch.object(scoring, "_load_recommendation_candidates", side_effect=fake_load), patch.object(
+            scoring, "_evaluate_candidates_parallel", AsyncMock(return_value=[_scored_candidate()])
+        ):
+            result = asyncio.run(
+                scoring.get_recommendations(
+                    market="ALL",
+                    limit=50,
+                    max_candidates=200,
+                    force_refresh=True,
+                    strategy="retail_small",
+                    concurrency=16,
+                )
+            )
+
+        self.assertEqual(candidate_sizes, [200])
+        self.assertFalse(result["initial_full_scan"]["used"])
+        self.assertEqual(result["initial_full_scan"]["status"], "not_requested")
+
 
 if __name__ == "__main__":
     unittest.main()

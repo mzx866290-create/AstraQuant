@@ -48,7 +48,7 @@ if not is_production():
 validate_production_settings("analysis-service", require_ai_encryption=True)
 
 from api.v1 import technical, compare, scoring, patterns
-from api.v1 import financial_analysis, valuation
+from api.v1 import financial_analysis, valuation, reviews
 from api.v1.admin_models import router as admin_models_router
 from api.v1.admin_users import router as admin_users_router
 from api.v1.admin_stats import router as admin_stats_router
@@ -79,10 +79,20 @@ async def lifespan(app: FastAPI):
         model_health_scheduler.start()
     except Exception as e:
         logger.warning(f"AI模型健康检测定时任务启动跳过: {e}")
+    try:
+        from backend.services.analysis_service.engine.review_scheduler import review_scheduler
+        review_scheduler.start()
+    except Exception as e:
+        logger.warning(f"研究复盘定时任务启动跳过: {e}")
     yield
     try:
         from backend.services.analysis_service.engine.model_health_scheduler import model_health_scheduler
         await model_health_scheduler.stop()
+    except Exception:
+        pass
+    try:
+        from backend.services.analysis_service.engine.review_scheduler import review_scheduler
+        await review_scheduler.stop()
     except Exception:
         pass
     try:
@@ -139,6 +149,7 @@ app.include_router(valuation.router,          prefix="/api/v1/analysis/valuation
 
 # AI 分析 (用户端)
 app.include_router(ai_analysis_router, prefix="/api/v1/analysis", tags=["AI分析"])
+app.include_router(reviews.router, prefix="/api/v1/analysis/reviews", tags=["复盘摘要"])
 
 # 管理员 API
 app.include_router(admin_models_router, prefix="/api/v1/admin", tags=["管理员-模型管理"])
