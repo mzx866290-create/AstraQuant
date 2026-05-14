@@ -7,6 +7,14 @@
         <p class="page-subtitle">关注股票智能分析与监控</p>
       </div>
       <div class="header-actions">
+        <el-button size="small" @click="exportWatchlist">
+          <el-icon><Download /></el-icon>
+          <span>导出</span>
+        </el-button>
+        <el-button size="small" @click="openImportDialog">
+          <el-icon><Upload /></el-icon>
+          <span>导入</span>
+        </el-button>
         <el-button
           type="primary"
           size="small"
@@ -67,7 +75,13 @@
         v-for="(item, index) in watchlistItems"
         :key="item.symbol"
         class="watch-card"
+        draggable="true"
+        :class="{ dragging: draggedStockId === item.stock_id }"
         :style="{ animationDelay: `${index * 0.05}s` }"
+        @dragstart="handleDragStart(item)"
+        @dragover.prevent
+        @drop="handleDrop(index)"
+        @dragend="handleDragEnd"
       >
         <!-- 卡片头部 -->
         <div class="card-header" @click="goDetail(item)">
@@ -192,6 +206,29 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="showImportDialog"
+      title="导入自选股"
+      width="460px"
+      :close-on-click-modal="false"
+    >
+      <div class="import-dialog-content">
+        <el-input
+          v-model="importText"
+          type="textarea"
+          :rows="8"
+          placeholder="粘贴股票代码，支持逗号、空格、换行分隔，如：600519, 000858"
+        />
+        <p class="add-tip">将自动跳过已存在或格式无效的代码。</p>
+      </div>
+      <template #footer>
+        <el-button @click="showImportDialog = false">取消</el-button>
+        <el-button type="primary" :loading="importing" @click="confirmImport">
+          导入
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -207,6 +244,8 @@ import {
   View,
   Delete,
   Search,
+  Download,
+  Upload,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { analysisApi, watchlistApi } from '@/api'
@@ -246,10 +285,14 @@ const router = useRouter()
 const watchlistItems = ref<WatchlistItem[]>([])
 const watchlistId = ref<number | null>(null)
 const showAddDialog = ref(false)
+const showImportDialog = ref(false)
 const addSymbol = ref('')
+const importText = ref('')
 const summaryMap = ref<Record<string, BatchSummaryItem>>({})
 const summaryLoading = ref(false)
 const loading = ref(false)
+const importing = ref(false)
+const draggedStockId = ref<number | null>(null)
 
 function onInput(val: string) {
   addSymbol.value = val.replace(/[^0-9]/g, '').slice(0, 6)
@@ -258,6 +301,11 @@ function onInput(val: string) {
 function openAddDialog() {
   addSymbol.value = ''
   showAddDialog.value = true
+}
+
+function openImportDialog() {
+  importText.value = ''
+  showImportDialog.value = true
 }
 
 async function loadWatchlist() {
@@ -276,6 +324,11 @@ async function loadWatchlist() {
   } finally {
     loading.value = false
   }
+}
+
+function extractCodes(text: string) {
+  const matches = text.match(/\d{6}/g) || []
+  return Array.from(new Set(matches))
 }
 
 async function loadBatchSummary(forceRefresh = false) {
@@ -323,6 +376,73 @@ async function confirmAdd() {
   } catch (error) {
     const msg = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '添加失败'
     ElMessage.error(msg)
+  }
+}
+
+async function confirmImport() {
+  if (!watchlistId.value) return
+  const existingCodes = new Set(watchlistItems.value.map((item) => item.symbol.slice(0, 6)))
+  const codes = extractCodes(importText.value).filter((code) => !existingCodes.has(code))
+  if (!codes.length) {
+    ElMessage.warning('没有可导入的新股票代码')
+    return
+  }
+
+  importing.value = true
+  let success = 0
+  try {
+    for (const code of codes) {
+      try {
+        await watchlistApi.addToWatchlist(watchlistId.value, { symbol: code })
+        success += 1
+      } catch (error) {
+        console.warn('导入自选股失败:', code, error)
+      }
+    }
+    showImportDialog.value = false
+    ElMessage.success(`导入完成，新增 ${success} 只`)
+    await loadWatchlist()
+  } finally {
+    importing.value = false
+  }
+}
+
+function exportWatchlist() {
+  const content = watchlistItems.value
+    .map((item) => [item.symbol, item.name || '', item.market || ''].join(','))
+    .join('\n')
+  const blob = new Blob([`symbol,name,market\n${content}`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'watchlist.csv'
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function handleDragStart(row: WatchlistItem) {
+  draggedStockId.value = row.stock_id
+}
+
+function handleDragEnd() {
+  draggedStockId.value = null
+}
+
+async function handleDrop(targetIndex: number) {
+  if (!watchlistId.value || draggedStockId.value == null) return
+  const fromIndex = watchlistItems.value.findIndex((item) => item.stock_id === draggedStockId.value)
+  if (fromIndex < 0 || fromIndex === targetIndex) return
+  const next = [...watchlistItems.value]
+  const [moved] = next.splice(fromIndex, 1)
+  next.splice(targetIndex, 0, moved)
+  watchlistItems.value = next
+  draggedStockId.value = null
+  try {
+    await watchlistApi.reorderWatchlistItems(watchlistId.value, next.map((item) => item.stock_id))
+    ElMessage.success('排序已更新')
+  } catch (error) {
+    ElMessage.error('排序保存失败')
+    await loadWatchlist()
   }
 }
 
@@ -518,6 +638,11 @@ onMounted(() => {
 
 .watch-card:hover::before {
   opacity: 1;
+}
+
+.watch-card.dragging {
+  opacity: 0.55;
+  border-color: var(--color-primary);
 }
 
 @keyframes card-enter {
@@ -751,6 +876,12 @@ onMounted(() => {
 
 /* Add dialog */
 .add-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.import-dialog-content {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);

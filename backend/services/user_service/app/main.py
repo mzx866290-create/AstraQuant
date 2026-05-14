@@ -82,6 +82,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5175", "http://localhost:5173",
         "http://localhost", "http://localhost:80",
+        "https://yhang.cc.cd",
     ],
     allow_credentials=True,
     allow_methods=["*"],

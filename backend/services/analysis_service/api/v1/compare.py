@@ -21,15 +21,31 @@ engine = IndicatorEngine()
 
 
 async def _fetch_kline(symbol: str, limit: int = 120) -> list[dict]:
-    """获取真实K线数据"""
+    """获取K线数据，东方财富优先，失败后 fallback 到新浪"""
     from backend.services.data_crawler.sources.eastmoney_source import EastMoneySource
 
-    em = EastMoneySource()
     try:
-        data = await em.fetch_daily_kline(symbol)
-    finally:
-        await em.close()
-    return data[-limit:] if len(data) > limit else data
+        em = EastMoneySource()
+        try:
+            data = await em.fetch_daily_kline(symbol)
+        finally:
+            await em.close()
+        if data:
+            return data[-limit:] if len(data) > limit else data
+    except Exception as e:
+        logger.warning(f"{symbol} 东方财富K线失败, 尝试新浪: {e}")
+
+    from backend.services.data_crawler.sources.sina_tencent_source import SinaTencentSource
+
+    try:
+        st = SinaTencentSource()
+        data = await st.fetch_daily_kline(symbol)
+        if data:
+            return data[-limit:] if len(data) > limit else data
+    except Exception as e:
+        logger.warning(f"{symbol} 新浪K线也失败: {e}")
+
+    return []
 
 
 @router.get("")

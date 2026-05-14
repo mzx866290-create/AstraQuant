@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, Mock, patch
 from backend.services.data_crawler.app.main import DataCrawler
 from backend.services.data_crawler.pipeline.etl import (
     ClickHouseWriteUnavailable,
-    DragonTigerETL,
     KLineETL,
     MinuteKLineETL,
     MonthlyKLineETL,
@@ -25,13 +24,24 @@ class MemoryKLineETL(KLineETL):
         return len(rows)
 
 
-class MemoryDragonTigerETL(DragonTigerETL):
-    def __init__(self):
-        self.rows = []
+class FakeMoneyFlowSourceChain:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
 
-    async def _batch_write(self, rows):
-        self.rows.extend(rows)
-        return len(rows)
+    async def fetch_with_fallback(self, method_name: str, **kwargs):
+        self.calls.append({"method_name": method_name, **kwargs})
+        return {"data": self.rows, "source": "unit-money-flow"}
+
+
+class FakeMoneyFlowETL:
+    def __init__(self, saved_count: int):
+        self.saved_count = saved_count
+        self.calls = []
+
+    async def save(self, symbol: str, data: list[dict], source: str):
+        self.calls.append({"symbol": symbol, "data": data, "source": source})
+        return self.saved_count
 
 
 class FakeDailySourceChain:
@@ -47,26 +57,6 @@ class FakeDailySourceChain:
             "adjust": adjust,
         })
         return {"data": self.rows, "source": "unit-source"}
-
-
-class FakeDragonTigerSourceChain:
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls = []
-
-    async def fetch_with_fallback(self, method_name: str, **kwargs):
-        self.calls.append({"method_name": method_name, **kwargs})
-        return {"data": self.rows, "source": "unit-lhb"}
-
-
-class FakeMoneyFlowSourceChain:
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls = []
-
-    async def fetch_with_fallback(self, method_name: str, **kwargs):
-        self.calls.append({"method_name": method_name, **kwargs})
-        return {"data": self.rows, "source": "unit-money-flow"}
 
 
 class FakePeriodKLineSourceChain:
@@ -111,17 +101,7 @@ class FakeDailyETL:
         return self.saved_count
 
 
-class FakeDragonTigerETL:
-    def __init__(self, saved_count: int):
-        self.saved_count = saved_count
-        self.calls = []
-
-    async def save(self, data: list[dict], source: str):
-        self.calls.append({"data": data, "source": source})
-        return self.saved_count
-
-
-class FakeMoneyFlowETL:
+class FakePeriodKLineETL:
     def __init__(self, saved_count: int):
         self.saved_count = saved_count
         self.calls = []
@@ -463,34 +443,6 @@ class DataCrawlerClosureTests(TestCase):
         self.assertIn("(symbol, week_start) IN", delete_query)
         self.assertIn("toDate('2026-05-04')", delete_query)
 
-    def test_dragon_tiger_batch_write_escapes_reason_in_delete_query(self) -> None:
-        etl = DragonTigerETL()
-        client_calls = []
-        fake_module = build_fake_clickhouse_module(client_calls)
-        rows = [{
-            "trade_date": date(2026, 5, 6),
-            "symbol": "600519",
-            "name": "Kweichow Moutai",
-            "reason": "O'Reilly\nBreakout",
-            "close_price": 1668.88,
-            "change_pct": 8.12,
-            "turnover": 520000000.0,
-            "buy_amount": 320000000.0,
-            "sell_amount": 200000000.0,
-            "net_amount": 120000000.0,
-            "buy_seats": "[]",
-            "sell_seats": "[]",
-            "source": "unit-lhb",
-        }]
-
-        with patch.dict(sys.modules, {"clickhouse_driver": fake_module}):
-            with patch.dict("os.environ", {"CLICKHOUSE_DRAGON_TIGER_TABLE": "dragon_tiger"}, clear=False):
-                saved = asyncio.run(etl._batch_write(rows))
-
-        self.assertEqual(saved, 1)
-        delete_query = [call for call in client_calls if call.get("type") == "execute"][0]["query"]
-        self.assertIn("O\\'Reilly\\nBreakout", delete_query)
-
     def test_clickhouse_delete_failure_does_not_fall_through_to_insert(self) -> None:
         etl = KLineETL()
         client_calls = []
@@ -508,35 +460,6 @@ class DataCrawlerClosureTests(TestCase):
         execute_calls = [call for call in client_calls if call.get("type") == "execute"]
         self.assertEqual(len(execute_calls), 1)
         self.assertEqual(client_calls[-1]["type"], "disconnect")
-
-    def test_dragon_tiger_etl_cleans_and_writes_rows(self) -> None:
-        etl = MemoryDragonTigerETL()
-        saved = asyncio.run(etl.save(
-            [{
-                "symbol": "600519",
-                "name": "Kweichow Moutai",
-                "trade_date": "20260506",
-                "reason": "daily breakout",
-                "close": "1668.88",
-                "change_pct": "8.12",
-                "turnover": "520000000",
-                "buy_amount": "320000000",
-                "sell_amount": "200000000",
-                "net_amount": "120000000",
-            }],
-            "unit-lhb",
-        ))
-
-        self.assertEqual(saved, 1)
-        self.assertEqual(etl.rows[0]["trade_date"], date(2026, 5, 6))
-        self.assertEqual(etl.rows[0]["symbol"], "600519")
-        self.assertEqual(etl.rows[0]["net_amount"], 120000000.0)
-
-    def test_dragon_tiger_batch_write_rejects_invalid_table_name_before_insert(self) -> None:
-        etl = DragonTigerETL()
-        with patch.dict("os.environ", {"CLICKHOUSE_DRAGON_TIGER_TABLE": "dragon_tiger;drop"}, clear=False):
-            with self.assertRaises(ClickHouseWriteUnavailable):
-                asyncio.run(etl._batch_write([{"symbol": "600519"}]))
 
     def test_money_flow_etl_returns_saved_count_and_cleans_rows(self) -> None:
         money_flow_etl_class = self._require_etl_class("MoneyFlowETL")
@@ -903,55 +826,6 @@ class DataCrawlerClosureTests(TestCase):
         result = asyncio.run(crawler.collect_realtime_quotes())
 
         self.assertEqual(result["success"], 0)
-        self.assertEqual(records[0][0][2], "error")
-        self.assertIn("write failed", records[0][1]["error_message"])
-
-    def test_dragon_tiger_task_fetches_writes_and_records_status(self) -> None:
-        crawler = object.__new__(DataCrawler)
-        rows = [{"symbol": "600519", "name": "Kweichow Moutai", "trade_date": "20260506"}]
-        crawler.source_chain = FakeDragonTigerSourceChain(rows)
-        crawler.dragon_tiger_etl = FakeDragonTigerETL(saved_count=1)
-        records = []
-        crawler._record_status = lambda *args, **kwargs: records.append((args, kwargs))
-
-        with patch.dict("os.environ", {"DATA_CRAWLER_DRAGON_TIGER_DATE": "2026-05-06"}, clear=False):
-            result = asyncio.run(crawler.collect_dragon_tiger())
-
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(result["fetched"], 1)
-        self.assertEqual(result["saved"], 1)
-        self.assertEqual(crawler.source_chain.calls[0]["method_name"], "fetch_dragon_tiger")
-        self.assertEqual(crawler.source_chain.calls[0]["date"], "2026-05-06")
-        self.assertEqual(crawler.dragon_tiger_etl.calls[0]["source"], "unit-lhb")
-        self.assertEqual(records[0][0][0], "GLOBAL")
-        self.assertEqual(records[0][0][1], "dragon_tiger")
-        self.assertEqual(records[0][0][2], "success")
-
-    def test_dragon_tiger_task_no_saved_is_observable(self) -> None:
-        crawler = object.__new__(DataCrawler)
-        crawler.source_chain = FakeDragonTigerSourceChain([{"symbol": "600519", "trade_date": "20260506"}])
-        crawler.dragon_tiger_etl = FakeDragonTigerETL(saved_count=0)
-        records = []
-        crawler._record_status = lambda *args, **kwargs: records.append((args, kwargs))
-
-        result = asyncio.run(crawler.collect_dragon_tiger())
-
-        self.assertEqual(result["status"], "no_saved")
-        self.assertEqual(records[0][0][2], "no_saved")
-        self.assertEqual(records[0][1]["fetched"], 1)
-        self.assertEqual(records[0][1]["saved"], 0)
-
-    def test_dragon_tiger_write_error_is_recorded_as_error(self) -> None:
-        crawler = object.__new__(DataCrawler)
-        crawler.source_chain = FakeDragonTigerSourceChain([{"symbol": "600519", "trade_date": "20260506"}])
-        crawler.dragon_tiger_etl = types.SimpleNamespace(save=AsyncMock(side_effect=RuntimeError("write failed")))
-        records = []
-        crawler._record_status = lambda *args, **kwargs: records.append((args, kwargs))
-
-        result = asyncio.run(crawler.collect_dragon_tiger())
-
-        self.assertEqual(result["status"], "error")
-        self.assertIn("write failed", result["message"])
         self.assertEqual(records[0][0][2], "error")
         self.assertIn("write failed", records[0][1]["error_message"])
 

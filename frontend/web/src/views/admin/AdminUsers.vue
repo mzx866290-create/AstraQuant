@@ -7,6 +7,15 @@
       </div>
     </div>
 
+    <el-alert
+      v-if="loadError"
+      :title="loadError"
+      type="error"
+      show-icon
+      :closable="false"
+      class="load-error"
+    />
+
     <div v-if="loading" class="skeleton-list">
       <div v-for="i in 6" :key="i" class="skeleton-user">
         <div class="skeleton-avatar"></div>
@@ -44,6 +53,27 @@
           </div>
           <div class="user-role">
             <span class="role-badge" :class="user.role">{{ roleLabel(user.role) }}</span>
+            <el-select
+              v-if="user.id !== userStore.userInfo?.id"
+              :model-value="user.role"
+              size="small"
+              style="width: 100px; margin-left: 8px;"
+              @change="(val: string) => changeRole(user, val)"
+            >
+              <el-option label="免费用户" value="free" />
+              <el-option label="付费会员" value="premium" />
+              <el-option label="管理员" value="admin" />
+            </el-select>
+          </div>
+          <div class="user-active-toggle" @click.stop>
+            <el-switch
+              :model-value="user.is_active"
+              :disabled="user.id === userStore.userInfo?.id"
+              active-color="#10a37f"
+              inactive-color="#d1d5db"
+              :title="user.id === userStore.userInfo?.id ? '不能禁用当前登录账号' : (user.is_active ? '点击禁用' : '点击启用')"
+              @change="(val: string | number | boolean) => toggleActive(user, val as boolean)"
+            />
           </div>
         </div>
 
@@ -90,6 +120,19 @@
       <h3>暂无用户</h3>
       <p>还没有用户注册</p>
     </div>
+
+    <div v-if="!loading && totalUsers > pageSize" class="pagination-row">
+      <el-pagination
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        :page-sizes="[10, 20, 50, 100]"
+        :total="totalUsers"
+        layout="total, sizes, prev, pager, next"
+        background
+        @size-change="handlePageSizeChange"
+        @current-change="loadUsers"
+      />
+    </div>
   </div>
 </template>
 
@@ -120,8 +163,17 @@ interface ApiErrorLike {
   }
 }
 
+interface AdminUsersListResponse {
+  items?: AdminUser[]
+  total?: number
+}
+
 const loading = ref(true)
+const loadError = ref('')
 const users = ref<AdminUser[]>([])
+const totalUsers = ref(0)
+const currentPage = ref(1)
+const pageSize = ref(20)
 const userStore = useUserStore()
 
 function roleLabel(role: string) {
@@ -150,15 +202,41 @@ function deleteDisabledReason(user: AdminUser) {
   return '删除用户'
 }
 
+function adminErrorMessage(error: unknown, fallback: string) {
+  const response = (error as { response?: { status?: number; data?: { detail?: unknown } } })?.response
+  const detail = response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (response?.status === 401) return '登录状态已失效，请重新登录'
+  if (response?.status === 403) return '当前账号没有用户管理权限'
+  if (response?.status === 404) return '用户管理接口未找到，请检查后端服务路由'
+  if (response?.status && response.status >= 500) return '用户管理服务异常，请查看 analysis-service 日志'
+  return fallback
+}
+
 async function loadUsers() {
   try {
     loading.value = true
-    users.value = await adminApi.getUsers<AdminUser[]>()
+    loadError.value = ''
+    const response = await adminApi.getUsers<AdminUsersListResponse>({
+      paged: true,
+      skip: (currentPage.value - 1) * pageSize.value,
+      limit: pageSize.value,
+    })
+    users.value = response.items || []
+    totalUsers.value = response.total ?? users.value.length
   } catch (e) {
-    ElMessage.error('加载用户失败')
+    users.value = []
+    totalUsers.value = 0
+    loadError.value = adminErrorMessage(e, '加载用户失败')
+    ElMessage.error(loadError.value)
   } finally {
     loading.value = false
   }
+}
+
+function handlePageSizeChange() {
+  currentPage.value = 1
+  loadUsers()
 }
 
 async function editQuota(user: AdminUser) {
@@ -196,6 +274,36 @@ async function resetQuota(user: AdminUser) {
     loadUsers()
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') ElMessage.error('重置失败')
+  }
+}
+
+async function changeRole(user: AdminUser, newRole: string) {
+  if (user.id === userStore.userInfo?.id) {
+    ElMessage.warning('不能修改自己的角色')
+    return
+  }
+  try {
+    await adminApi.updateUser(user.id, { role: newRole })
+    user.role = newRole
+    ElMessage.success(`角色已更新为 ${roleLabel(newRole)}`)
+  } catch (error) {
+    ElMessage.error((error as ApiErrorLike)?.response?.data?.detail || '角色更新失败')
+    loadUsers()
+  }
+}
+
+async function toggleActive(user: AdminUser, newValue: boolean) {
+  if (user.id === userStore.userInfo?.id) {
+    ElMessage.warning('不能修改当前登录账号的状态')
+    return
+  }
+  try {
+    await adminApi.updateUser(user.id, { is_active: newValue })
+    user.is_active = newValue
+    ElMessage.success(newValue ? '账号已启用' : '账号已禁用')
+  } catch (error) {
+    ElMessage.error((error as ApiErrorLike)?.response?.data?.detail || '状态更新失败')
+    loadUsers()
   }
 }
 
@@ -244,6 +352,10 @@ onMounted(loadUsers)
   margin: 0;
   color: var(--color-text-muted);
   font-size: 14px;
+}
+
+.load-error {
+  margin-bottom: var(--space-4);
 }
 
 /* Skeleton */
@@ -397,6 +509,13 @@ onMounted(loadUsers)
 
 .user-role {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.user-active-toggle {
+  flex-shrink: 0;
+  margin-left: var(--space-3);
 }
 
 .role-badge {
@@ -475,6 +594,12 @@ onMounted(loadUsers)
   padding: 6px 12px;
   font-size: 13px;
   font-weight: 600;
+}
+
+.pagination-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-5);
 }
 
 /* Empty state */

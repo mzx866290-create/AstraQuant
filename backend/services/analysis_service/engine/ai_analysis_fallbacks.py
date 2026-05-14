@@ -4,6 +4,21 @@ from backend.services.analysis_service.engine.data_quality import DataQualityBui
 from backend.services.analysis_service.engine.prompt_builder import fmt_billion, fmt_price
 
 
+def _safe_number(value) -> float | None:
+    try:
+        result = float(value)
+        return result if result == result else None  # NaN check
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_change_pct(value) -> float | None:
+    result = _safe_number(value)
+    if result is None:
+        return None
+    return result if -30 <= result <= 30 else None
+
+
 def build_fallback_analysis(symbol: str, stock_data: dict, error_message: str, audience: str = "normal") -> str:
     name = stock_data.get("name", symbol)
     financial = stock_data.get("financial") or {}
@@ -151,6 +166,12 @@ def build_risk_lights(stock_data: dict) -> dict:
         and is_valid_number(financial.get("pb") or quote.get("pb"))
     )
 
+    change_pct = _safe_change_pct(stock_data.get("change_pct"))
+    volume = _safe_number(quote.get("volume"))
+    is_limit_up = change_pct is not None and change_pct >= 9.8
+    is_limit_down = change_pct is not None and change_pct <= -9.8
+    is_suspended = volume is not None and volume == 0 and not is_limit_up and not is_limit_down
+
     return {
         "data": {
             "label": "数据风险",
@@ -160,6 +181,24 @@ def build_risk_lights(stock_data: dict) -> dict:
                 if quote_warnings & {"delisting_or_delisted_stock_name", "quote_trade_fields_missing_or_zero"}
                 else ("存在缺失或兜底数据" if any(v.get("warnings") for v in data_quality.values()) else "核心数据可用")
             ),
+        },
+        "limit_up": {
+            "label": "涨停风险",
+            "level": "red" if is_limit_up else "green",
+            "message": f"当日涨幅 {change_pct:+.2f}%，疑似涨停，次日追高风险极大" if is_limit_up else "未触及涨停",
+            "type": "limit_up",
+        },
+        "limit_down": {
+            "label": "跌停风险",
+            "level": "red" if is_limit_down else "green",
+            "message": f"当日跌幅 {change_pct:+.2f}%，疑似跌停，流动性枯竭风险" if is_limit_down else "未触及跌停",
+            "type": "limit_down",
+        },
+        "suspended": {
+            "label": "停牌风险",
+            "level": "red" if is_suspended else "green",
+            "message": "成交量为零，疑似停牌或临时停牌" if is_suspended else "交易正常",
+            "type": "suspended",
         },
         "valuation": {
             "label": "估值风险",

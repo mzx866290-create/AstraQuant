@@ -430,10 +430,10 @@ def _score_daily_candidate(stock_data: dict, risk_lights: dict, strategy: str = 
         score += _append_configured_daily_rule(stock_data, strategy, factor, reasons, risk_flags)
 
     weighted = sentiment.get("weighted_dominant_sentiment")
-    if weighted in ("姝ｉ潰", "positive"):
+    if weighted in ("正面", "positive"):
         score += 5
         reasons.append("weighted news sentiment is positive")
-    elif weighted in ("璐熼潰", "negative"):
+    elif weighted in ("负面", "negative"):
         score -= 8
         risk_flags.append(sentiment.get("validation_note") or "weighted news sentiment is negative")
 
@@ -503,9 +503,9 @@ def _build_score_breakdown(stock_data: dict, risk_lights: dict, strategy: str = 
             )
 
     weighted = sentiment.get("weighted_dominant_sentiment")
-    if weighted in ("姝ｉ潰", "positive"):
+    if weighted in ("正面", "positive"):
         add("news_sentiment", "news_sentiment", 5, "weighted news sentiment is positive")
-    elif weighted in ("璐熼潰", "negative"):
+    elif weighted in ("负面", "negative"):
         add("news_sentiment", "news_sentiment", -8, sentiment.get("validation_note") or "weighted news sentiment is negative")
 
     if industry.get("available"):

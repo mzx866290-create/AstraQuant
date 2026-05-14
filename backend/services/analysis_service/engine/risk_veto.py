@@ -9,6 +9,8 @@ _IMMUTABLE_HARD_TYPES = {
     "data_grade_unusable",
     "data_grade_below_strategy_minimum",
     "critical_market_data_missing",
+    "limit_up",
+    "limit_down",
 }
 
 

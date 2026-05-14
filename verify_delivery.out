@@ -1,0 +1,466 @@
+OK: ops drill readiness prerequisites are present: D:\Apps\Demo4
+Checked files: 22
+Checked markers: 90
+Checked env keys: 0
+OK: secret hygiene production surfaces are clean: D:\Apps\Demo4
+Checked files: 9
+Checked placeholder keys: 8
+Checked local env file: no
+2026-05-14 09:50:59,507 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: 东方财富 (优先级: 1)
+2026-05-14 09:50:59,507 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: AKShare (优先级: 2)
+2026-05-14 09:50:59,507 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: Tushare (优先级: 3)
+2026-05-14 09:50:59,507 - backend.services.data_crawler.app.main - INFO - data source chain initialized: ['东方财富', 'AKShare', 'Tushare']
+..2026-05-14 09:50:59,958 - backend.services.analysis_service.app.main - INFO - [e66f06e1] GET /api/v1/analysis/public-health -> 200 (1.53ms)
+2026-05-14 09:50:59,960 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/analysis/public-health "HTTP/1.1 200 OK"
+.2026-05-14 09:51:00,130 - backend.services.analysis_service.app.main - INFO - [d2c1a85a] GET /health -> 200 (0.9ms)
+2026-05-14 09:51:00,131 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+2026-05-14 09:51:00,138 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: 东方财富 (优先级: 1)
+2026-05-14 09:51:00,138 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: AKShare (优先级: 2)
+2026-05-14 09:51:00,138 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: Tushare (优先级: 3)
+2026-05-14 09:51:00,138 - backend.services.data_crawler.app.main - INFO - data source chain initialized: ['东方财富', 'AKShare', 'Tushare']
+2026-05-14 09:51:00,144 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+2026-05-14 09:51:00,233 - backend.services.market_service.app.main - INFO - [94958a62] GET /health -> 200 (1.03ms)
+2026-05-14 09:51:00,234 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+2026-05-14 09:51:00,269 - backend.services.user_service.app.main - INFO - [56e6cb4d] GET /health -> 200 (0.93ms)
+2026-05-14 09:51:00,270 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+.2026-05-14 09:51:00,435 - backend.services.analysis_service.app.main - INFO - [6341653a] GET /api/v1/admin/stats/review-factor-report -> 200 (2.71ms)
+2026-05-14 09:51:00,436 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-factor-report?snapshot_from=2026-05-01&snapshot_to=2026-05-10 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:00,512 - backend.services.analysis_service.app.main - INFO - [53295cc3] GET /api/v1/admin/stats/review-factor-report -> 400 (1.78ms)
+2026-05-14 09:51:00,513 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-factor-report?snapshot_from=2026-05-11&snapshot_to=2026-05-10 "HTTP/1.1 400 Bad Request"
+.2026-05-14 09:51:00,681 - backend.services.analysis_service.app.main - INFO - [d199e56f] GET /api/v1/admin/stats/review-factor-validation -> 200 (2.14ms)
+2026-05-14 09:51:00,682 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-factor-validation?factor=valuation&snapshot_from=2026-05-01&snapshot_to=2026-05-10&min_reviews=3 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:00,759 - backend.services.analysis_service.app.main - INFO - [8d07dd66] GET /api/v1/admin/stats/review-factor-validation -> 400 (1.86ms)
+2026-05-14 09:51:00,760 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-factor-validation?factor=valuation&snapshot_from=2026-05-11&snapshot_to=2026-05-10 "HTTP/1.1 400 Bad Request"
+.2026-05-14 09:51:00,837 - backend.services.analysis_service.app.main - INFO - [8359e467] GET /api/v1/admin/stats/review-factor-validation -> 422 (1.64ms)
+2026-05-14 09:51:00,838 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-factor-validation "HTTP/1.1 422 Unprocessable Entity"
+.2026-05-14 09:51:00,919 - backend.services.analysis_service.app.main - INFO - [506a2bbe] GET /api/v1/admin/stats/review-readiness -> 200 (2.22ms)
+2026-05-14 09:51:00,920 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-readiness?review_date=2026-05-11&offsets=T%2B1 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:00,998 - backend.services.analysis_service.app.main - INFO - [4de0702c] GET /api/v1/admin/stats/review-readiness -> 400 (1.71ms)
+2026-05-14 09:51:00,999 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-readiness?offsets=T%2B2 "HTTP/1.1 400 Bad Request"
+.2026-05-14 09:51:01,083 - backend.services.analysis_service.app.main - INFO - [9aa55382] GET /api/v1/admin/stats/review-report -> 200 (2.12ms)
+2026-05-14 09:51:01,084 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-report?snapshot_from=2026-05-01&snapshot_to=2026-05-10 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:01,162 - backend.services.analysis_service.app.main - INFO - [d3f68fac] GET /api/v1/admin/stats/review-report -> 400 (1.45ms)
+2026-05-14 09:51:01,163 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-report?snapshot_from=2026-05-11&snapshot_to=2026-05-10 "HTTP/1.1 400 Bad Request"
+.2026-05-14 09:51:01,240 - backend.services.analysis_service.app.main - INFO - [c75dfd81] POST /api/v1/admin/stats/review-scheduler/run-once -> 422 (2.0ms)
+2026-05-14 09:51:01,241 - httpx - INFO - HTTP Request: POST http://testserver/api/v1/admin/stats/review-scheduler/run-once?review_date=bad-date "HTTP/1.1 422 Unprocessable Entity"
+.2026-05-14 09:51:01,402 - backend.services.analysis_service.app.main - INFO - [2eeaf302] POST /api/v1/admin/stats/review-scheduler/run-once -> 200 (1.69ms)
+2026-05-14 09:51:01,403 - httpx - INFO - HTTP Request: POST http://testserver/api/v1/admin/stats/review-scheduler/run-once?review_date=2026-05-10 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:01,481 - backend.services.analysis_service.app.main - INFO - [e0dc4c90] GET /api/v1/admin/stats/review-scheduler -> 200 (1.68ms)
+2026-05-14 09:51:01,482 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-scheduler "HTTP/1.1 200 OK"
+.2026-05-14 09:51:01,562 - backend.services.analysis_service.app.main - INFO - [830dbda5] PATCH /api/v1/admin/stats/review-weight-suggestion-audits/7 -> 200 (2.67ms)
+2026-05-14 09:51:01,563 - httpx - INFO - HTTP Request: PATCH http://testserver/api/v1/admin/stats/review-weight-suggestion-audits/7 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:01,645 - backend.services.analysis_service.app.main - INFO - [2c711fbc] PATCH /api/v1/admin/stats/review-weight-suggestion-audits/404 -> 404 (2.26ms)
+2026-05-14 09:51:01,646 - httpx - INFO - HTTP Request: PATCH http://testserver/api/v1/admin/stats/review-weight-suggestion-audits/404 "HTTP/1.1 404 Not Found"
+.2026-05-14 09:51:01,726 - backend.services.analysis_service.app.main - INFO - [4d0c5740] PATCH /api/v1/admin/stats/review-weight-suggestion-audits/7 -> 200 (1.92ms)
+2026-05-14 09:51:01,727 - httpx - INFO - HTTP Request: PATCH http://testserver/api/v1/admin/stats/review-weight-suggestion-audits/7 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:01,811 - backend.services.analysis_service.app.main - INFO - [1fb6400c] GET /api/v1/admin/stats/review-weight-suggestion-audits -> 200 (2.19ms)
+2026-05-14 09:51:01,812 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-weight-suggestion-audits?limit=10 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:01,895 - backend.services.analysis_service.app.main - INFO - [2d2560f8] GET /api/v1/admin/stats/review-weight-suggestion-audits/7/strategy-patch -> 200 (3.31ms)
+2026-05-14 09:51:01,897 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-weight-suggestion-audits/7/strategy-patch?strategy_id=value_quality&step=0.02&max_delta=0.05 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:01,977 - backend.services.analysis_service.app.main - INFO - [bf4d42c9] GET /api/v1/admin/stats/review-weight-suggestions -> 200 (3.18ms)
+2026-05-14 09:51:01,979 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-weight-suggestions?min_reviews=5&snapshot_from=2026-05-01&snapshot_to=2026-05-10&save_audit=true "HTTP/1.1 200 OK"
+.2026-05-14 09:51:02,152 - backend.services.analysis_service.app.main - INFO - [421284c5] GET /api/v1/admin/stats/review-weight-suggestions -> 200 (1.52ms)
+2026-05-14 09:51:02,153 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-weight-suggestions?min_reviews=5&snapshot_from=2026-05-01&snapshot_to=2026-05-10 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:02,236 - backend.services.analysis_service.app.main - INFO - [3f6b68a2] GET /api/v1/admin/stats/review-weight-suggestions -> 400 (1.56ms)
+2026-05-14 09:51:02,237 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-weight-suggestions?snapshot_from=2026-05-11&snapshot_to=2026-05-10 "HTTP/1.1 400 Bad Request"
+.2026-05-14 09:51:02,317 - backend.services.analysis_service.app.main - INFO - [a894d0b9] GET /api/v1/admin/stats/review-weight-suggestions -> 422 (1.88ms)
+2026-05-14 09:51:02,318 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/review-weight-suggestions?min_reviews=0 "HTTP/1.1 422 Unprocessable Entity"
+.2026-05-14 09:51:02,401 - backend.services.analysis_service.app.main - INFO - [aefe0647] POST /api/v1/admin/stats/strategy-weight-patch-proposals/9/apply -> 200 (2.59ms)
+2026-05-14 09:51:02,402 - httpx - INFO - HTTP Request: POST http://testserver/api/v1/admin/stats/strategy-weight-patch-proposals/9/apply "HTTP/1.1 200 OK"
+.2026-05-14 09:51:02,482 - backend.services.analysis_service.app.main - INFO - [90f58f4e] POST /api/v1/admin/stats/strategy-weight-patch-proposals/9/apply -> 409 (2.01ms)
+2026-05-14 09:51:02,483 - httpx - INFO - HTTP Request: POST http://testserver/api/v1/admin/stats/strategy-weight-patch-proposals/9/apply "HTTP/1.1 409 Conflict"
+.2026-05-14 09:51:02,566 - backend.services.analysis_service.app.main - INFO - [d2ed342f] POST /api/v1/admin/stats/review-weight-suggestion-audits/7/strategy-patch-proposals -> 200 (2.27ms)
+2026-05-14 09:51:02,567 - httpx - INFO - HTTP Request: POST http://testserver/api/v1/admin/stats/review-weight-suggestion-audits/7/strategy-patch-proposals "HTTP/1.1 200 OK"
+.2026-05-14 09:51:02,650 - backend.services.analysis_service.app.main - INFO - [a2c6681a] GET /api/v1/admin/stats/strategy-weight-patch-proposals/9/impact-preview -> 200 (2.09ms)
+2026-05-14 09:51:02,651 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/strategy-weight-patch-proposals/9/impact-preview?market=SZ&limit=12&candidate_limit=40&concurrency=4 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:02,733 - backend.services.analysis_service.app.main - INFO - [0e008665] GET /api/v1/admin/stats/strategy-weight-patch-proposals/9/impact-preview -> 404 (1.45ms)
+2026-05-14 09:51:02,734 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/strategy-weight-patch-proposals/9/impact-preview "HTTP/1.1 404 Not Found"
+.2026-05-14 09:51:02,813 - backend.services.analysis_service.app.main - INFO - [3aae8c44] PATCH /api/v1/admin/stats/strategy-weight-patch-proposals/9 -> 200 (2.23ms)
+2026-05-14 09:51:02,814 - httpx - INFO - HTTP Request: PATCH http://testserver/api/v1/admin/stats/strategy-weight-patch-proposals/9 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:02,981 - backend.services.analysis_service.app.main - INFO - [5fb8aa0f] GET /api/v1/admin/stats/strategy-weight-patch-proposals -> 200 (2.21ms)
+2026-05-14 09:51:02,982 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/strategy-weight-patch-proposals?limit=10&status=pending "HTTP/1.1 200 OK"
+.2026-05-14 09:51:03,061 - backend.services.analysis_service.app.main - INFO - [2e01ad91] POST /api/v1/admin/stats/strategy-weight-versions/11/rollback -> 409 (2.89ms)
+2026-05-14 09:51:03,062 - httpx - INFO - HTTP Request: POST http://testserver/api/v1/admin/stats/strategy-weight-versions/11/rollback "HTTP/1.1 409 Conflict"
+.2026-05-14 09:51:03,153 - backend.services.analysis_service.app.main - INFO - [a5a2bb89] POST /api/v1/admin/stats/strategy-weight-versions/11/rollback -> 200 (1.79ms)
+2026-05-14 09:51:03,154 - httpx - INFO - HTTP Request: POST http://testserver/api/v1/admin/stats/strategy-weight-versions/11/rollback "HTTP/1.1 200 OK"
+.2026-05-14 09:51:03,233 - backend.services.analysis_service.app.main - INFO - [1e7e3c21] GET /api/v1/admin/stats/strategy-weight-versions -> 200 (1.97ms)
+2026-05-14 09:51:03,234 - httpx - INFO - HTTP Request: GET http://testserver/api/v1/admin/stats/strategy-weight-versions?strategy_id=retail_small&limit=10 "HTTP/1.1 200 OK"
+.......................2026-05-14 09:51:03,277 - backend.services.analysis_service.engine.ai_analysis_service - WARNING - AI model call failed, using local fallback: gateway down
+.......2026-05-14 09:51:03,368 - backend.services.analysis_service.engine.ai_analysis_service - WARNING - AI follow-up failed, using local fallback: gateway down
+........................2026-05-14 09:51:03,459 - backend.services.analysis_service.engine.ai_client - ERROR - AI 调用失败: 不支持的 provider: bad-provider
+.........2026-05-14 09:51:05,628 - backend.shared.cache - INFO - Redis不可用，使用内存缓存降级
+......2026-05-14 09:51:05,719 - backend.services.analysis_service.engine.ai_client - ERROR - AI 调用失败: 不支持的 provider: unsupported
+....................2026-05-14 09:51:06,978 - httpx - INFO - HTTP Request: GET http://testserver/recent?symbols=000001.SZ%2C600000.SH&strategy=auto&offsets=T%2B1%2CT%2B5&limit_per_symbol=1 "HTTP/1.1 200 OK"
+.2026-05-14 09:51:06,982 - httpx - INFO - HTTP Request: GET http://testserver/recent?symbols=000001.SZ&offsets=T%2B2 "HTTP/1.1 400 Bad Request"
+.2026-05-14 09:51:06,986 - httpx - INFO - HTTP Request: GET http://testserver/recent?symbols=000001.SZ&limit_per_symbol=6 "HTTP/1.1 422 Unprocessable Entity"
+...........2026-05-14 09:51:07,749 - asyncio - WARNING - Executing <Task finished name='Task-592' coro=<PasswordChangeTests.test_change_password_rejects_same_password() done, defined at D:\Apps\Demo4\backend\tests\test_auth_password_change.py:99> result=None created at C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py:100> took 0.703 seconds
+.2026-05-14 09:51:08,225 - asyncio - WARNING - Executing <Task finished name='Task-597' coro=<PasswordChangeTests.test_change_password_rejects_weak_new_password() done, defined at D:\Apps\Demo4\backend\tests\test_auth_password_change.py:84> result=None created at C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py:100> took 0.469 seconds
+.2026-05-14 09:51:08,697 - asyncio - WARNING - Executing <Task finished name='Task-602' coro=<PasswordChangeTests.test_change_password_rejects_wrong_current_password() done, defined at D:\Apps\Demo4\backend\tests\test_auth_password_change.py:68> result=None created at C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py:100> took 0.469 seconds
+.2026-05-14 09:51:10,090 - asyncio - WARNING - Executing <Task finished name='Task-607' coro=<PasswordChangeTests.test_change_password_updates_hash_and_audits() done, defined at D:\Apps\Demo4\backend\tests\test_auth_password_change.py:53> result=None created at C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py:100> took 1.375 seconds
+.............................................................2026-05-14 09:51:10,421 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.421183] collecting daily K-line data
+2026-05-14 09:51:10,421 - backend.services.data_crawler.app.main - INFO - [600519] daily K-line collected: target=2026-05-06 fetched=1 saved=0 status=no_saved source=unit-source
+2026-05-14 09:51:10,421 - backend.services.data_crawler.app.main - INFO - daily K-line batch finished: 0/1 succeeded
+.2026-05-14 09:51:10,423 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.423179] collecting daily K-line data
+2026-05-14 09:51:10,423 - backend.services.data_crawler.app.main - INFO - [600519] daily K-line collected: target=2026-05-06 fetched=1 saved=1 status=success source=unit-source
+2026-05-14 09:51:10,423 - backend.services.data_crawler.app.main - INFO - daily K-line batch finished: 1/1 succeeded
+.2026-05-14 09:51:10,426 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.426172] collecting daily K-line data
+2026-05-14 09:51:10,427 - backend.services.data_crawler.app.main - ERROR - [600519] daily K-line collection failed: write failed
+2026-05-14 09:51:10,427 - backend.services.data_crawler.app.main - INFO - daily K-line batch finished: 0/1 succeeded
+...2026-05-14 09:51:10,432 - backend.services.data_crawler.pipeline.etl - INFO - wrote 1 dragon tiger rows
+.2026-05-14 09:51:10,433 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.433387] collecting dragon tiger data
+2026-05-14 09:51:10,433 - backend.services.data_crawler.app.main - INFO - dragon tiger collection finished: target=2026-05-06 fetched=1 saved=1 status=success source=unit-lhb
+.2026-05-14 09:51:10,435 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.435991] collecting dragon tiger data
+2026-05-14 09:51:10,435 - backend.services.data_crawler.app.main - INFO - dragon tiger collection finished: target=2026-05-14 fetched=1 saved=0 status=no_saved source=unit-lhb
+.2026-05-14 09:51:10,436 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.436495] collecting dragon tiger data
+2026-05-14 09:51:10,436 - backend.services.data_crawler.app.main - ERROR - dragon tiger collection failed: write failed
+.2026-05-14 09:51:10,437 - backend.services.data_crawler.app.main - WARNING - daily_kline skipped because tracked symbol pool is empty
+.2026-05-14 09:51:10,437 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: unsupported (优先级: 1)
+2026-05-14 09:51:10,437 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: supported (优先级: 2)
+2026-05-14 09:51:10,437 - backend.services.data_crawler.sources.fallback_chain - INFO - 数据源 supported 成功: fetch_stock_notices
+..2026-05-14 09:51:10,470 - backend.services.data_crawler.pipeline.etl - INFO - [600519] wrote 1 K-line rows
+.2026-05-14 09:51:10,471 - backend.services.data_crawler.pipeline.etl - WARNING - [600519] no valid K-line rows after cleaning
+.2026-05-14 09:51:10,471 - backend.services.data_crawler.pipeline.etl - INFO - [600519.SH] wrote 1 K-line rows
+....2026-05-14 09:51:10,484 - backend.services.data_crawler.pipeline.etl - INFO - [600519.SH] wrote 1 money flow rows
+.2026-05-14 09:51:10,485 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.485741] collecting money flow data
+2026-05-14 09:51:10,485 - backend.services.data_crawler.app.main - INFO - [600519] money flow collected: fetched=1 saved=1 status=success source=unit-money-flow
+2026-05-14 09:51:10,485 - backend.services.data_crawler.app.main - INFO - money flow batch finished: 1/1 succeeded
+.2026-05-14 09:51:10,485 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.485741] collecting money flow data
+2026-05-14 09:51:10,485 - backend.services.data_crawler.app.main - INFO - [600519] money flow collected: fetched=1 saved=0 status=no_saved source=unit-money-flow
+2026-05-14 09:51:10,485 - backend.services.data_crawler.app.main - INFO - money flow batch finished: 0/1 succeeded
+.2026-05-14 09:51:10,487 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.487738] collecting money flow data
+2026-05-14 09:51:10,487 - backend.services.data_crawler.app.main - ERROR - [600519] money flow collection failed: write failed
+2026-05-14 09:51:10,487 - backend.services.data_crawler.app.main - INFO - money flow batch finished: 0/1 succeeded
+..2026-05-14 09:51:10,489 - backend.services.data_crawler.pipeline.etl - INFO - [000858.SZ] wrote 1 month_start rows
+.2026-05-14 09:51:10,490 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.490730] collecting monthly_kline data
+2026-05-14 09:51:10,490 - backend.services.data_crawler.app.main - INFO - [600519] monthly_kline collected: fetched=1 saved=1 status=success source=unit-period-kline
+.2026-05-14 09:51:10,510 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.510493] collecting monthly_kline data
+2026-05-14 09:51:10,510 - backend.services.data_crawler.app.main - INFO - [600519] monthly_kline collected: fetched=1 saved=0 status=no_saved source=unit-period-kline
+.2026-05-14 09:51:10,515 - backend.services.data_crawler.pipeline.news_etl - ERROR - [600519] news write failed: write failed
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\services\data_crawler\pipeline\news_etl.py", line 196, in save
+    result = db_session.execute(stmt)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1124, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1128, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1183, in _execute_mock_call
+    raise effect
+RuntimeError: write failed
+.2026-05-14 09:51:10,518 - backend.services.data_crawler.app.main - WARNING - no tracked symbols found; production crawler will not use default demo symbols
+..2026-05-14 09:51:10,522 - backend.services.data_crawler.pipeline.etl - INFO - [600519.SH] wrote 1 minute rows
+.2026-05-14 09:51:10,523 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.523622] collecting realtime minute snapshots
+2026-05-14 09:51:10,523 - backend.services.data_crawler.app.main - INFO - [600519] realtime snapshot collected: fetched=1 saved=1 status=success source=unit-realtime
+2026-05-14 09:51:10,523 - backend.services.data_crawler.app.main - INFO - realtime quote batch finished: 1/1 succeeded
+.2026-05-14 09:51:10,523 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.523622] collecting realtime minute snapshots
+2026-05-14 09:51:10,523 - backend.services.data_crawler.app.main - INFO - [600519] realtime snapshot collected: fetched=1 saved=0 status=no_saved source=unit-realtime
+2026-05-14 09:51:10,523 - backend.services.data_crawler.app.main - INFO - realtime quote batch finished: 0/1 succeeded
+.2026-05-14 09:51:10,525 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.525609] collecting realtime minute snapshots
+2026-05-14 09:51:10,526 - backend.services.data_crawler.app.main - ERROR - [600519] realtime row collection failed: write failed
+2026-05-14 09:51:10,526 - backend.services.data_crawler.app.main - INFO - realtime quote batch finished: 0/1 succeeded
+.2026-05-14 09:51:10,526 - backend.services.data_crawler.app.main - WARNING - failed to record crawl status for 600519/daily_kline: db down
+.2026-05-14 09:51:10,527 - backend.services.data_crawler.app.main - INFO - data crawler service stopped
+.2026-05-14 09:51:10,528 - backend.services.data_crawler.app.main - WARNING - failed to close source_chain: close failed
+2026-05-14 09:51:10,528 - backend.services.data_crawler.app.main - INFO - data crawler service stopped
+..2026-05-14 09:51:10,529 - backend.services.data_crawler.app.main - WARNING - weekly_kline collection is not implemented
+...2026-05-14 09:51:10,533 - backend.services.data_crawler.pipeline.etl - INFO - [600519.SH] wrote 1 week_start rows
+.2026-05-14 09:51:10,534 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.534611] collecting weekly_kline data
+2026-05-14 09:51:10,534 - backend.services.data_crawler.app.main - INFO - [600519] weekly_kline collected: fetched=1 saved=1 status=success source=unit-period-kline
+.2026-05-14 09:51:10,535 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.535580] collecting weekly_kline data
+2026-05-14 09:51:10,535 - backend.services.data_crawler.app.main - INFO - [600519] weekly_kline collected: fetched=1 saved=0 status=no_saved source=unit-period-kline
+.2026-05-14 09:51:10,537 - backend.services.data_crawler.app.main - INFO - [2026-05-14 09:51:10.537000] collecting weekly_kline data
+2026-05-14 09:51:10,537 - backend.services.data_crawler.app.main - ERROR - [600519] weekly_kline collection failed: write failed
+.2026-05-14 09:51:10,569 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: 东方财富 (优先级: 1)
+2026-05-14 09:51:10,569 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: AKShare (优先级: 2)
+2026-05-14 09:51:10,569 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: Tushare (优先级: 3)
+2026-05-14 09:51:10,569 - backend.services.data_crawler.app.main - INFO - data source chain initialized: ['东方财富', 'AKShare', 'Tushare']
+2026-05-14 09:51:10,573 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+.2026-05-14 09:51:10,609 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: 东方财富 (优先级: 1)
+2026-05-14 09:51:10,609 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: AKShare (优先级: 2)
+2026-05-14 09:51:10,609 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: Tushare (优先级: 3)
+2026-05-14 09:51:10,609 - backend.services.data_crawler.app.main - INFO - data source chain initialized: ['东方财富', 'AKShare', 'Tushare']
+2026-05-14 09:51:10,619 - httpx - INFO - HTTP Request: GET http://testserver/metrics "HTTP/1.1 200 OK"
+.2026-05-14 09:51:10,655 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: 东方财富 (优先级: 1)
+2026-05-14 09:51:10,655 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: AKShare (优先级: 2)
+2026-05-14 09:51:10,655 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: Tushare (优先级: 3)
+2026-05-14 09:51:10,655 - backend.services.data_crawler.app.main - INFO - data source chain initialized: ['东方财富', 'AKShare', 'Tushare']
+.2026-05-14 09:51:10,693 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: 东方财富 (优先级: 1)
+2026-05-14 09:51:10,693 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: AKShare (优先级: 2)
+2026-05-14 09:51:10,693 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: Tushare (优先级: 3)
+2026-05-14 09:51:10,693 - backend.services.data_crawler.app.main - INFO - data source chain initialized: ['东方财富', 'AKShare', 'Tushare']
+2026-05-14 09:51:10,698 - httpx - INFO - HTTP Request: GET http://testserver/ready "HTTP/1.1 503 Service Unavailable"
+.2026-05-14 09:51:10,735 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: 东方财富 (优先级: 1)
+2026-05-14 09:51:10,735 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: AKShare (优先级: 2)
+2026-05-14 09:51:10,735 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: Tushare (优先级: 3)
+2026-05-14 09:51:10,735 - backend.services.data_crawler.app.main - INFO - data source chain initialized: ['东方财富', 'AKShare', 'Tushare']
+2026-05-14 09:51:10,812 - httpx - INFO - HTTP Request: GET http://testserver/ready "HTTP/1.1 200 OK"
+..........................................................2026-05-14 09:51:13,348 - backend.services.data_crawler.pipeline.financial_etl - INFO - [600519.SH] 公告入库完成: 1/2 条
+.2026-05-14 09:51:13,358 - backend.services.data_crawler.pipeline.financial_etl - WARNING - [600519] 无有效公告数据
+.2026-05-14 09:51:13,367 - backend.services.data_crawler.pipeline.financial_etl - ERROR - [600519] announcement write failed: write failed
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\services\data_crawler\pipeline\financial_etl.py", line 94, in save
+    result = db_session.execute(stmt)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Apps\Demo4\backend\tests\test_financial_etl.py", line 28, in execute
+    raise RuntimeError("write failed")
+RuntimeError: write failed
+....2026-05-14 09:51:13,401 - backend.services.data_crawler.pipeline.financial_etl - INFO - [600519] 财报入库完成: 1/2 条
+.2026-05-14 09:51:13,410 - backend.services.data_crawler.pipeline.financial_etl - WARNING - [600519] 无有效财报数据
+.2026-05-14 09:51:13,419 - backend.services.data_crawler.pipeline.financial_etl - ERROR - [600519] financial report write failed: write failed
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\services\data_crawler\pipeline\financial_etl.py", line 322, in save
+    result = db_session.execute(stmt)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Apps\Demo4\backend\tests\test_financial_etl.py", line 28, in execute
+    raise RuntimeError("write failed")
+RuntimeError: write failed
+..........................................2026-05-14 09:51:17,608 - clickhouse_driver.connection - WARNING - Failed to connect to localhost:9000
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\venv\Lib\site-packages\clickhouse_driver\connection.py", line 428, in connect
+    return self._init_connection(host, port)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Apps\Demo4\venv\Lib\site-packages\clickhouse_driver\connection.py", line 358, in _init_connection
+    self.socket = self._create_socket(host, port)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Apps\Demo4\venv\Lib\site-packages\clickhouse_driver\connection.py", line 326, in _create_socket
+    raise err
+  File "D:\Apps\Demo4\venv\Lib\site-packages\clickhouse_driver\connection.py", line 317, in _create_socket
+    sock.connect(sa)
+TimeoutError: timed out
+............................2026-05-14 09:51:17,701 - backend.services.analysis_service.engine.model_health_scheduler - INFO - AI model health scheduler started
+2026-05-14 09:51:17,703 - backend.services.analysis_service.engine.model_health_scheduler - INFO - AI model health scheduler stopped
+.....2026-05-14 09:51:17,759 - backend.services.analysis_service.engine.model_health_scheduler - INFO - AI model health scheduler started
+2026-05-14 09:51:17,765 - backend.services.analysis_service.engine.model_health_scheduler - INFO - AI model health scheduler stopped
+.2026-05-14 09:51:17,773 - backend.services.analysis_service.engine.model_health_scheduler - INFO - AI model health scheduler stopped
+..................2026-05-14 09:51:17,905 - backend.services.data_crawler.pipeline.news_etl - INFO - [600519.SH] 新闻入库: 1/2 条 (正面:1, 负面:1)
+..2026-05-14 09:51:17,923 - backend.services.data_crawler.pipeline.news_etl - ERROR - [600519] news write failed: write failed
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\services\data_crawler\pipeline\news_etl.py", line 196, in save
+    result = db_session.execute(stmt)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Apps\Demo4\backend\tests\test_news_etl_quality.py", line 34, in execute
+    raise RuntimeError("write failed")
+RuntimeError: write failed
+.....2026-05-14 09:51:17,940 - backend.shared.audit - INFO - anonymous audit action=anonymous target=None ip=None
+2026-05-14 09:51:17,940 - backend.shared.audit - WARNING - audit log write failed for action=write-error target=unit: db down
+......2026-05-14 09:51:17,943 - backend.shared.observability - WARNING - prometheus_client unavailable, /metrics disabled: missing
+................................................2026-05-14 09:51:19,418 - backend.shared.rate_limit - WARNING - rate limiter running fail-open for score:symbol:ip because Redis is unavailable
+..EEEEEEE...........................2026-05-14 09:51:20,109 - backend.services.analysis_service.engine.review_tracker - WARNING - save observation snapshots failed: (sqlite3.OperationalError) no such column: research_observations.factor_snapshot_json
+[SQL: SELECT research_observations.id AS research_observations_id, research_observations.snapshot_date AS research_observations_snapshot_date, research_observations.symbol AS research_observations_symbol, research_observations.strategy_id AS research_observations_strategy_id, research_observations.regime AS research_observations_regime, research_observations.score AS research_observations_score, research_observations.score_breakdown_json AS research_observations_score_breakdown_json, research_observations.evidence_chain_json AS research_observations_evidence_chain_json, research_observations.factor_snapshot_json AS research_observations_factor_snapshot_json, research_observations.debate_json AS research_observations_debate_json, research_observations.veto_result_json AS research_observations_veto_result_json, research_observations.close_price AS research_observations_close_price, research_observations.created_at AS research_observations_created_at 
+FROM research_observations 
+WHERE research_observations.snapshot_date = ? AND research_observations.symbol = ? AND research_observations.strategy_id = ?
+ LIMIT ? OFFSET ?]
+[parameters: ('2026-05-14 00:00:00.000000', '000002.SZ', 'dividend_defensive', 1, 0)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+..2026-05-14 09:51:20,114 - backend.services.analysis_service.engine.review_tracker - WARNING - save observation snapshots failed: (sqlite3.OperationalError) no such column: research_observations.factor_snapshot_json
+[SQL: SELECT research_observations.id AS research_observations_id, research_observations.snapshot_date AS research_observations_snapshot_date, research_observations.symbol AS research_observations_symbol, research_observations.strategy_id AS research_observations_strategy_id, research_observations.regime AS research_observations_regime, research_observations.score AS research_observations_score, research_observations.score_breakdown_json AS research_observations_score_breakdown_json, research_observations.evidence_chain_json AS research_observations_evidence_chain_json, research_observations.factor_snapshot_json AS research_observations_factor_snapshot_json, research_observations.debate_json AS research_observations_debate_json, research_observations.veto_result_json AS research_observations_veto_result_json, research_observations.close_price AS research_observations_close_price, research_observations.created_at AS research_observations_created_at 
+FROM research_observations 
+WHERE research_observations.snapshot_date = ? AND research_observations.symbol = ? AND research_observations.strategy_id = ?
+ LIMIT ? OFFSET ?]
+[parameters: ('2026-05-14 00:00:00.000000', '000001.SZ', 'growth_momentum', 1, 0)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+.2026-05-14 09:51:20,117 - backend.services.analysis_service.engine.review_tracker - WARNING - save observation snapshots failed: (sqlite3.OperationalError) no such column: research_observations.factor_snapshot_json
+[SQL: SELECT research_observations.id AS research_observations_id, research_observations.snapshot_date AS research_observations_snapshot_date, research_observations.symbol AS research_observations_symbol, research_observations.strategy_id AS research_observations_strategy_id, research_observations.regime AS research_observations_regime, research_observations.score AS research_observations_score, research_observations.score_breakdown_json AS research_observations_score_breakdown_json, research_observations.evidence_chain_json AS research_observations_evidence_chain_json, research_observations.factor_snapshot_json AS research_observations_factor_snapshot_json, research_observations.debate_json AS research_observations_debate_json, research_observations.veto_result_json AS research_observations_veto_result_json, research_observations.close_price AS research_observations_close_price, research_observations.created_at AS research_observations_created_at 
+FROM research_observations 
+WHERE research_observations.snapshot_date = ? AND research_observations.symbol = ? AND research_observations.strategy_id = ?
+ LIMIT ? OFFSET ?]
+[parameters: ('2026-05-14 00:00:00.000000', '000002.SZ', 'value_quality', 1, 0)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+....2026-05-14 09:51:20,147 - backend.services.analysis_service.engine.scoring_data - WARNING - [600519] money flow source failed: money flow down
+2026-05-14 09:51:20,147 - backend.services.analysis_service.engine.scoring_data - WARNING - [600519] money flow source failed: money flow down
+2026-05-14 09:51:20,148 - backend.services.analysis_service.engine.scoring_data - WARNING - [600519] money flow source failed: money flow down
+2026-05-14 09:51:20,149 - backend.services.analysis_service.engine.scoring_data - WARNING - [600519] money flow circuit open: circuit breaker scoring.money_flow.eastmoney is open
+...............................................................................2026-05-14 09:51:20,305 - backend.services.analysis_service.engine.scoring_data - WARNING - [600519] money flow circuit open: open
+..2026-05-14 09:51:20,307 - backend.services.analysis_service.engine.scoring_data - WARNING - [600519] money flow source failed: money flow down
+..........EE..2026-05-14 09:51:20,337 - backend.shared.auth - WARNING - AI_ENCRYPTION_KEY is not set; deriving a local-only fallback key from JWT_SECRET for non-production use
+2026-05-14 09:51:20,337 - backend.shared.auth - WARNING - Encountered a legacy plaintext AI API key; reading it without decryption in non-production
+..2026-05-14 09:51:20,344 - backend.shared.auth - WARNING - AI_ENCRYPTION_KEY is not set; deriving a local-only fallback key from JWT_SECRET for non-production use
+..............2026-05-14 09:51:20,418 - backend.services.market_service.app.main - INFO - [6896afb8] GET /health -> 200 (0.65ms)
+2026-05-14 09:51:20,419 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+2026-05-14 09:51:20,427 - backend.services.market_service.app.main - INFO - [610a700d] GET /metrics -> 200 (6.3ms)
+2026-05-14 09:51:20,428 - httpx - INFO - HTTP Request: GET http://testserver/metrics "HTTP/1.1 200 OK"
+2026-05-14 09:51:20,453 - backend.services.user_service.app.main - INFO - [051add52] GET /health -> 200 (0.62ms)
+2026-05-14 09:51:20,454 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+2026-05-14 09:51:20,463 - backend.services.user_service.app.main - INFO - [22969d06] GET /metrics -> 200 (7.31ms)
+2026-05-14 09:51:20,464 - httpx - INFO - HTTP Request: GET http://testserver/metrics "HTTP/1.1 200 OK"
+2026-05-14 09:51:20,624 - backend.services.analysis_service.app.main - INFO - [d5514b6d] GET /health -> 200 (0.94ms)
+2026-05-14 09:51:20,625 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+2026-05-14 09:51:20,633 - backend.services.analysis_service.app.main - INFO - [d1c3b01f] GET /metrics -> 200 (6.74ms)
+2026-05-14 09:51:20,634 - httpx - INFO - HTTP Request: GET http://testserver/metrics "HTTP/1.1 200 OK"
+2026-05-14 09:51:20,677 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: 东方财富 (优先级: 1)
+2026-05-14 09:51:20,677 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: AKShare (优先级: 2)
+2026-05-14 09:51:20,677 - backend.services.data_crawler.sources.fallback_chain - INFO - 注册数据源: Tushare (优先级: 3)
+2026-05-14 09:51:20,677 - backend.services.data_crawler.app.main - INFO - data source chain initialized: ['东方财富', 'AKShare', 'Tushare']
+2026-05-14 09:51:20,682 - httpx - INFO - HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+2026-05-14 09:51:20,690 - httpx - INFO - HTTP Request: GET http://testserver/metrics "HTTP/1.1 200 OK"
+.2026-05-14 09:51:20,694 - backend.shared.auth - WARNING - AI_ENCRYPTION_KEY is not set; deriving a local-only fallback key from JWT_SECRET for non-production use
+2026-05-14 09:51:20,695 - backend.shared.auth - WARNING - Encountered a legacy plaintext AI API key; reading it without decryption in non-production
+.......2026-05-14 09:51:20,705 - backend.shared.cache - INFO - Redis连接已初始化
+2026-05-14 09:51:20,710 - backend.shared.cache - INFO - Redis连接已关闭
+2026-05-14 09:51:20,711 - backend.shared.cache - INFO - Redis不可用，使用内存缓存降级
+.........F2026-05-14 09:51:21,477 - backend.shared.database - INFO - 使用 SQLite 数据库: D:\Apps\Demo4\unit-test.db
+....2026-05-14 09:51:21,488 - backend.shared.database - INFO - 使用 SQLite 数据库: D:\Apps\Demo4\unit-test.db
+....F...............................................................................................2026-05-14 09:51:22,497 - backend.shared.validators - WARNING - 发现1条OHLC逻辑异常数据
+...2026-05-14 09:51:22,500 - backend.shared.validators - WARNING - 发现2条OHLC逻辑异常数据
+...............2026-05-14 09:51:23,435 - asyncio - WARNING - Executing <Task finished name='Task-1480' coro=<WatchlistAddMissingStockTests.test_add_symbol_creates_minimal_stock_when_master_data_missing() done, defined at D:\Apps\Demo4\backend\tests\test_watchlist_add_missing_stock.py:38> result=None created at C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py:100> took 0.250 seconds
+.2026-05-14 09:51:23,703 - asyncio - WARNING - Executing <Task finished name='Task-1485' coro=<WatchlistAddMissingStockTests.test_add_symbol_enriches_placeholder_stock_name() done, defined at D:\Apps\Demo4\backend\tests\test_watchlist_add_missing_stock.py:92> result=None created at C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py:100> took 0.234 seconds
+.2026-05-14 09:51:23,962 - asyncio - WARNING - Executing <Task finished name='Task-1490' coro=<WatchlistAddMissingStockTests.test_add_symbol_rejects_invalid_code() done, defined at D:\Apps\Demo4\backend\tests\test_watchlist_add_missing_stock.py:58> result=None created at C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py:100> took 0.235 seconds
+.2026-05-14 09:51:24,228 - asyncio - WARNING - Executing <Task finished name='Task-1495' coro=<WatchlistAddMissingStockTests.test_add_symbol_reuses_existing_stock() done, defined at D:\Apps\Demo4\backend\tests\test_watchlist_add_missing_stock.py:73> result=None created at C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py:100> took 0.250 seconds
+.
+======================================================================
+ERROR: test_db_candidate_pool_reports_db_source_without_warnings (test_recommendation_candidate_source.RecommendationCandidateSourceTests.test_db_candidate_pool_reports_db_source_without_warnings)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_recommendation_candidate_source.py", line 90, in test_db_candidate_pool_reports_db_source_without_warnings
+    with patch.dict("os.environ", env, clear=False), patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute '_load_recommendation_candidates'
+
+======================================================================
+ERROR: test_development_empty_candidate_pool_uses_marked_fallback (test_recommendation_candidate_source.RecommendationCandidateSourceTests.test_development_empty_candidate_pool_uses_marked_fallback)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_recommendation_candidate_source.py", line 62, in test_development_empty_candidate_pool_uses_marked_fallback
+    with patch.dict("os.environ", env, clear=False), patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute '_load_recommendation_candidates'
+
+======================================================================
+ERROR: test_development_small_db_candidate_pool_uses_mixed_source (test_recommendation_candidate_source.RecommendationCandidateSourceTests.test_development_small_db_candidate_pool_uses_mixed_source)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_recommendation_candidate_source.py", line 126, in test_development_small_db_candidate_pool_uses_mixed_source
+    with patch.dict("os.environ", env, clear=False), patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute '_load_recommendation_candidates'
+
+======================================================================
+ERROR: test_full_observation_page_load_does_not_block_on_initial_full_scan_by_default (test_recommendation_candidate_source.RecommendationCandidateSourceTests.test_full_observation_page_load_does_not_block_on_initial_full_scan_by_default)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_recommendation_candidate_source.py", line 233, in test_full_observation_page_load_does_not_block_on_initial_full_scan_by_default
+    with patch.dict("os.environ", env, clear=False), patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute '_load_recommendation_candidates'
+
+======================================================================
+ERROR: test_full_observation_request_bootstraps_once_then_returns_to_rotation (test_recommendation_candidate_source.RecommendationCandidateSourceTests.test_full_observation_request_bootstraps_once_then_returns_to_rotation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_recommendation_candidate_source.py", line 183, in test_full_observation_request_bootstraps_once_then_returns_to_rotation
+    with patch.dict("os.environ", env, clear=False), patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute '_load_recommendation_candidates'
+
+======================================================================
+ERROR: test_production_empty_candidate_pool_returns_unavailable_without_fallback (test_recommendation_candidate_source.RecommendationCandidateSourceTests.test_production_empty_candidate_pool_returns_unavailable_without_fallback)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_recommendation_candidate_source.py", line 39, in test_production_empty_candidate_pool_returns_unavailable_without_fallback
+    with patch.dict("os.environ", env, clear=False), patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute '_load_recommendation_candidates'
+
+======================================================================
+ERROR: test_production_small_db_candidate_pool_never_uses_fallback (test_recommendation_candidate_source.RecommendationCandidateSourceTests.test_production_small_db_candidate_pool_never_uses_fallback)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_recommendation_candidate_source.py", line 151, in test_production_small_db_candidate_pool_never_uses_fallback
+    with patch.dict("os.environ", env, clear=False), patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute '_load_recommendation_candidates'
+
+======================================================================
+ERROR: test_recommendation_cache_key_isolated_by_research_payload_flags (test_scoring_recommendation_flags.ScoringRecommendationFlagTests.test_recommendation_cache_key_isolated_by_research_payload_flags)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_scoring_recommendation_flags.py", line 65, in test_recommendation_cache_key_isolated_by_research_payload_flags
+    with patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute 'run_research_pipeline'
+
+======================================================================
+ERROR: test_recommendations_can_disable_evidence_and_debate_fields (test_scoring_recommendation_flags.ScoringRecommendationFlagTests.test_recommendations_can_disable_evidence_and_debate_fields)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_scoring_recommendation_flags.py", line 37, in test_recommendations_can_disable_evidence_and_debate_fields
+    with patch(
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1446, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jh\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1419, in get_original
+    raise AttributeError(
+AttributeError: <module 'backend.services.analysis_service.api.v1.scoring' from 'D:\\Apps\\Demo4\\backend\\services\\analysis_service\\api\\v1\\scoring.py'> does not have the attribute 'run_research_pipeline'
+
+======================================================================
+FAIL: test_models_reload_registers_expected_tables_and_core_column_contracts (test_shared_contracts_quality.SharedModelsQualityTests.test_models_reload_registers_expected_tables_and_core_column_contracts)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_shared_contracts_quality.py", line 53, in test_models_reload_registers_expected_tables_and_core_column_contracts
+    self.assertEqual(set(models.Base.metadata.tables), expected_tables)
+AssertionError: Items in the first set but not the second:
+'daily_snapshots'
+
+======================================================================
+FAIL: test_core_table_names_are_registered_in_metadata (test_shared_database_exceptions_models.SharedModelsContractTests.test_core_table_names_are_registered_in_metadata)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Apps\Demo4\backend\tests\test_shared_database_exceptions_models.py", line 240, in test_core_table_names_are_registered_in_metadata
+    self.assertEqual(set(self.models.Base.metadata.tables), expected_tables)
+AssertionError: Items in the first set but not the second:
+'daily_snapshots'
+
+----------------------------------------------------------------------
+Ran 767 tests in 24.586s
+
+FAILED (failures=2, errors=9)
+
+[verify] ops drill readiness preflight
+[cmd] D:\Apps\Demo4\venv\Scripts\python.exe scripts/ops/verify_ops_drill_readiness.py
+[ok] ops drill readiness preflight (0.1s)
+
+[verify] secret hygiene gate
+[cmd] D:\Apps\Demo4\venv\Scripts\python.exe scripts/verify_secret_hygiene.py
+[ok] secret hygiene gate (0.1s)
+
+[verify] backend compile
+[cmd] D:\Apps\Demo4\venv\Scripts\python.exe -m compileall backend scripts -q
+[ok] backend compile (0.2s)
+
+[verify] backend unit tests
+[cmd] D:\Apps\Demo4\venv\Scripts\python.exe -m unittest discover backend/tests
+[fail] backend unit tests failed after 28.5s

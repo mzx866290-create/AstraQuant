@@ -8,6 +8,22 @@ export interface ScoreBreakdownItem {
   delta: number | string
   status?: string
   message?: string
+  source?: string
+  features?: RecommendationCapitalFlowFeatures
+}
+
+export interface RecommendationCapitalFlowFeatures {
+  source?: string
+  signal?: string
+  status?: string
+  latest_date?: string | null
+  latest_main_inflow?: number | null
+  main_inflow_3d?: number | null
+  main_inflow_5d?: number | null
+  positive_days?: number
+  sample_size?: number
+  updated_at?: string
+  warnings?: string[]
 }
 
 export interface StrategyWeightedFactor {
@@ -100,6 +116,8 @@ export interface RecommendationItem {
   reasons?: string[]
   risk_flags?: string[]
   score_breakdown?: ScoreBreakdownItem[]
+  capital_flow_features?: RecommendationCapitalFlowFeatures
+  capital_flow_status?: string
   data_grade?: {
     grade?: string
     label?: string
@@ -236,6 +254,7 @@ export interface RecommendationsResponse {
     strategy_label?: string
   }
   phase?: string
+  pipeline_status?: string
   disclaimer?: string
   cache_hit?: boolean
   updated_at?: string
@@ -251,6 +270,12 @@ export interface RecommendationTrustState {
   actionable: boolean
 }
 
+export interface RetailRiskHint {
+  level: 'low' | 'medium' | 'high'
+  label: string
+  message: string
+}
+
 export function ratingTag(level?: string): TagProps['type'] {
   if (level === 'A') return 'success'
   if (level === 'B') return 'primary'
@@ -258,12 +283,174 @@ export function ratingTag(level?: string): TagProps['type'] {
   return 'info'
 }
 
+export function scoreReferenceText(score?: number | null): string {
+  const value = Number(score)
+  if (!Number.isFinite(value)) return '暂无评分'
+  if (value >= 60) return '强烈关注'
+  if (value >= 50) return '值得观察'
+  if (value >= 40) return '一般观察'
+  return '谨慎观察'
+}
+
+export function scoreReferenceDetail(score?: number | null): string {
+  const value = Number(score)
+  if (!Number.isFinite(value)) return '评分不足，先看数据完整性。'
+  if (value >= 60) return '60分以上：信号较强，但仍需等风险确认。'
+  if (value >= 50) return '50-60分：值得观察，不等于适合买入。'
+  if (value >= 40) return '40-50分：信号一般，适合继续跟踪。'
+  return '40分以下：优先排查风险和数据质量。'
+}
+
+export function scoreTagType(score?: number | null): TagProps['type'] {
+  const value = Number(score)
+  if (!Number.isFinite(value)) return 'info'
+  if (value >= 60) return 'success'
+  if (value >= 50) return 'primary'
+  if (value >= 40) return 'warning'
+  return 'danger'
+}
+
+const BREAKDOWN_PLAIN_LABELS: Record<string, string> = {
+  capital_flow: '资金流配合',
+  volume_price: '量价配合',
+  technical: '技术位置',
+  continuity: '走势连续性',
+  attention: '市场关注度',
+  intensity: '异动强度',
+  valuation: '估值位置',
+  quality: '基本面质量',
+  momentum: '动量表现',
+}
+
+export function recommendationPlainReason(row: RecommendationItem): string {
+  const positives = topBreakdown(row)
+    .filter((item) => Number(item.delta) > 0)
+    .slice(0, 3)
+    .map((item) => BREAKDOWN_PLAIN_LABELS[item.key] || item.label)
+  const unique = Array.from(new Set(positives))
+  if (unique.length >= 2) return `${unique.join('、')}表现较好，系统把它列入今日观察池。`
+  if (unique.length === 1) return `${unique[0]}是主要入选线索，适合继续核查走势和风险。`
+  if (row.bull_case?.[0]?.argument) return row.bull_case[0].argument
+  return '当前有观察信号，但强度不突出，建议先作为跟踪线索。'
+}
+
+export function recommendationRiskHint(row: RecommendationItem): RetailRiskHint {
+  const hardVeto = row.veto_result?.passed === false || row.veto_result?.level === 'hard'
+  const warnings = recommendationRowWarnings(row)
+  const change = Number(row.change_pct)
+  const bearText = row.bear_case?.[0]?.argument || ''
+  const vetoText = row.veto_result?.veto_reason || row.veto_result?.warnings?.[0]?.detail || ''
+
+  if (hardVeto) {
+    return {
+      level: 'high',
+      label: '高风险',
+      message: vetoText || '风险规则已经触发否决，暂不适合直接跟进。',
+    }
+  }
+
+  if (Number.isFinite(change) && change >= 8) {
+    return {
+      level: 'high',
+      label: '注意追高',
+      message: `当日涨幅已达 ${change.toFixed(2)}%，短线追高风险偏高。`,
+    }
+  }
+
+  if (warnings.length || row.veto_result?.level === 'soft' || (row.veto_result?.warnings || []).length) {
+    return {
+      level: 'medium',
+      label: '风险适中',
+      message: warnings[0] || vetoText || '存在软性风险提示，先观察支撑和成交量是否延续。',
+    }
+  }
+
+  if (bearText) {
+    return {
+      level: 'medium',
+      label: '风险适中',
+      message: bearText,
+    }
+  }
+
+  return {
+    level: 'low',
+    label: '风险较低',
+    message: '暂未触发明显风险否决，仍需控制仓位并跟踪走势变化。',
+  }
+}
+
+export function riskHintTagType(hint: RetailRiskHint): TagProps['type'] {
+  if (hint.level === 'high') return 'danger'
+  if (hint.level === 'medium') return 'warning'
+  return 'success'
+}
+
 export function topBreakdown(row: Pick<RecommendationItem, 'score_breakdown'>) {
   const items = Array.isArray(row.score_breakdown) ? row.score_breakdown : []
   return items
-    .filter((item) => item.key !== 'base' && Number(item.delta) !== 0)
-    .sort((a, b) => Math.abs(Number(b.delta || 0)) - Math.abs(Number(a.delta || 0)))
-    .slice(0, 3)
+    .filter((item) => item.key !== 'base' && (item.key === 'capital_flow' || Number(item.delta) !== 0))
+    .sort((a, b) => {
+      if (a.key === 'capital_flow') return -1
+      if (b.key === 'capital_flow') return 1
+      return Math.abs(Number(b.delta || 0)) - Math.abs(Number(a.delta || 0))
+    })
+    .slice(0, 4)
+}
+
+export function capitalFlowLabel(row: Pick<RecommendationItem, 'capital_flow_status' | 'capital_flow_features'>): string {
+  const signal = row.capital_flow_status || row.capital_flow_features?.signal
+  if (signal === 'confirming') return '资金确认'
+  if (signal === 'contradicting') return '资金背离'
+  if (signal === 'neutral') return '资金中性'
+  if (signal === 'unavailable') return '资金缺失'
+  return '资金待验'
+}
+
+export function capitalFlowTagType(row: Pick<RecommendationItem, 'capital_flow_status' | 'capital_flow_features'>): TagProps['type'] {
+  const signal = row.capital_flow_status || row.capital_flow_features?.signal
+  if (signal === 'confirming') return 'success'
+  if (signal === 'contradicting') return 'warning'
+  if (signal === 'neutral') return 'info'
+  return 'info'
+}
+
+export function capitalFlowSummary(row: Pick<RecommendationItem, 'capital_flow_features'>): string {
+  const features = row.capital_flow_features
+  if (!features) return ''
+  const latest = Number(features.latest_main_inflow)
+  const rolling = Number(features.main_inflow_3d)
+  if (!Number.isFinite(latest) || !Number.isFinite(rolling)) return capitalFlowWarningText(row)
+  const latestDate = features.latest_date ? `${features.latest_date} ` : ''
+  const sample = features.sample_size ? ` · 样本${features.sample_size}日` : ''
+  return `${latestDate}最新 ${formatMoneyFlow(latest)} / 3日 ${formatMoneyFlow(rolling)}${sample}`
+}
+
+export function capitalFlowWarningText(row: Pick<RecommendationItem, 'capital_flow_features'>): string {
+  const warning = row.capital_flow_features?.warnings?.[0]
+  const mapping: Record<string, string> = {
+    akshare_money_flow_empty: 'AKShare暂无资金流数据',
+    akshare_money_flow_disabled: '资金流验证已关闭',
+    akshare_money_flow_source_error: 'AKShare资金流源不可用',
+    akshare_money_flow_partial_schema: '资金流字段不完整',
+  }
+  return warning ? mapping[warning] || warning : ''
+}
+
+export function capitalFlowSourceText(row: Pick<RecommendationItem, 'capital_flow_features'>): string {
+  const features = row.capital_flow_features
+  if (!features) return ''
+  const source = features.source || 'akshare'
+  const updated = features.updated_at ? ` · ${String(features.updated_at).slice(0, 16).replace('T', ' ')}` : ''
+  return `${source}${updated}`
+}
+
+function formatMoneyFlow(value: number): string {
+  const abs = Math.abs(value)
+  const sign = value > 0 ? '+' : value < 0 ? '-' : ''
+  if (abs >= 100_000_000) return `${sign}${(abs / 100_000_000).toFixed(2)}亿`
+  if (abs >= 10_000) return `${sign}${(abs / 10_000).toFixed(0)}万`
+  return `${sign}${abs.toFixed(0)}`
 }
 
 export function breakdownType(item: ScoreBreakdownItem): TagProps['type'] {

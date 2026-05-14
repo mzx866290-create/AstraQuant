@@ -59,6 +59,8 @@ class _FakeQuery:
             return rows
         if self.model.__name__ == "ObservationReview":
             return list(self.session.review_rows)
+        if self.model.__name__ == "DailySnapshot":
+            return list(self.session.snapshot_rows)
         if self.model.__name__ == "ResearchObservation":
             return list(self.session.rows)
         return list(self.session.rows)
@@ -69,6 +71,7 @@ class _FakeSession:
         self.added = []
         self.rows = []
         self.review_rows = []
+        self.snapshot_rows = []
         self.audit_rows = []
         self.proposal_rows = []
         self.version_rows = []
@@ -98,6 +101,45 @@ class _FakeSession:
 
 
 class ReviewTrackerTests(unittest.TestCase):
+    def test_build_factor_snapshot_merges_existing_factor_sources(self) -> None:
+        snapshot = review_tracker.build_factor_snapshot(
+            {
+                "score_breakdown": [
+                    {"key": "base", "label": "Base", "delta": 50},
+                    {"key": "valuation", "label": "Valuation", "delta": 4},
+                ],
+                "evidence_chain": [
+                    {
+                        "factor": "valuation",
+                        "dimension": "valuation",
+                        "label": "Valuation",
+                        "impact": 1.5,
+                        "direction": "positive",
+                        "confidence": "medium",
+                    }
+                ],
+                "strategy_weighted_factors": [
+                    {
+                        "factor": "valuation",
+                        "dimension": "valuation",
+                        "label": "Valuation",
+                        "weighted_delta": 2.0,
+                        "weight": 0.25,
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(len(snapshot), 1)
+        row = snapshot[0]
+        self.assertEqual(row["factor"], "valuation")
+        self.assertEqual(row["sources"], ["evidence_chain", "score_breakdown", "strategy_weighted"])
+        self.assertEqual(row["score_delta"], 4.0)
+        self.assertEqual(row["evidence_impact"], 1.5)
+        self.assertEqual(row["weighted_delta"], 2.0)
+        self.assertEqual(row["weight"], 0.25)
+        self.assertEqual(row["direction"], "positive")
+
     def test_save_observation_snapshots_persists_recommendation_research_fields(self) -> None:
         session = _FakeSession()
         recommendations = [
@@ -106,8 +148,9 @@ class ReviewTrackerTests(unittest.TestCase):
                 "strategy_id": "retail_small",
                 "score": 72,
                 "price": 18.5,
-                "score_breakdown": [{"key": "valuation"}],
-                "evidence_chain": [{"factor": "valuation"}],
+                "score_breakdown": [{"key": "valuation", "delta": 2}],
+                "evidence_chain": [{"factor": "valuation", "impact": 1}],
+                "strategy_weighted_factors": [{"factor": "valuation", "dimension": "valuation", "weighted_delta": 1.5, "weight": 0.2}],
                 "bull_case": [{"argument": "估值合理"}],
                 "bear_case": [{"argument": "现金流偏弱"}],
                 "key_disagreement": [{"topic": "成长"}],
@@ -128,7 +171,9 @@ class ReviewTrackerTests(unittest.TestCase):
         self.assertEqual(row.symbol, "000001.SZ")
         self.assertEqual(row.strategy_id, "retail_small")
         self.assertEqual(row.regime, "range_bound")
-        self.assertEqual(row.evidence_chain_json, [{"factor": "valuation"}])
+        self.assertEqual(row.evidence_chain_json, [{"factor": "valuation", "impact": 1}])
+        self.assertEqual(row.factor_snapshot_json[0]["factor"], "valuation")
+        self.assertEqual(row.factor_snapshot_json[0]["weighted_delta"], 1.5)
 
     def test_run_pending_reviews_creates_review_rows_from_pending_observations(self) -> None:
         session = _FakeSession()
@@ -145,6 +190,10 @@ class ReviewTrackerTests(unittest.TestCase):
             },
         )()
         session.observation_by_id = observation
+        session.snapshot_rows = [
+            type("DailySnapshot", (), {"trade_date": "2026-05-09", "symbol": "000001.SZ", "low": 9.7, "close": 10.0})(),
+            type("DailySnapshot", (), {"trade_date": "2026-05-10", "symbol": "000001.SZ", "low": 8.8, "close": 9.0})(),
+        ]
 
         with patch.object(review_tracker, "_has_table", return_value=True), patch.object(
             review_tracker, "list_pending_reviews", return_value=[{"observation_id": 7, "symbol": "000001.SZ", "review_offset": "T+1"}]
@@ -159,6 +208,7 @@ class ReviewTrackerTests(unittest.TestCase):
         review = session.added[0]
         self.assertEqual(review.observation_id, 7)
         self.assertEqual(review.return_pct, -10.0)
+        self.assertEqual(review.max_drawdown_pct, -12.0)
         self.assertTrue(review.falsification_triggered)
         self.assertTrue(review.risk_signal_valid)
 
@@ -242,6 +292,7 @@ class ReviewTrackerTests(unittest.TestCase):
                 "symbol": "000001.SZ",
                 "strategy_id": "retail_small",
                 "snapshot_date": datetime(2026, 5, 9, tzinfo=timezone.utc),
+                "regime": "range_bound",
                 "evidence_chain_json": [
                     {"factor": "valuation", "label": "Valuation", "impact": "1.5"},
                     {"dimension": "risk", "label": "Risk", "impact": "-0.5"},
@@ -256,6 +307,7 @@ class ReviewTrackerTests(unittest.TestCase):
                 "symbol": "000002.SZ",
                 "strategy_id": "retail_small",
                 "snapshot_date": datetime(2026, 5, 10, tzinfo=timezone.utc),
+                "regime": "weak_market",
                 "evidence_chain_json": [
                     {"factor": "valuation", "label": "Valuation", "impact": "bad"},
                 ],
@@ -269,6 +321,7 @@ class ReviewTrackerTests(unittest.TestCase):
                 "symbol": "000003.SZ",
                 "strategy_id": "retail_small",
                 "snapshot_date": datetime(2026, 5, 11, tzinfo=timezone.utc),
+                "regime": "strong_trend",
                 "evidence_chain_json": [{"factor": "valuation", "label": "Valuation", "impact": 9}],
             },
         )()
@@ -278,6 +331,7 @@ class ReviewTrackerTests(unittest.TestCase):
             {
                 "observation_id": 7,
                 "return_pct": 10.0,
+                "max_drawdown_pct": -3.0,
                 "falsification_triggered": False,
                 "risk_signal_valid": True,
             },
@@ -288,6 +342,7 @@ class ReviewTrackerTests(unittest.TestCase):
             {
                 "observation_id": 8,
                 "return_pct": -5.0,
+                "max_drawdown_pct": -8.0,
                 "falsification_triggered": True,
                 "risk_signal_valid": False,
             },
@@ -298,6 +353,7 @@ class ReviewTrackerTests(unittest.TestCase):
             {
                 "observation_id": 9,
                 "return_pct": 20.0,
+                "max_drawdown_pct": -1.0,
                 "falsification_triggered": False,
                 "risk_signal_valid": False,
             },
@@ -314,7 +370,7 @@ class ReviewTrackerTests(unittest.TestCase):
             )
 
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(report["summary"], {"factors": 2, "reviews": 2})
+        self.assertEqual(report["summary"], {"factors": 2, "reviews": 2, "regime_factors": 3})
         valuation = report["by_factor"][0]
         self.assertEqual(valuation["factor"], "valuation")
         self.assertEqual(valuation["label"], "Valuation")
@@ -322,6 +378,9 @@ class ReviewTrackerTests(unittest.TestCase):
         self.assertEqual(valuation["positive_reviews"], 1)
         self.assertEqual(valuation["win_rate"], 0.5)
         self.assertEqual(valuation["avg_return_pct"], 2.5)
+        self.assertEqual(valuation["max_drawdown_pct"], -8.0)
+        self.assertEqual(valuation["worst_return_pct"], -5.0)
+        self.assertEqual(valuation["coverage_rate"], 1.0)
         self.assertEqual(valuation["avg_impact"], 0.75)
         self.assertEqual(valuation["positive_impact_reviews"], 1)
         self.assertEqual(valuation["negative_impact_reviews"], 0)
@@ -331,8 +390,92 @@ class ReviewTrackerTests(unittest.TestCase):
         self.assertEqual(risk["factor"], "risk")
         self.assertEqual(risk["reviews"], 1)
         self.assertEqual(risk["avg_return_pct"], 10.0)
+        self.assertEqual(risk["max_drawdown_pct"], -3.0)
+        self.assertEqual(risk["worst_return_pct"], 10.0)
+        self.assertEqual(risk["coverage_rate"], 0.5)
         self.assertEqual(risk["avg_impact"], -0.5)
         self.assertEqual(risk["negative_impact_reviews"], 1)
+        range_valuation = next(item for item in report["by_regime_factor"] if item["regime"] == "range_bound" and item["factor"] == "valuation")
+        weak_valuation = next(item for item in report["by_regime_factor"] if item["regime"] == "weak_market" and item["factor"] == "valuation")
+        self.assertEqual(range_valuation["avg_return_pct"], 10.0)
+        self.assertEqual(range_valuation["max_drawdown_pct"], -3.0)
+        self.assertEqual(weak_valuation["avg_return_pct"], -5.0)
+        self.assertEqual(weak_valuation["max_drawdown_pct"], -8.0)
+
+    def test_build_single_factor_validation_report_groups_offsets_and_samples(self) -> None:
+        session = _FakeSession()
+        observation_a = type(
+            "Observation",
+            (),
+            {
+                "id": 7,
+                "symbol": "000001.SZ",
+                "strategy_id": "retail_small",
+                "snapshot_date": datetime(2026, 5, 9, tzinfo=timezone.utc),
+                "factor_snapshot_json": [
+                    {"factor": "valuation", "dimension": "valuation", "label": "Valuation", "weighted_delta": 1.2, "sources": ["strategy_weighted"]}
+                ],
+            },
+        )()
+        observation_b = type(
+            "Observation",
+            (),
+            {
+                "id": 8,
+                "symbol": "000002.SZ",
+                "strategy_id": "retail_small",
+                "snapshot_date": datetime(2026, 5, 10, tzinfo=timezone.utc),
+                "factor_snapshot_json": [
+                    {"factor": "quality", "dimension": "valuation", "label": "Valuation", "evidence_impact": -0.5, "sources": ["evidence_chain"]}
+                ],
+            },
+        )()
+        review_a = type(
+            "Review",
+            (),
+            {
+                "observation_id": 7,
+                "review_offset": "T+1",
+                "return_pct": 3.0,
+                "max_drawdown_pct": -1.0,
+                "falsification_triggered": False,
+                "risk_signal_valid": False,
+            },
+        )()
+        review_b = type(
+            "Review",
+            (),
+            {
+                "observation_id": 8,
+                "review_offset": "T+5",
+                "return_pct": -2.0,
+                "max_drawdown_pct": -5.0,
+                "falsification_triggered": True,
+                "risk_signal_valid": True,
+            },
+        )()
+        session.rows = [observation_a, observation_b]
+        session.review_rows = [review_a, review_b]
+
+        with patch.object(review_tracker, "_has_table", return_value=True), patch.object(
+            review_tracker, "SessionLocal", return_value=session
+        ):
+            report = review_tracker.build_single_factor_validation_report("valuation", min_reviews=2)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["summary"]["reviews"], 2)
+        self.assertEqual(report["summary"]["win_rate"], 0.5)
+        self.assertEqual(report["summary"]["avg_return_pct"], 0.5)
+        self.assertEqual(report["summary"]["validation_state"], "needs_more_review")
+        self.assertEqual([item["review_offset"] for item in report["by_offset"]], ["T+1", "T+5"])
+        self.assertEqual(len(report["samples"]), 2)
+        self.assertEqual(report["samples"][0]["symbol"], "000002.SZ")
+
+    def test_build_single_factor_validation_report_reports_invalid_and_missing_tables(self) -> None:
+        self.assertEqual(review_tracker.build_single_factor_validation_report(" ")["status"], "invalid_factor")
+        with patch.object(review_tracker, "_has_table", return_value=False):
+            result = review_tracker.build_single_factor_validation_report("valuation")
+        self.assertEqual(result["status"], "tables_missing")
 
     def test_build_weight_adjustment_suggestions_classifies_factor_actions(self) -> None:
         factor_report = {

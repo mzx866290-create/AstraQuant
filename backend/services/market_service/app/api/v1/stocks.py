@@ -37,6 +37,56 @@ def _parse_list_date(value):
     return None
 
 
+def _data_quality(
+    source: str,
+    updated_at: Optional[str] = None,
+    freshness: str = "profile",
+    confidence: float = 0.85,
+    is_fallback: bool = False,
+    warnings: Optional[list[str]] = None,
+    status: Optional[str] = None,
+) -> dict:
+    quality_warnings = warnings or []
+    return {
+        "source": source,
+        "status": status or ("degraded" if quality_warnings else "ok"),
+        "updated_at": updated_at or datetime.now().isoformat(),
+        "freshness": freshness,
+        "confidence": confidence,
+        "is_fallback": is_fallback,
+        "warnings": quality_warnings,
+    }
+
+
+def _profile_warnings(payload: dict) -> list[str]:
+    warnings = []
+    if not payload.get("name"):
+        warnings.append("stock_name_missing")
+    if not payload.get("sector"):
+        warnings.append("stock_sector_missing")
+    if not payload.get("list_date"):
+        warnings.append("stock_list_date_missing")
+    return warnings
+
+
+def _attach_profile_quality(payload: dict, source: str, is_fallback: bool = False, updated_at: Optional[str] = None) -> dict:
+    warnings = _profile_warnings(payload)
+    if is_fallback:
+        warnings.append("stock_profile_public_source_fallback")
+    status = "unavailable" if not payload.get("name") and not payload.get("sector") else "degraded" if warnings else "ok"
+    payload["source"] = source
+    payload["updated_at"] = updated_at or datetime.now().isoformat()
+    payload["data_quality"] = _data_quality(
+        source=source,
+        updated_at=payload["updated_at"],
+        confidence=0.75 if is_fallback else 0.9,
+        is_fallback=is_fallback,
+        warnings=warnings,
+        status=status,
+    )
+    return payload
+
+
 def _fetch_public_stock_info(code: str) -> dict:
     """Fetch public stock profile from AKShare/EastMoney as a fallback."""
     try:
@@ -201,7 +251,7 @@ async def get_stock(symbol: str):
             stock = db.query(Stock).filter(Stock.symbol.like(f"{code}%")).first()
             if stock:
                 list_date = stock.list_date.isoformat() if stock.list_date else public_info.get("list_date")
-                return {
+                payload = {
                     "id": stock.id,
                     "symbol": _api_symbol(stock.symbol, stock.market),
                     "code": code,
@@ -214,14 +264,19 @@ async def get_stock(symbol: str):
                     "float_shares": public_info.get("float_shares"),
                     "total_mv": public_info.get("total_mv"),
                     "circ_mv": public_info.get("circ_mv"),
-                    "source": f"database+{public_info.get('source')}" if public_info else "database",
                 }
+                source = f"database+{public_info.get('source')}" if public_info else "database"
+                return _attach_profile_quality(
+                    payload,
+                    source,
+                    updated_at=stock.updated_at.isoformat() if stock.updated_at else None,
+                )
         finally:
             db.close()
     except Exception:
         pass
 
-    return {
+    payload = {
         "symbol": f"{code}.{market}",
         "code": code,
         "market": market,
@@ -233,5 +288,5 @@ async def get_stock(symbol: str):
         "float_shares": public_info.get("float_shares"),
         "total_mv": public_info.get("total_mv"),
         "circ_mv": public_info.get("circ_mv"),
-        "source": public_info.get("source", "fallback"),
     }
+    return _attach_profile_quality(payload, public_info.get("source", "fallback"), is_fallback=True)

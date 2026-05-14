@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.services.analysis_service.engine import ai_analysis_service as service
 from backend.shared.models import AIModel, AIUsageLog
+from backend.shared.schemas import AIAnalysisRequest, AIAnalysisResponse
 
 
 def _model(
@@ -112,6 +113,7 @@ def _cached_response() -> dict:
         "symbol": "000001",
         "model_name": "cached-model",
         "analysis": "cached analysis",
+        "tokens_used": 12,
         "response_time_ms": 12,
         "created_at": datetime(2026, 5, 7, tzinfo=timezone.utc),
         "requested_model": "cached-model",
@@ -247,6 +249,27 @@ class AIAnalysisServiceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cached["report_meta"]["force_refresh"])
         cache.get.assert_awaited_once_with("contract-category", "cache-key")
         cache.set.assert_awaited_once_with("write-category", "write-key", value={"ok": True})
+
+    async def test_ai_analysis_schema_exposes_frontend_contract_fields(self) -> None:
+        request = AIAnalysisRequest(
+            model_id=1,
+            symbol="000001",
+            question="What changed?",
+            framework="valuation",
+        )
+        response = AIAnalysisResponse(
+            symbol="000001",
+            model_name="primary",
+            analysis="contract analysis body",
+            tokens_used=24,
+            response_time_ms=321,
+            created_at=datetime(2026, 5, 7, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(request.framework, "valuation")
+        self.assertEqual(response.tokens_used, 24)
+        self.assertIn("framework", AIAnalysisRequest.model_fields)
+        self.assertIn("tokens_used", AIAnalysisResponse.model_fields)
 
     async def test_analyze_stock_cache_hit_short_circuits_model_and_usage_recording(self) -> None:
         db = _FakeDb([_model(1, name="primary")])

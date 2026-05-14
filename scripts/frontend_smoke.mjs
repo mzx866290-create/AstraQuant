@@ -232,6 +232,49 @@ async function installApiMocks(page) {
       risk_signal_valid: 1,
     }],
   }
+  const reviewFactorValidation = {
+    status: 'ok',
+    factor: 'valuation',
+    summary: {
+      reviews: 1,
+      positive_reviews: 1,
+      win_rate: 1,
+      avg_return_pct: 1.2,
+      avg_impact: 0.4,
+      falsification_triggered: 0,
+      risk_signal_valid: 1,
+      min_reviews: 3,
+      validation_state: 'insufficient_samples',
+    },
+    by_offset: [{
+      review_offset: 'T+1',
+      reviews: 1,
+      win_rate: 1,
+      avg_return_pct: 1.2,
+      avg_impact: 0.4,
+    }],
+    samples: [],
+  }
+  const topNReport = {
+    status: 'ok',
+    summary: {
+      snapshots: 1,
+      strategies: 1,
+      rows: 1,
+      reviews: 1,
+    },
+    by_top_n: [{
+      rank_cutoff: 5,
+      review_offset: 'T+1',
+      observations: 1,
+      reviews: 1,
+      coverage_rate: 1,
+      win_rate: 1,
+      avg_return_pct: 1.2,
+      worst_return_pct: 1.2,
+      max_drawdown_pct: -0.5,
+    }],
+  }
   const weightSuggestions = {
     status: 'ok',
     summary: {
@@ -431,6 +474,33 @@ async function installApiMocks(page) {
       return
     }
 
+    if (url.pathname === '/api/v1/admin/stats/review-factor-validation' && method === 'GET') {
+      await mockJson(route, reviewFactorValidation)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-topn-report' && method === 'GET') {
+      await mockJson(route, topNReport)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/data-quality-baseline' && method === 'GET') {
+      await mockJson(route, {
+        status: 'ok',
+        summary: { total: 1, ok: 1, degraded: 0, unavailable: 0 },
+        items: [{
+          key: 'smoke-quotes',
+          label: 'Smoke Quotes',
+          status: 'ok',
+          source: 'smoke',
+          updated_at: '2026-05-07T09:40:00Z',
+          row_count: 1,
+          warnings: [],
+        }],
+      })
+      return
+    }
+
     if (url.pathname === '/api/v1/admin/stats/review-weight-suggestions' && method === 'GET') {
       await mockJson(route, weightSuggestions)
       return
@@ -443,6 +513,48 @@ async function installApiMocks(page) {
 
     if (url.pathname === '/api/v1/admin/stats/strategy-weight-patch-proposals' && method === 'GET') {
       await mockJson(route, [])
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-readiness' && method === 'GET') {
+      await mockJson(route, reviewReadiness)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-report' && method === 'GET') {
+      await mockJson(route, reviewReport)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-factor-report' && method === 'GET') {
+      await mockJson(route, reviewFactorReport)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-factor-validation' && method === 'GET') {
+      await mockJson(route, reviewFactorValidation)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/review-topn-report' && method === 'GET') {
+      await mockJson(route, topNReport)
+      return
+    }
+
+    if (url.pathname === '/api/v1/admin/stats/data-quality-baseline' && method === 'GET') {
+      await mockJson(route, {
+        status: 'ok',
+        summary: { total: 1, ok: 1, degraded: 0, unavailable: 0 },
+        items: [{
+          key: 'smoke-quotes',
+          label: 'Smoke Quotes',
+          status: 'ok',
+          source: 'smoke',
+          updated_at: '2026-05-07T09:40:00Z',
+          row_count: 1,
+          warnings: [],
+        }],
+      })
       return
     }
 
@@ -471,7 +583,7 @@ async function installApiMocks(page) {
     }
 
     if (url.pathname === '/api/v1/admin/users' && method === 'GET') {
-      await mockJson(route, adminUsers)
+      await mockJson(route, { items: adminUsers, total: adminUsers.length })
       return
     }
 

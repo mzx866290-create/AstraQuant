@@ -37,7 +37,6 @@ from backend.services.data_crawler.pipeline.crawl_status import (  # noqa: E402
     record_crawl_status,
 )
 from backend.services.data_crawler.pipeline.etl import (  # noqa: E402
-    DragonTigerETL,
     KLineETL,
     MonthlyKLineETL,
     MoneyFlowETL,
@@ -368,7 +367,6 @@ class DataCrawler:
         self.source_chain = DataSourceChain()
         self.news_chain = create_news_chain()
         self.etl = KLineETL()
-        self.dragon_tiger_etl = DragonTigerETL()
         self.money_flow_etl = MoneyFlowETL()
         self.realtime_quote_etl = RealtimeQuoteETL()
         self.minute_etl = self.realtime_quote_etl
@@ -450,15 +448,6 @@ class DataCrawler:
             hour=15,
             minute=35,
             id="collect_money_flow",
-            replace_existing=True,
-        )
-        self.scheduler.add_job(
-            self.collect_dragon_tiger,
-            "cron",
-            day_of_week="0-4",
-            hour=16,
-            minute=0,
-            id="collect_dragon_tiger",
             replace_existing=True,
         )
         if scheduled_news_enabled():
@@ -672,47 +661,6 @@ class DataCrawler:
                 logger.error("[%s] money flow collection failed: %s", symbol, exc)
         logger.info("money flow batch finished: %s/%s succeeded", success, len(symbols))
         return {"task": "money_flow", "success": success, "total": len(symbols), "limit": limit}
-
-    async def collect_dragon_tiger(self):
-        logger.info("[%s] collecting dragon tiger data", datetime.now())
-        started_at = now_utc()
-        target_date = os.getenv("DATA_CRAWLER_DRAGON_TIGER_DATE") or datetime.now().strftime("%Y-%m-%d")
-        try:
-            result = await self.source_chain.fetch_with_fallback("fetch_dragon_tiger", date=target_date)
-            rows = result.get("data") or []
-            source = result.get("source", "unknown")
-            saved = await self.dragon_tiger_etl.save(rows, source)
-            status = crawl_status_for_counts(len(rows), saved)
-            self._record_status(
-                "GLOBAL",
-                "dragon_tiger",
-                status,
-                started_at,
-                source=source,
-                fetched=len(rows),
-                saved=saved,
-                error_message=None if status == "success" else f"dragon_tiger {status}",
-            )
-            logger.info(
-                "dragon tiger collection finished: target=%s fetched=%s saved=%s status=%s source=%s",
-                target_date,
-                len(rows),
-                saved,
-                status,
-                source,
-            )
-            return {
-                "task": "dragon_tiger",
-                "target_date": target_date,
-                "status": status,
-                "fetched": len(rows),
-                "saved": saved,
-                "source": source,
-            }
-        except Exception as exc:
-            self._record_status("GLOBAL", "dragon_tiger", "error", started_at, error_message=str(exc))
-            logger.error("dragon tiger collection failed: %s", exc)
-            return {"task": "dragon_tiger", "target_date": target_date, "status": "error", "message": str(exc)}
 
     async def collect_stock_news(self):
         logger.info("[%s] collecting intraday stock news", datetime.now())

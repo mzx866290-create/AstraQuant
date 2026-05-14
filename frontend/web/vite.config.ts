@@ -25,7 +25,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5175,
-    allowedHosts: ['.trycloudflare.com', 'mzxstock.duckdns.org'],
+    allowedHosts: ['.trycloudflare.com', 'mzxstock.duckdns.org', 'yhang.cc.cd'],
     proxy: {
       // 用户服务 (本地端口 8002)
       '/api/v1/auth': {

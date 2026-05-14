@@ -1,6 +1,6 @@
 """
 行情服务 - FastAPI 入口 v2
-A股行情 / K线 / 搜索 / 板块 / 龙虎榜
+A股行情 / K线 / 搜索 / 板块
 """
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,7 +48,7 @@ if not is_production():
 
 validate_production_settings("market-service")
 
-from app.api.v1 import quotes, kline, search, sectors, dragon_tiger, alerts, index_market, stocks
+from app.api.v1 import quotes, kline, search, sectors, alerts, index_market, stocks
 from app.api.v1 import announcements, financials, news_api, crawl
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -102,6 +102,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5175", "http://localhost:5173",
         "http://localhost", "http://localhost:80",
+        "https://yhang.cc.cd",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -127,7 +128,6 @@ app.include_router(quotes.router,        prefix="/api/v1/quotes",        tags=["
 app.include_router(kline.router,         prefix="/api/v1/kline",         tags=["K线"])
 app.include_router(search.router,        prefix="/api/v1/search",        tags=["搜索"])
 app.include_router(sectors.router,       prefix="/api/v1/sectors",       tags=["板块"])
-app.include_router(dragon_tiger.router,  prefix="/api/v1/dragon-tiger",  tags=["龙虎榜"])
 app.include_router(alerts.router,        prefix="/api/v1",               tags=["预警"])
 app.include_router(index_market.router,  prefix="/api/v1/indices",       tags=["大盘指数"])
 app.include_router(announcements.router, prefix="/api/v1/announcements", tags=["公告"])

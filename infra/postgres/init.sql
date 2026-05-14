@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS research_observations (
     score                DOUBLE PRECISION NOT NULL,
     score_breakdown_json JSONB,
     evidence_chain_json  JSONB,
+    factor_snapshot_json JSONB,
     debate_json          JSONB,
     veto_result_json     JSONB,
     close_price          DOUBLE PRECISION,

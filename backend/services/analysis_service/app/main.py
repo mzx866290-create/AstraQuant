@@ -84,6 +84,11 @@ async def lifespan(app: FastAPI):
         review_scheduler.start()
     except Exception as e:
         logger.warning(f"研究复盘定时任务启动跳过: {e}")
+    try:
+        from backend.services.analysis_service.engine.daily_pool_scheduler import daily_pool_scheduler
+        daily_pool_scheduler.start()
+    except Exception as e:
+        logger.warning(f"每日观察池定时任务启动跳过: {e}")
     yield
     try:
         from backend.services.analysis_service.engine.model_health_scheduler import model_health_scheduler
@@ -93,6 +98,11 @@ async def lifespan(app: FastAPI):
     try:
         from backend.services.analysis_service.engine.review_scheduler import review_scheduler
         await review_scheduler.stop()
+    except Exception:
+        pass
+    try:
+        from backend.services.analysis_service.engine.daily_pool_scheduler import daily_pool_scheduler
+        await daily_pool_scheduler.stop()
     except Exception:
         pass
     try:
@@ -117,6 +127,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5175", "http://localhost:5173",
         "http://localhost", "http://localhost:80",
+        "https://yhang.cc.cd",
     ],
     allow_credentials=True,
     allow_methods=["*"],

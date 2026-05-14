@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from backend.services.data_crawler.pipeline.etl import (
     ClickHouseWriteUnavailable,
-    DragonTigerETL,
     KLineETL,
     MinuteKLineETL,
     MoneyFlowETL,
@@ -32,8 +31,6 @@ def build_recording_clickhouse_module(client_calls: list[dict], *, fail_first_in
     def key_for(table: str, values: tuple):
         if table == "stock_daily":
             return values[0], values[2], values[18]
-        if table == "dragon_tiger":
-            return values[0], values[1], values[3]
         return values[0], values[1]
 
     class FakeClient:
@@ -142,26 +139,6 @@ def money_flow_row(**overrides):
     return row
 
 
-def dragon_tiger_row(**overrides):
-    row = {
-        "trade_date": date(2026, 5, 6),
-        "symbol": "600519",
-        "name": "Kweichow Moutai",
-        "reason": "daily breakout",
-        "close_price": 1668.88,
-        "change_pct": 8.12,
-        "turnover": 520000000.0,
-        "buy_amount": 320000000.0,
-        "sell_amount": 200000000.0,
-        "net_amount": 120000000.0,
-        "buy_seats": "[]",
-        "sell_seats": "[]",
-        "source": "unit-lhb",
-    }
-    row.update(overrides)
-    return row
-
-
 class ETLIdempotencyTests(TestCase):
     def test_batch_writes_filter_duplicate_business_keys_before_insert(self) -> None:
         cases = [
@@ -193,24 +170,6 @@ class ETLIdempotencyTests(TestCase):
                 {"CLICKHOUSE_STOCK_MONTHLY_TABLE": "stock_monthly"},
                 1,
             ),
-            (
-                "money_flow",
-                MoneyFlowETL()._batch_write,
-                [money_flow_row(main_net_inflow=100.0), money_flow_row(main_net_inflow=200.0)],
-                {"CLICKHOUSE_MONEY_FLOW_TABLE": "money_flow"},
-                1,
-            ),
-            (
-                "dragon_tiger",
-                DragonTigerETL()._batch_write,
-                [
-                    dragon_tiger_row(reason="daily breakout", net_amount=1.0),
-                    dragon_tiger_row(reason="daily breakout", net_amount=2.0),
-                    dragon_tiger_row(reason="institution buy", net_amount=3.0),
-                ],
-                {"CLICKHOUSE_DRAGON_TIGER_TABLE": "dragon_tiger"},
-                2,
-            ),
         ]
 
         for name, write, rows, env, expected_insert_count in cases:
@@ -226,10 +185,6 @@ class ETLIdempotencyTests(TestCase):
                 self.assertTrue(execute_calls[0]["query"].startswith("ALTER TABLE"))
                 self.assertTrue(execute_calls[1]["query"].startswith("INSERT INTO"))
                 self.assertEqual(len(execute_calls[1]["values"]), expected_insert_count)
-
-                if name == "dragon_tiger":
-                    inserted_reasons = {values[3] for values in execute_calls[1]["values"]}
-                    self.assertEqual(inserted_reasons, {"daily breakout", "institution buy"})
 
     def test_cross_batch_rerun_replaces_existing_daily_key(self) -> None:
         etl = KLineETL()

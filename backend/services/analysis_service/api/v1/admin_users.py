@@ -2,6 +2,7 @@
 用户管理 API - 管理员专用
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional, List
 
@@ -23,10 +24,18 @@ from backend.shared.schemas import AdminUserResponse, AdminUserUpdate, UserQuota
 router = APIRouter(prefix="/users", tags=["管理员-用户管理"])
 
 
-@router.get("", response_model=List[AdminUserResponse])
+class AdminUserListResponse(BaseModel):
+    items: List[AdminUserResponse]
+    total: int
+    skip: int
+    limit: int
+
+
+@router.get("")
 async def list_users(
     skip: int = 0,
     limit: int = 100,
+    paged: bool = False,
     role: Optional[str] = None,
     is_active: Optional[bool] = None,
     search: Optional[str] = None,
@@ -45,6 +54,7 @@ async def list_users(
             (User.username.contains(search)) | (User.email.contains(search))
         )
 
+    total = query.count()
     users = query.order_by(User.id).offset(skip).limit(limit).all()
 
     # 获取配额信息
@@ -66,6 +76,8 @@ async def list_users(
         )
         result.append(user_data)
 
+    if paged:
+        return AdminUserListResponse(items=result, total=total, skip=skip, limit=limit)
     return result
 
 

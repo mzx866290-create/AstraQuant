@@ -10,6 +10,7 @@ from sqlalchemy import inspect
 from backend.shared.database import engine
 from backend.shared.database import SessionLocal
 from backend.shared.models import (
+    DailySnapshot,
     ObservationReview,
     ResearchObservation,
     StrategyWeightPatchProposal,
@@ -84,6 +85,7 @@ def save_observation_snapshots(
                 "score": float(item.get("score") or 0),
                 "score_breakdown_json": item.get("score_breakdown") or [],
                 "evidence_chain_json": item.get("evidence_chain") or [],
+                "factor_snapshot_json": build_factor_snapshot(item),
                 "debate_json": {
                     "bull_case": item.get("bull_case") or [],
                     "bear_case": item.get("bear_case") or [],
@@ -171,6 +173,32 @@ def _risk_signal_valid(observation: ResearchObservation, return_pct: float | Non
     return float(return_pct) <= 0
 
 
+def _calculate_max_drawdown_pct(db, observation: ResearchObservation, review_date: date) -> float | None:
+    if observation.close_price in (None, 0) or not observation.snapshot_date:
+        return None
+    snapshot_day = observation.snapshot_date.date()
+    rows = (
+        db.query(DailySnapshot)
+        .filter(
+            DailySnapshot.symbol == observation.symbol,
+            DailySnapshot.trade_date >= snapshot_day.isoformat(),
+            DailySnapshot.trade_date <= review_date.isoformat(),
+        )
+        .order_by(DailySnapshot.trade_date.asc())
+        .all()
+    )
+    lows: list[float] = []
+    for row in rows:
+        value = row.low if row.low not in (None, 0) else row.close
+        if value not in (None, 0):
+            lows.append(float(value))
+    if not lows:
+        return None
+    base_price = float(observation.close_price)
+    worst_drop = min((low - base_price) / base_price * 100 for low in lows)
+    return round(worst_drop, 4) if worst_drop < 0 else 0.0
+
+
 async def run_pending_reviews(review_date: date, offsets: tuple[str, ...] = ("T+1", "T+5", "T+20")) -> dict:
     if not _has_table("research_observations") or not _has_table("observation_reviews"):
         return {"review_date": review_date.isoformat(), "processed": 0, "created": 0, "skipped": 0, "items": [], "status": "tables_missing"}
@@ -204,7 +232,7 @@ async def run_pending_reviews(review_date: date, offsets: tuple[str, ...] = ("T+
                 review_date=datetime.combine(review_date, datetime.min.time(), tzinfo=timezone.utc),
                 close_price=review_price,
                 return_pct=return_pct,
-                max_drawdown_pct=None,
+                max_drawdown_pct=_calculate_max_drawdown_pct(db, observation, review_date),
                 falsification_triggered=_falsification_triggered(observation, base_price, review_price),
                 risk_signal_valid=_risk_signal_valid(observation, return_pct),
                 notes=f"source={quote.get('source') or 'unknown'}",
@@ -253,17 +281,7 @@ def build_review_report(snapshot_from: date | None = None, snapshot_to: date | N
     try:
         reviews = db.query(ObservationReview).all()
         observations = {row.id: row for row in db.query(ResearchObservation).all()}
-        rows = []
-        for review in reviews:
-            observation = observations.get(review.observation_id)
-            if not observation:
-                continue
-            snapshot_day = observation.snapshot_date.date() if observation.snapshot_date else None
-            if snapshot_from and snapshot_day and snapshot_day < snapshot_from:
-                continue
-            if snapshot_to and snapshot_day and snapshot_day > snapshot_to:
-                continue
-            rows.append((observation, review))
+        rows = _filtered_review_rows(observations, reviews, snapshot_from, snapshot_to)
 
         by_strategy: dict[str, dict] = {}
         total_returns: list[float] = []
@@ -310,6 +328,86 @@ def build_review_report(snapshot_from: date | None = None, snapshot_to: date | N
                 "avg_return_pct": round(sum(total_returns) / len(total_returns), 4) if total_returns else None,
             },
             "by_strategy": sorted(result_rows, key=lambda item: item["reviews"], reverse=True),
+        }
+    finally:
+        db.close()
+
+
+def _serialize_topn_bucket(rank_cutoff: int, review_offset: str, observations: list[ResearchObservation], reviews: list[ObservationReview]) -> dict:
+    returns = [float(review.return_pct) for review in reviews if review.return_pct is not None]
+    drawdowns = [float(review.max_drawdown_pct) for review in reviews if review.max_drawdown_pct is not None]
+    positive = sum(1 for value in returns if value > 0)
+    worst_sample = None
+    if reviews:
+        worst_review = min(reviews, key=lambda review: float(review.return_pct) if review.return_pct is not None else float("inf"))
+        worst_observation = next((observation for observation in observations if observation.id == worst_review.observation_id), None)
+        worst_sample = {
+            "symbol": worst_observation.symbol if worst_observation else "",
+            "strategy_id": worst_observation.strategy_id if worst_observation else "",
+            "score": worst_observation.score if worst_observation else None,
+            "return_pct": worst_review.return_pct,
+            "max_drawdown_pct": worst_review.max_drawdown_pct,
+        }
+    return {
+        "rank_cutoff": rank_cutoff,
+        "review_offset": review_offset,
+        "observations": len(observations),
+        "reviews": len(reviews),
+        "coverage_rate": round(len(reviews) / max(len(observations), 1), 4),
+        "win_rate": round(positive / max(len(returns), 1), 4) if returns else None,
+        "avg_return_pct": round(sum(returns) / len(returns), 4) if returns else None,
+        "worst_return_pct": round(min(returns), 4) if returns else None,
+        "max_drawdown_pct": round(min(drawdowns), 4) if drawdowns else None,
+        "worst_sample": worst_sample,
+    }
+
+
+def build_topn_review_report(
+    top_n_values: tuple[int, ...] = (5, 10, 20),
+    snapshot_from: date | None = None,
+    snapshot_to: date | None = None,
+) -> dict:
+    if not _has_table("research_observations") or not _has_table("observation_reviews"):
+        return {"status": "tables_missing", "summary": {}, "by_top_n": []}
+
+    db = SessionLocal()
+    try:
+        reviews = db.query(ObservationReview).all()
+        observations = {row.id: row for row in db.query(ResearchObservation).all()}
+        rows = _filtered_review_rows(observations, reviews, snapshot_from, snapshot_to)
+        reviews_by_observation_offset = {(review.observation_id, review.review_offset): review for _, review in rows}
+        observations_by_day: dict[tuple[date, str], list[ResearchObservation]] = {}
+        for observation in observations.values():
+            snapshot_day = observation.snapshot_date.date() if observation.snapshot_date else None
+            if not snapshot_day:
+                continue
+            if snapshot_from and snapshot_day < snapshot_from:
+                continue
+            if snapshot_to and snapshot_day > snapshot_to:
+                continue
+            observations_by_day.setdefault((snapshot_day, observation.strategy_id), []).append(observation)
+
+        result_rows = []
+        for cutoff in sorted(set(top_n_values)):
+            if cutoff <= 0:
+                continue
+            top_observations: list[ResearchObservation] = []
+            for group in observations_by_day.values():
+                top_observations.extend(sorted(group, key=lambda item: float(item.score or 0), reverse=True)[:cutoff])
+            top_ids = {observation.id for observation in top_observations}
+            for offset in VALID_REVIEW_OFFSETS:
+                offset_reviews = [review for (observation_id, review_offset), review in reviews_by_observation_offset.items() if observation_id in top_ids and review_offset == offset]
+                result_rows.append(_serialize_topn_bucket(cutoff, offset, top_observations, offset_reviews))
+
+        return {
+            "status": "ok",
+            "summary": {
+                "snapshots": len({key[0] for key in observations_by_day}),
+                "strategies": len({key[1] for key in observations_by_day}),
+                "rows": len(result_rows),
+                "reviews": len(rows),
+            },
+            "by_top_n": result_rows,
         }
     finally:
         db.close()
@@ -407,6 +505,253 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _safe_optional_float(value) -> float | None:
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _factor_key(value) -> str:
+    return str(value or "").strip()
+
+
+def _infer_direction(*values: float | None) -> str:
+    total = sum(value for value in values if value is not None)
+    if total > 0:
+        return "positive"
+    if total < 0:
+        return "negative"
+    return "neutral"
+
+
+def _factor_contribution(item: dict) -> float:
+    return abs(_safe_float(item.get("weighted_delta"), 0.0)) + abs(_safe_float(item.get("evidence_impact"), 0.0)) + abs(_safe_float(item.get("score_delta"), 0.0))
+
+
+def build_factor_snapshot(item: dict) -> list[dict]:
+    buckets: dict[str, dict] = {}
+
+    def bucket_for(factor: str, label: str | None = None, dimension: str | None = None) -> dict:
+        bucket = buckets.setdefault(
+            factor,
+            {
+                "factor": factor,
+                "dimension": dimension or factor,
+                "label": label or factor,
+                "sources": set(),
+                "score_delta": None,
+                "evidence_impact": None,
+                "weighted_delta": None,
+                "weight": None,
+                "direction": None,
+                "confidence": None,
+            },
+        )
+        if dimension and (not bucket.get("dimension") or bucket.get("dimension") == factor):
+            bucket["dimension"] = dimension
+        if label and bucket.get("label") == factor:
+            bucket["label"] = label
+        return bucket
+
+    score_breakdown = item.get("score_breakdown") or []
+    if isinstance(score_breakdown, list):
+        for entry in score_breakdown:
+            entry = entry if isinstance(entry, dict) else {}
+            factor = _factor_key(entry.get("key") or entry.get("factor") or entry.get("dimension"))
+            if not factor or factor == "base":
+                continue
+            bucket = bucket_for(factor, entry.get("label"), entry.get("dimension"))
+            bucket["sources"].add("score_breakdown")
+            bucket["score_delta"] = _safe_optional_float(entry.get("delta"))
+
+    evidence_chain = item.get("evidence_chain") or []
+    if isinstance(evidence_chain, list):
+        for entry in evidence_chain:
+            entry = entry if isinstance(entry, dict) else {}
+            factor = _factor_key(entry.get("factor") or entry.get("dimension"))
+            if not factor:
+                continue
+            bucket = bucket_for(factor, entry.get("label"), entry.get("dimension"))
+            bucket["sources"].add("evidence_chain")
+            bucket["evidence_impact"] = _safe_optional_float(entry.get("impact"))
+            if entry.get("direction"):
+                bucket["direction"] = str(entry.get("direction"))
+            if entry.get("confidence"):
+                bucket["confidence"] = str(entry.get("confidence"))
+
+    weighted_factors = item.get("strategy_weighted_factors") or []
+    if isinstance(weighted_factors, list):
+        for entry in weighted_factors:
+            entry = entry if isinstance(entry, dict) else {}
+            factor = _factor_key(entry.get("factor") or entry.get("dimension"))
+            if not factor:
+                continue
+            bucket = bucket_for(factor, entry.get("label"), entry.get("dimension"))
+            bucket["sources"].add("strategy_weighted")
+            bucket["weighted_delta"] = _safe_optional_float(entry.get("weighted_delta"))
+            bucket["weight"] = _safe_optional_float(entry.get("weight"))
+
+    rows = []
+    for bucket in buckets.values():
+        if not bucket.get("direction"):
+            bucket["direction"] = _infer_direction(bucket.get("weighted_delta"), bucket.get("evidence_impact"), bucket.get("score_delta"))
+        bucket["sources"] = sorted(bucket["sources"])
+        rows.append(bucket)
+    return sorted(rows, key=lambda row: (-_factor_contribution(row), row["factor"]))
+
+
+def _observation_factor_items(observation: ResearchObservation) -> list[dict]:
+    snapshot = getattr(observation, "factor_snapshot_json", None) or []
+    if isinstance(snapshot, list) and snapshot:
+        return [item for item in snapshot if isinstance(item, dict)]
+
+    evidence_chain = observation.evidence_chain_json or []
+    if not isinstance(evidence_chain, list):
+        return []
+    rows = []
+    for item in evidence_chain:
+        item = item if isinstance(item, dict) else {}
+        factor = str(item.get("factor") or item.get("dimension") or "unknown")
+        rows.append(
+            {
+                "factor": factor,
+                "dimension": item.get("dimension") or factor,
+                "label": str(item.get("label") or factor),
+                "sources": ["evidence_chain"],
+                "score_delta": None,
+                "evidence_impact": _safe_optional_float(item.get("impact")),
+                "weighted_delta": None,
+                "weight": None,
+                "direction": item.get("direction") or _infer_direction(_safe_optional_float(item.get("impact"))),
+                "confidence": item.get("confidence"),
+            }
+        )
+    return rows
+
+
+def _factor_impact(item: dict) -> float:
+    for key in ("weighted_delta", "evidence_impact", "score_delta", "impact"):
+        value = item.get(key)
+        if value is not None:
+            return _safe_float(value, 0.0)
+    return 0.0
+
+
+def _filtered_review_rows(
+    observations: dict[int, ResearchObservation],
+    reviews: list[ObservationReview],
+    snapshot_from: date | None = None,
+    snapshot_to: date | None = None,
+) -> list[tuple[ResearchObservation, ObservationReview]]:
+    rows = []
+    for review in reviews:
+        observation = observations.get(review.observation_id)
+        if not observation:
+            continue
+        snapshot_day = observation.snapshot_date.date() if observation.snapshot_date else None
+        if snapshot_from and snapshot_day and snapshot_day < snapshot_from:
+            continue
+        if snapshot_to and snapshot_day and snapshot_day > snapshot_to:
+            continue
+        rows.append((observation, review))
+    return rows
+
+
+def _new_factor_bucket(factor: str, label: str, regime: str | None = None, dimension: str | None = None) -> dict:
+    bucket = {
+        "factor": factor,
+        "dimension": dimension,
+        "label": label,
+        "sources": set(),
+        "reviews": 0,
+        "positive_reviews": 0,
+        "return_total": 0.0,
+        "return_count": 0,
+        "impact_total": 0.0,
+        "score_delta_total": 0.0,
+        "score_delta_count": 0,
+        "evidence_impact_total": 0.0,
+        "evidence_impact_count": 0,
+        "weighted_delta_total": 0.0,
+        "weighted_delta_count": 0,
+        "positive_impact_reviews": 0,
+        "negative_impact_reviews": 0,
+        "max_drawdown_pct": None,
+        "worst_return_pct": None,
+        "falsification_triggered": 0,
+        "risk_signal_valid": 0,
+    }
+    if regime is not None:
+        bucket["regime"] = regime
+    return bucket
+
+
+def _update_factor_bucket(bucket: dict, impact: float, review: ObservationReview, item: dict | None = None) -> None:
+    bucket["reviews"] += 1
+    bucket["impact_total"] += impact
+    if item:
+        if item.get("dimension") and not bucket.get("dimension"):
+            bucket["dimension"] = item.get("dimension")
+        for source in item.get("sources") or []:
+            bucket["sources"].add(str(source))
+        for field, total_key, count_key in (
+            ("score_delta", "score_delta_total", "score_delta_count"),
+            ("evidence_impact", "evidence_impact_total", "evidence_impact_count"),
+            ("weighted_delta", "weighted_delta_total", "weighted_delta_count"),
+        ):
+            if item.get(field) is not None:
+                bucket[total_key] += _safe_float(item.get(field), 0.0)
+                bucket[count_key] += 1
+    if impact > 0:
+        bucket["positive_impact_reviews"] += 1
+    if impact < 0:
+        bucket["negative_impact_reviews"] += 1
+    if review.return_pct is not None:
+        return_pct = float(review.return_pct)
+        bucket["return_total"] += return_pct
+        bucket["return_count"] += 1
+        bucket["worst_return_pct"] = return_pct if bucket["worst_return_pct"] is None else min(bucket["worst_return_pct"], return_pct)
+        if return_pct > 0:
+            bucket["positive_reviews"] += 1
+    if review.max_drawdown_pct is not None:
+        drawdown = float(review.max_drawdown_pct)
+        bucket["max_drawdown_pct"] = drawdown if bucket["max_drawdown_pct"] is None else min(bucket["max_drawdown_pct"], drawdown)
+    if review.falsification_triggered:
+        bucket["falsification_triggered"] += 1
+    if review.risk_signal_valid:
+        bucket["risk_signal_valid"] += 1
+
+
+def _serialize_factor_bucket(bucket: dict, total_reviews: int) -> dict:
+    reviews_count = max(int(bucket["reviews"]), 1)
+    return_count = int(bucket["return_count"])
+    item = {
+        "factor": bucket["factor"],
+        "dimension": bucket.get("dimension") or bucket["factor"],
+        "label": bucket["label"],
+        "sources": sorted(bucket.get("sources") or []),
+        "reviews": bucket["reviews"],
+        "positive_reviews": bucket["positive_reviews"],
+        "win_rate": round(bucket["positive_reviews"] / reviews_count, 4),
+        "avg_return_pct": round(bucket["return_total"] / return_count, 4) if return_count else None,
+        "max_drawdown_pct": round(bucket["max_drawdown_pct"], 4) if bucket["max_drawdown_pct"] is not None else None,
+        "worst_return_pct": round(bucket["worst_return_pct"], 4) if bucket["worst_return_pct"] is not None else None,
+        "coverage_rate": round(bucket["reviews"] / max(total_reviews, 1), 4),
+        "avg_impact": round(bucket["impact_total"] / reviews_count, 4),
+        "avg_score_delta": round(bucket["score_delta_total"] / bucket["score_delta_count"], 4) if bucket["score_delta_count"] else None,
+        "avg_evidence_impact": round(bucket["evidence_impact_total"] / bucket["evidence_impact_count"], 4) if bucket["evidence_impact_count"] else None,
+        "avg_weighted_delta": round(bucket["weighted_delta_total"] / bucket["weighted_delta_count"], 4) if bucket["weighted_delta_count"] else None,
+        "positive_impact_reviews": bucket["positive_impact_reviews"],
+        "negative_impact_reviews": bucket["negative_impact_reviews"],
+        "falsification_triggered": bucket["falsification_triggered"],
+        "risk_signal_valid": bucket["risk_signal_valid"],
+    }
+    if "regime" in bucket:
+        item["regime"] = bucket["regime"]
+    return item
+
+
 def build_factor_review_report(snapshot_from: date | None = None, snapshot_to: date | None = None) -> dict:
     if not _has_table("research_observations") or not _has_table("observation_reviews"):
         return {"status": "tables_missing", "summary": {}, "by_factor": []}
@@ -415,86 +760,115 @@ def build_factor_review_report(snapshot_from: date | None = None, snapshot_to: d
     try:
         reviews = db.query(ObservationReview).all()
         observations = {row.id: row for row in db.query(ResearchObservation).all()}
-        rows = []
-        for review in reviews:
-            observation = observations.get(review.observation_id)
-            if not observation:
-                continue
-            snapshot_day = observation.snapshot_date.date() if observation.snapshot_date else None
-            if snapshot_from and snapshot_day and snapshot_day < snapshot_from:
-                continue
-            if snapshot_to and snapshot_day and snapshot_day > snapshot_to:
-                continue
-            rows.append((observation, review))
+        rows = _filtered_review_rows(observations, reviews, snapshot_from, snapshot_to)
 
         by_factor: dict[str, dict] = {}
+        by_regime_factor: dict[tuple[str, str], dict] = {}
         for observation, review in rows:
-            evidence_chain = observation.evidence_chain_json or []
-            if not isinstance(evidence_chain, list):
-                evidence_chain = []
-
-            for item in evidence_chain:
-                item = item if isinstance(item, dict) else {}
+            regime = str(observation.regime or "unknown")
+            for item in _observation_factor_items(observation):
                 factor = str(item.get("factor") or item.get("dimension") or "unknown")
                 label = str(item.get("label") or factor)
-                impact = _safe_float(item.get("impact"), 0.0)
-                bucket = by_factor.setdefault(
-                    factor,
-                    {
-                        "factor": factor,
-                        "label": label,
-                        "reviews": 0,
-                        "positive_reviews": 0,
-                        "return_total": 0.0,
-                        "return_count": 0,
-                        "impact_total": 0.0,
-                        "positive_impact_reviews": 0,
-                        "negative_impact_reviews": 0,
-                        "falsification_triggered": 0,
-                        "risk_signal_valid": 0,
-                    },
-                )
-                bucket["reviews"] += 1
-                bucket["impact_total"] += impact
-                if impact > 0:
-                    bucket["positive_impact_reviews"] += 1
-                if impact < 0:
-                    bucket["negative_impact_reviews"] += 1
-                if review.return_pct is not None:
-                    return_pct = float(review.return_pct)
-                    bucket["return_total"] += return_pct
-                    bucket["return_count"] += 1
-                    if return_pct > 0:
-                        bucket["positive_reviews"] += 1
-                if review.falsification_triggered:
-                    bucket["falsification_triggered"] += 1
-                if review.risk_signal_valid:
-                    bucket["risk_signal_valid"] += 1
+                impact = _factor_impact(item)
+                dimension = item.get("dimension") or factor
+                bucket = by_factor.setdefault(factor, _new_factor_bucket(factor, label, dimension=dimension))
+                _update_factor_bucket(bucket, impact, review, item)
+                regime_bucket = by_regime_factor.setdefault((regime, factor), _new_factor_bucket(factor, label, regime=regime, dimension=dimension))
+                _update_factor_bucket(regime_bucket, impact, review, item)
 
-        result_rows = []
-        for bucket in by_factor.values():
-            reviews_count = max(int(bucket["reviews"]), 1)
-            return_count = int(bucket["return_count"])
-            result_rows.append(
-                {
-                    "factor": bucket["factor"],
-                    "label": bucket["label"],
-                    "reviews": bucket["reviews"],
-                    "positive_reviews": bucket["positive_reviews"],
-                    "win_rate": round(bucket["positive_reviews"] / reviews_count, 4),
-                    "avg_return_pct": round(bucket["return_total"] / return_count, 4) if return_count else None,
-                    "avg_impact": round(bucket["impact_total"] / reviews_count, 4),
-                    "positive_impact_reviews": bucket["positive_impact_reviews"],
-                    "negative_impact_reviews": bucket["negative_impact_reviews"],
-                    "falsification_triggered": bucket["falsification_triggered"],
-                    "risk_signal_valid": bucket["risk_signal_valid"],
-                }
-            )
+        result_rows = [_serialize_factor_bucket(bucket, len(rows)) for bucket in by_factor.values()]
+        regime_rows = [_serialize_factor_bucket(bucket, len(rows)) for bucket in by_regime_factor.values()]
 
         return {
             "status": "ok",
-            "summary": {"factors": len(result_rows), "reviews": len(rows)},
+            "summary": {"factors": len(result_rows), "reviews": len(rows), "regime_factors": len(regime_rows)},
             "by_factor": sorted(result_rows, key=lambda item: item["reviews"], reverse=True),
+            "by_regime_factor": sorted(regime_rows, key=lambda item: (item["regime"], -item["reviews"], item["factor"])),
+        }
+    finally:
+        db.close()
+
+
+def build_single_factor_validation_report(
+    factor: str,
+    snapshot_from: date | None = None,
+    snapshot_to: date | None = None,
+    min_reviews: int = 1,
+) -> dict:
+    factor_key = str(factor or "").strip()
+    if not factor_key:
+        return {"status": "invalid_factor", "factor": factor_key, "summary": {}, "by_offset": [], "samples": []}
+    if not _has_table("research_observations") or not _has_table("observation_reviews"):
+        return {"status": "tables_missing", "factor": factor_key, "summary": {}, "by_offset": [], "samples": []}
+
+    db = SessionLocal()
+    try:
+        reviews = db.query(ObservationReview).all()
+        observations = {row.id: row for row in db.query(ResearchObservation).all()}
+        rows = _filtered_review_rows(observations, reviews, snapshot_from, snapshot_to)
+
+        summary_bucket = _new_factor_bucket(factor_key, factor_key)
+        by_offset: dict[str, dict] = {}
+        samples = []
+        for observation, review in rows:
+            match = next(
+                (
+                    item
+                    for item in _observation_factor_items(observation)
+                    if str(item.get("factor") or "") == factor_key or str(item.get("dimension") or "") == factor_key
+                ),
+                None,
+            )
+            if not match:
+                continue
+
+            label = str(match.get("label") or factor_key)
+            if summary_bucket["label"] == factor_key:
+                summary_bucket["label"] = label
+            impact = _factor_impact(match)
+            _update_factor_bucket(summary_bucket, impact, review, match)
+            offset = str(getattr(review, "review_offset", None) or "unknown")
+            offset_bucket = by_offset.setdefault(offset, _new_factor_bucket(factor_key, label))
+            _update_factor_bucket(offset_bucket, impact, review, match)
+            samples.append(
+                {
+                    "symbol": observation.symbol,
+                    "strategy_id": observation.strategy_id,
+                    "snapshot_date": observation.snapshot_date.date().isoformat() if observation.snapshot_date else None,
+                    "review_offset": offset,
+                    "return_pct": review.return_pct,
+                    "impact": impact,
+                    "direction": match.get("direction"),
+                    "label": label,
+                }
+            )
+
+        summary = _serialize_factor_bucket(summary_bucket, max(len(rows), 1))
+        reviews_count = int(summary["reviews"])
+        if reviews_count < int(min_reviews):
+            validation_state = "insufficient_samples"
+        elif _safe_float(summary.get("win_rate"), 0.0) >= 0.6 and summary.get("avg_return_pct") is not None and _safe_float(summary.get("avg_return_pct"), 0.0) > 0:
+            validation_state = "positive_observation"
+        elif summary.get("avg_return_pct") is None:
+            validation_state = "observed"
+        else:
+            validation_state = "needs_more_review"
+        summary["min_reviews"] = int(min_reviews)
+        summary["validation_state"] = validation_state
+
+        samples.sort(key=lambda sample: (sample.get("snapshot_date") or "", sample.get("review_offset") or ""), reverse=True)
+        return {
+            "status": "ok",
+            "factor": factor_key,
+            "summary": summary,
+            "by_offset": sorted(
+                (
+                    {**_serialize_factor_bucket(bucket, max(len(rows), 1)), "review_offset": offset}
+                    for offset, bucket in by_offset.items()
+                ),
+                key=lambda item: item["review_offset"],
+            ),
+            "samples": samples[:20],
         }
     finally:
         db.close()

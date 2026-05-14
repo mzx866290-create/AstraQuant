@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.shared.auth import get_current_user, require_active_user, require_admin
+from backend.shared.config import is_production
 from backend.shared.models import User
 from backend.services.data_crawler.pipeline.crawl_status import (
     crawl_status_for_counts,
@@ -227,7 +228,7 @@ async def crawl_stock_news(
 @router.post("/{symbol}/announcements")
 async def crawl_announcements(
     symbol: str,
-    current_user: User = Depends(require_admin()),
+    current_user: User = Depends(require_active_user() if not is_production() else require_admin()),
 ):
     """即时采集单只股票公告"""
     from backend.shared.database import SessionLocal
@@ -272,7 +273,7 @@ async def crawl_announcements(
 @router.post("/{symbol}/financials")
 async def crawl_financials(
     symbol: str,
-    current_user: User = Depends(require_admin()),
+    current_user: User = Depends(require_active_user() if not is_production() else require_admin()),
 ):
     """即时采集单只股票财报"""
     from backend.shared.database import SessionLocal

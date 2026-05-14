@@ -75,6 +75,39 @@
         </div>
       </div>
 
+      <div class="data-quality-card">
+        <div class="chart-header">
+          <div>
+            <h3>阶段0 数据质量基线</h3>
+            <p class="quality-note">{{ dataQualityNote }}</p>
+          </div>
+          <span class="status-chip" :class="dataQualityStatusClass">{{ dataQualityStatusLabel }}</span>
+        </div>
+        <div v-if="dataQualityBaseline?.items?.length" class="quality-table">
+          <div class="quality-head quality-row">
+            <span>数据集</span>
+            <span>状态</span>
+            <span>记录数</span>
+            <span>更新时间</span>
+            <span>来源</span>
+            <span>提示</span>
+          </div>
+          <div
+            v-for="item in dataQualityBaseline.items"
+            :key="item.key"
+            class="quality-row"
+          >
+            <span class="strategy-name">{{ item.label }}</span>
+            <span><span class="status-chip" :class="qualityStatusClass(item.status)">{{ qualityStatusLabel(item.status) }}</span></span>
+            <span>{{ formatNumber(item.row_count) }}</span>
+            <span>{{ formatDateTime(item.updated_at) }}</span>
+            <span>{{ item.source || '-' }}</span>
+            <span>{{ item.warnings?.length ? item.warnings.join(', ') : '正常' }}</span>
+          </div>
+        </div>
+        <div v-else class="chart-empty">暂无数据质量基线</div>
+      </div>
+
       <div class="research-grid">
         <div class="chart-card">
           <div class="chart-header">
@@ -254,15 +287,41 @@
           <h3>因子复盘归因</h3>
           <span class="chart-period">{{ formatNumber(factorReport?.summary?.factors || 0) }} factors</span>
         </div>
+        <div v-if="factorReport?.summary?.reviews" class="review-summary-grid factor-summary-grid">
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatNumber(factorReport.summary.reviews || 0) }}</div>
+            <div class="summary-label">因子复盘样本</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatPercent(bestFactor?.avg_return_pct) }}</div>
+            <div class="summary-label">最佳平均收益 · {{ bestFactor?.label || bestFactor?.factor || '-' }}</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatWinRate(bestWinRateFactor?.win_rate) }}</div>
+            <div class="summary-label">最高胜率 · {{ bestWinRateFactor?.label || bestWinRateFactor?.factor || '-' }}</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatPercent(worstDrawdownFactor?.max_drawdown_pct) }}</div>
+            <div class="summary-label">最大回撤 · {{ worstDrawdownFactor?.label || worstDrawdownFactor?.factor || '-' }}</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatNumber(factorReport.summary.regime_factors || 0) }}</div>
+            <div class="summary-label">市场环境归因组合</div>
+          </div>
+        </div>
         <div v-if="factorRows.length" class="factor-table">
           <div class="factor-head factor-row">
             <span>因子</span>
             <span>复盘数</span>
+            <span>覆盖率</span>
             <span>胜率</span>
             <span>平均收益</span>
+            <span>最大回撤</span>
+            <span>极端收益</span>
             <span>平均影响</span>
             <span>正/负影响</span>
             <span>证伪/风险</span>
+            <span>操作</span>
           </div>
           <div
             v-for="item in factorRows"
@@ -271,14 +330,160 @@
           >
             <span class="strategy-name">{{ item.label || item.factor }}</span>
             <span>{{ item.reviews }}</span>
+            <span>{{ formatWinRate(item.coverage_rate) }}</span>
             <span>{{ formatWinRate(item.win_rate) }}</span>
             <span :class="returnClass(item.avg_return_pct)">{{ formatPercent(item.avg_return_pct) }}</span>
+            <span :class="returnClass(item.max_drawdown_pct)">{{ formatPercent(item.max_drawdown_pct) }}</span>
+            <span :class="returnClass(item.worst_return_pct)">{{ formatPercent(item.worst_return_pct) }}</span>
             <span :class="returnClass(item.avg_impact)">{{ formatSignedNumber(item.avg_impact) }}</span>
             <span>{{ item.positive_impact_reviews }} / {{ item.negative_impact_reviews }}</span>
             <span>{{ item.falsification_triggered }} / {{ item.risk_signal_valid }}</span>
+            <span>
+              <button class="text-btn" :disabled="factorValidationLoading" @click="loadFactorValidation(item.factor)">验证</button>
+            </span>
           </div>
         </div>
-        <div v-else class="chart-empty">暂无因子归因数据</div>
+        <div v-if="regimeFactorRows.length" class="regime-factor-section">
+          <div class="section-subtitle">不同市场环境下的因子稳定性</div>
+          <div class="regime-factor-table">
+            <div class="regime-factor-head regime-factor-row">
+              <span>市场环境</span>
+              <span>因子</span>
+              <span>复盘数</span>
+              <span>胜率</span>
+              <span>平均收益</span>
+              <span>最大回撤</span>
+            </div>
+            <div
+              v-for="item in regimeFactorRows"
+              :key="`${item.regime}-${item.factor}`"
+              class="regime-factor-row"
+            >
+              <span>{{ regimeLabel(item.regime) }}</span>
+              <span class="strategy-name">{{ item.label || item.factor }}</span>
+              <span>{{ item.reviews }}</span>
+              <span>{{ formatWinRate(item.win_rate) }}</span>
+              <span :class="returnClass(item.avg_return_pct)">{{ formatPercent(item.avg_return_pct) }}</span>
+              <span :class="returnClass(item.max_drawdown_pct)">{{ formatPercent(item.max_drawdown_pct) }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="chart-empty">暂无市场环境因子归因数据</div>
+      </div>
+
+      <div class="review-table-card">
+        <div class="chart-header">
+          <div>
+            <h3>单因子观察验证</h3>
+            <p class="quality-note">基于已保存观察快照与复盘记录的单因子验证，不构成买卖建议。</p>
+          </div>
+          <span class="chart-period">{{ selectedValidationFactor }}</span>
+        </div>
+        <div v-if="factorValidation" class="review-summary-grid factor-summary-grid">
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatNumber(factorValidation.summary?.reviews || 0) }}</div>
+            <div class="summary-label">复盘样本</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatWinRate(factorValidation.summary?.win_rate) }}</div>
+            <div class="summary-label">历史胜率</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value" :class="returnClass(factorValidation.summary?.avg_return_pct)">{{ formatPercent(factorValidation.summary?.avg_return_pct) }}</div>
+            <div class="summary-label">平均收益</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ validationStateLabel(factorValidation.summary?.validation_state) }}</div>
+            <div class="summary-label">验证状态</div>
+          </div>
+        </div>
+        <div v-if="factorValidation?.by_offset?.length" class="topn-table">
+          <div class="topn-head topn-row">
+            <span>周期</span>
+            <span>复盘数</span>
+            <span>胜率</span>
+            <span>平均收益</span>
+            <span>平均影响</span>
+          </div>
+          <div v-for="item in factorValidation.by_offset" :key="item.review_offset" class="topn-row">
+            <span>{{ item.review_offset }}</span>
+            <span>{{ item.reviews }}</span>
+            <span>{{ formatWinRate(item.win_rate) }}</span>
+            <span :class="returnClass(item.avg_return_pct)">{{ formatPercent(item.avg_return_pct) }}</span>
+            <span :class="returnClass(item.avg_impact)">{{ formatSignedNumber(item.avg_impact) }}</span>
+          </div>
+        </div>
+        <div v-if="factorValidation?.samples?.length" class="regime-factor-section">
+          <div class="section-subtitle">最近复盘样本</div>
+          <div class="regime-factor-table">
+            <div class="regime-factor-head regime-factor-row">
+              <span>股票</span>
+              <span>策略</span>
+              <span>观察日</span>
+              <span>周期</span>
+              <span>收益</span>
+              <span>影响</span>
+            </div>
+            <div v-for="item in factorValidation.samples.slice(0, 8)" :key="`${item.symbol}-${item.snapshot_date}-${item.review_offset}`" class="regime-factor-row">
+              <span>{{ item.symbol || '-' }}</span>
+              <span>{{ item.strategy_id || '-' }}</span>
+              <span>{{ item.snapshot_date || '-' }}</span>
+              <span>{{ item.review_offset || '-' }}</span>
+              <span :class="returnClass(item.return_pct)">{{ formatPercent(item.return_pct) }}</span>
+              <span :class="returnClass(item.impact)">{{ formatSignedNumber(item.impact) }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="factorValidation" class="chart-empty">暂无该因子的复盘样本</div>
+        <div v-else class="chart-empty">暂无单因子验证数据</div>
+      </div>
+
+      <div class="review-table-card">
+        <div class="chart-header">
+          <h3>Top N 轻量历史验证</h3>
+          <span class="chart-period">{{ formatNumber(topNReviewReport?.summary?.reviews || 0) }} reviews</span>
+        </div>
+        <div v-if="topNRows.length" class="review-summary-grid factor-summary-grid">
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatNumber(topNReviewReport?.summary?.snapshots || 0) }}</div>
+            <div class="summary-label">覆盖观察日</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatPercent(bestTopNRow?.avg_return_pct) }}</div>
+            <div class="summary-label">最佳 TopN · Top {{ bestTopNRow?.rank_cutoff || '-' }} / {{ bestTopNRow?.review_offset || '-' }}</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatWinRate(bestTopNRow?.win_rate) }}</div>
+            <div class="summary-label">对应胜率</div>
+          </div>
+          <div class="summary-tile">
+            <div class="summary-value">{{ formatPercent(worstTopNDrawdownRow?.max_drawdown_pct) }}</div>
+            <div class="summary-label">最大回撤 · Top {{ worstTopNDrawdownRow?.rank_cutoff || '-' }} / {{ worstTopNDrawdownRow?.review_offset || '-' }}</div>
+          </div>
+        </div>
+        <div v-if="topNRows.length" class="topn-table">
+          <div class="topn-head topn-row">
+            <span>Top N</span>
+            <span>周期</span>
+            <span>覆盖率</span>
+            <span>胜率</span>
+            <span>平均收益</span>
+            <span>最大回撤</span>
+            <span>最差收益</span>
+            <span>最差样本</span>
+          </div>
+          <div v-for="item in topNRows" :key="`${item.rank_cutoff}-${item.review_offset}`" class="topn-row">
+            <span>Top {{ item.rank_cutoff }}</span>
+            <span>{{ item.review_offset }}</span>
+            <span>{{ formatWinRate(item.coverage_rate) }}</span>
+            <span>{{ formatWinRate(item.win_rate) }}</span>
+            <span :class="returnClass(item.avg_return_pct)">{{ formatPercent(item.avg_return_pct) }}</span>
+            <span :class="returnClass(item.max_drawdown_pct)">{{ formatPercent(item.max_drawdown_pct) }}</span>
+            <span :class="returnClass(item.worst_return_pct)">{{ formatPercent(item.worst_return_pct) }}</span>
+            <span>{{ item.worst_sample?.symbol || '-' }}</span>
+          </div>
+        </div>
+        <div v-else class="chart-empty">暂无 Top N 历史验证数据</div>
       </div>
 
       <div class="review-table-card">
@@ -390,7 +595,7 @@
                   :disabled="isPatchPreviewLoading(audit.id)"
                   @click="loadPatchPreview(audit.id)"
                 >
-                  {{ isPatchPreviewLoading(audit.id) ? '...' : 'Patch' }}
+                  {{ isPatchPreviewLoading(audit.id) ? '...' : '补丁' }}
                 </button>
               </span>
             </div>
@@ -401,17 +606,17 @@
         <div v-if="patchPreview || patchPreviewLoadingAuditId" class="patch-preview">
           <div class="patch-preview-header">
             <div>
-              <h4>Strategy Patch Preview</h4>
+              <h4>策略补丁预览</h4>
               <p v-if="patchPreview">
-                audit #{{ patchPreview.audit_id }} / {{ patchPreview.strategy_id }}
+                审计 #{{ patchPreview.audit_id }} / {{ patchPreview.strategy_id }}
               </p>
-              <p v-else>Loading retail_small preview...</p>
+              <p v-else>正在加载 retail_small 预览...</p>
             </div>
             <span
               class="status-chip"
               :class="patchPreview?.status === 'ok' ? 'idle' : 'error'"
             >
-              {{ patchPreview?.status || 'loading' }}
+              {{ statusLabel(patchPreview?.status || 'loading') }}
             </span>
           </div>
 
@@ -421,9 +626,9 @@
               :disabled="proposalSaving"
               @click="createPatchProposal"
             >
-              {{ proposalSaving ? 'Saving...' : 'Save Proposal' }}
+              {{ proposalSaving ? '保存中...' : '保存提案' }}
             </button>
-            <span class="proposal-hint">Creates a pending proposal only. It does not write strategy config.</span>
+            <span class="proposal-hint">只创建待处理提案，不会直接写入策略配置。</span>
           </div>
 
           <div v-if="patchPreview && patchPreview.status !== 'ok'" class="patch-preview-note">
@@ -432,10 +637,10 @@
 
           <div v-if="patchPreviewRows.length" class="patch-table">
             <div class="patch-head patch-row">
-              <span>Factor</span>
-              <span>Before</span>
-              <span>After</span>
-              <span>Delta</span>
+              <span>因子</span>
+              <span>调整前</span>
+              <span>调整后</span>
+              <span>变化</span>
             </div>
             <div
               v-for="row in patchPreviewRows"
@@ -449,25 +654,25 @@
             </div>
           </div>
           <div v-else-if="patchPreview && patchPreview.status === 'ok'" class="audit-empty">
-            No patch changes.
+            无补丁变化。
           </div>
         </div>
 
         <div class="proposal-section">
           <div class="audit-section-header">
-            <h4>Strategy Patch Proposals</h4>
+            <h4>策略补丁提案</h4>
             <button class="text-btn" :disabled="proposalsLoading" @click="loadPatchProposals">
-              {{ proposalsLoading ? 'Refreshing...' : 'Refresh' }}
+              {{ proposalsLoading ? '刷新中...' : '刷新' }}
             </button>
           </div>
           <div v-if="patchProposals.length" class="proposal-table">
             <div class="proposal-head proposal-row">
-              <span>ID / Audit</span>
-              <span>Strategy</span>
-              <span>Status</span>
-              <span>Applied</span>
-              <span>Changes</span>
-              <span>Actions</span>
+              <span>ID / 审计</span>
+              <span>策略</span>
+              <span>状态</span>
+              <span>应用时间</span>
+              <span>变更数</span>
+              <span>操作</span>
             </div>
             <div
               v-for="proposal in patchProposals"
@@ -478,20 +683,20 @@
               <span>{{ proposal.strategy_id }}</span>
               <span>
                 <span class="audit-status" :class="proposalStatusClass(proposal.status)">
-                  {{ proposal.status }}
+                  {{ proposalStatusLabel(proposal.status) }}
                 </span>
               </span>
               <span>{{ formatDateTime(proposal.applied_at) }}</span>
               <span>{{ proposal.items?.length || Object.keys(proposal.delta || {}).length }}</span>
               <span class="audit-actions">
                 <button class="mini-btn accept" @click="decidePatchProposal(proposal.id, 'approved')">
-                  Approve
+                  通过
                 </button>
                 <button class="mini-btn reject" @click="decidePatchProposal(proposal.id, 'rejected')">
-                  Reject
+                  驳回
                 </button>
                 <button class="mini-btn" @click="decidePatchProposal(proposal.id, 'pending')">
-                  Reset
+                  重置
                 </button>
                 <button
                   v-if="canApplyPatchProposal(proposal)"
@@ -499,45 +704,45 @@
                   :disabled="isProposalApplying(proposal.id)"
                   @click="applyPatchProposal(proposal.id)"
                 >
-                  {{ isProposalApplying(proposal.id) ? 'Applying...' : 'Apply' }}
+                  {{ isProposalApplying(proposal.id) ? '应用中...' : '应用' }}
                 </button>
                 <button
                   class="mini-btn"
                   :disabled="impactPreviewLoadingProposalId === proposal.id"
                   @click="loadImpactPreview(proposal.id)"
                 >
-                  {{ impactPreviewLoadingProposalId === proposal.id ? 'Previewing...' : 'A/B' }}
+                  {{ impactPreviewLoadingProposalId === proposal.id ? '预览中...' : '影响' }}
                 </button>
                 <button
                   class="mini-btn"
                   :disabled="versionsLoading && selectedVersionStrategyId === proposal.strategy_id"
                   @click="loadStrategyVersions(proposal.strategy_id)"
                 >
-                  Versions
+                  版本
                 </button>
               </span>
             </div>
           </div>
-          <div v-else class="audit-empty">No strategy patch proposals.</div>
+          <div v-else class="audit-empty">暂无策略补丁提案。</div>
         </div>
 
         <div class="proposal-section">
           <div class="audit-section-header">
             <div>
-              <h4>Strategy Impact Preview</h4>
+              <h4>策略影响预览</h4>
               <p class="proposal-hint">
-                {{ impactPreview ? `proposal #${impactPreview.proposal_id} / changed ${impactPreview.changed_count || 0}/${impactPreview.sample_count || 0}` : 'Run A/B from a proposal to compare ranking before Apply.' }}
+                {{ impactPreview ? `提案 #${impactPreview.proposal_id} / 变化 ${impactPreview.changed_count || 0}/${impactPreview.sample_count || 0}` : '从提案触发影响预览，在应用前对比排序变化。' }}
               </p>
             </div>
           </div>
           <div v-if="impactPreview?.items?.length" class="version-table">
             <div class="version-head version-row">
-              <span>Stock</span>
-              <span>Rank</span>
-              <span>Score</span>
-              <span>Delta</span>
-              <span>Name</span>
-              <span>Base</span>
+              <span>股票</span>
+              <span>排名</span>
+              <span>得分</span>
+              <span>变化</span>
+              <span>名称</span>
+              <span>基础分</span>
             </div>
             <div
               v-for="item in impactPreview.items"
@@ -556,16 +761,16 @@
             </div>
           </div>
           <div v-else class="audit-empty">
-            {{ impactPreviewStatusText || 'No impact preview yet.' }}
+            {{ impactPreviewStatusText || '暂无影响预览。' }}
           </div>
         </div>
 
         <div class="proposal-section">
           <div class="audit-section-header">
             <div>
-              <h4>Strategy Weight Versions</h4>
+              <h4>策略权重版本</h4>
               <p class="proposal-hint">
-                {{ selectedVersionStrategyId ? `strategy: ${selectedVersionStrategyId}` : 'Select a proposal strategy to view history.' }}
+                {{ selectedVersionStrategyId ? `策略：${selectedVersionStrategyId}` : '选择一个提案策略后查看历史版本。' }}
               </p>
             </div>
             <button
@@ -573,17 +778,17 @@
               :disabled="!selectedVersionStrategyId || versionsLoading"
               @click="refreshStrategyVersions"
             >
-              {{ versionsLoading ? 'Refreshing...' : 'Refresh Versions' }}
+              {{ versionsLoading ? '刷新中...' : '刷新版本' }}
             </button>
           </div>
           <div v-if="strategyVersions.length" class="version-table">
             <div class="version-head version-row">
-              <span>Version</span>
-              <span>Proposal</span>
-              <span>Applied</span>
-              <span>Rollback</span>
-              <span>Notes</span>
-              <span>Actions</span>
+              <span>版本</span>
+              <span>提案</span>
+              <span>应用时间</span>
+              <span>回滚</span>
+              <span>备注</span>
+              <span>操作</span>
             </div>
             <div
               v-for="version in strategyVersions"
@@ -594,7 +799,7 @@
               <span>{{ version.proposal_id ? `#${version.proposal_id}` : '-' }}</span>
               <span>{{ formatDateTime(version.applied_at || version.created_at) }}</span>
               <span>
-                <span v-if="version.rollback_error" class="audit-status rejected">error</span>
+                <span v-if="version.rollback_error" class="audit-status rejected">错误</span>
                 <span v-else-if="version.rolled_back_at" class="audit-status pending">
                   {{ formatDateTime(version.rolled_back_at) }}
                 </span>
@@ -607,13 +812,13 @@
                   :disabled="isVersionRollingBack(version.id)"
                   @click="rollbackStrategyVersion(version.id)"
                 >
-                  {{ isVersionRollingBack(version.id) ? 'Rolling...' : 'Rollback' }}
+                  {{ isVersionRollingBack(version.id) ? '回滚中...' : '回滚' }}
                 </button>
               </span>
             </div>
           </div>
           <div v-else class="audit-empty">
-            {{ selectedVersionStrategyId ? 'No strategy weight versions.' : 'No strategy selected.' }}
+            {{ selectedVersionStrategyId ? '暂无策略权重版本。' : '尚未选择策略。' }}
           </div>
         </div>
       </div>
@@ -690,6 +895,32 @@ interface StatsOverview {
   top_users?: TopUserItem[]
 }
 
+interface DataQualityItem {
+  key: string
+  label: string
+  status: string
+  source?: string | null
+  updated_at?: string | null
+  age_hours?: number | null
+  row_count: number
+  confidence?: number
+  is_fallback?: boolean
+  warnings?: string[]
+}
+
+interface DataQualityBaseline {
+  status: string
+  generated_at?: string
+  summary?: {
+    total?: number
+    ok?: number
+    degraded?: number
+    unavailable?: number
+  }
+  items?: DataQualityItem[]
+  baseline_notes?: string[]
+}
+
 interface ReviewSchedulerStatus {
   enabled: boolean
   running: boolean
@@ -753,11 +984,15 @@ interface ReviewReport {
 interface FactorReportItem {
   factor: string
   label: string
+  regime?: string
   reviews: number
   positive_reviews: number
   win_rate: number
   avg_return_pct: number | null
   avg_impact: number
+  max_drawdown_pct?: number | null
+  worst_return_pct?: number | null
+  coverage_rate?: number | null
   positive_impact_reviews: number
   negative_impact_reviews: number
   falsification_triggered: number
@@ -769,8 +1004,73 @@ interface FactorReport {
   summary?: {
     factors?: number
     reviews?: number
+    regime_factors?: number
   }
   by_factor?: FactorReportItem[]
+  by_regime_factor?: FactorReportItem[]
+}
+
+interface FactorValidationReport {
+  status: string
+  factor: string
+  summary?: {
+    reviews?: number
+    positive_reviews?: number
+    win_rate?: number
+    avg_return_pct?: number | null
+    avg_impact?: number | null
+    falsification_triggered?: number
+    risk_signal_valid?: number
+    min_reviews?: number
+    validation_state?: string
+  }
+  by_offset?: Array<{
+    review_offset: string
+    reviews: number
+    win_rate: number
+    avg_return_pct: number | null
+    avg_impact: number | null
+  }>
+  samples?: Array<{
+    symbol?: string
+    strategy_id?: string
+    snapshot_date?: string | null
+    review_offset?: string
+    return_pct?: number | null
+    impact?: number | null
+    direction?: string | null
+    label?: string | null
+  }>
+}
+
+interface TopNReportItem {
+  rank_cutoff: number
+  review_offset: string
+  observations: number
+  reviews: number
+  coverage_rate: number
+  win_rate: number | null
+  avg_return_pct: number | null
+  worst_return_pct: number | null
+  max_drawdown_pct: number | null
+  worst_sample?: {
+    symbol?: string
+    strategy_id?: string
+    score?: number | null
+    return_pct?: number | null
+    max_drawdown_pct?: number | null
+  } | null
+}
+
+interface TopNReviewReport {
+  status: string
+  summary?: {
+    snapshots?: number
+    strategies?: number
+    rows?: number
+    reviews?: number
+  }
+  by_top_n?: TopNReportItem[]
 }
 
 type WeightAction = 'increase' | 'decrease' | 'hold'
@@ -917,10 +1217,15 @@ const stats = ref<StatsOverview | null>(null)
 const callsByDay = ref<CallsByDayItem[]>([])
 const callsByModel = ref<CallsByModelItem[]>([])
 const topUsers = ref<TopUserItem[]>([])
+const dataQualityBaseline = ref<DataQualityBaseline | null>(null)
 const reviewScheduler = ref<ReviewSchedulerStatus | null>(null)
 const reviewReadiness = ref<ReviewReadiness | null>(null)
 const reviewReport = ref<ReviewReport | null>(null)
 const factorReport = ref<FactorReport | null>(null)
+const factorValidation = ref<FactorValidationReport | null>(null)
+const factorValidationLoading = ref(false)
+const selectedValidationFactor = ref('valuation')
+const topNReviewReport = ref<TopNReviewReport | null>(null)
 const weightSuggestions = ref<WeightSuggestions | null>(null)
 const reviewRunning = ref(false)
 const auditSaving = ref(false)
@@ -948,6 +1253,23 @@ const maxCalls = computed(() => {
 
 const reviewStrategies = computed(() => reviewReport.value?.by_strategy || [])
 const factorRows = computed(() => factorReport.value?.by_factor || [])
+const regimeFactorRows = computed(() => (factorReport.value?.by_regime_factor || []).slice(0, 12))
+const topNRows = computed(() => topNReviewReport.value?.by_top_n || [])
+const bestTopNRow = computed(() => {
+  return [...topNRows.value].filter((item) => item.avg_return_pct !== null && item.avg_return_pct !== undefined).sort((a, b) => Number(b.avg_return_pct) - Number(a.avg_return_pct))[0] || null
+})
+const worstTopNDrawdownRow = computed(() => {
+  return [...topNRows.value].filter((item) => item.max_drawdown_pct !== null && item.max_drawdown_pct !== undefined).sort((a, b) => Number(a.max_drawdown_pct) - Number(b.max_drawdown_pct))[0] || null
+})
+const bestFactor = computed(() => {
+  return [...factorRows.value].sort((a, b) => Number(b.avg_return_pct ?? -Infinity) - Number(a.avg_return_pct ?? -Infinity))[0] || null
+})
+const bestWinRateFactor = computed(() => {
+  return [...factorRows.value].sort((a, b) => Number(b.win_rate ?? -Infinity) - Number(a.win_rate ?? -Infinity))[0] || null
+})
+const worstDrawdownFactor = computed(() => {
+  return [...factorRows.value].filter((item) => item.max_drawdown_pct !== null && item.max_drawdown_pct !== undefined).sort((a, b) => Number(b.max_drawdown_pct ?? -Infinity) - Number(a.max_drawdown_pct ?? -Infinity))[0] || null
+})
 const suggestionRows = computed(() => weightSuggestions.value?.suggestions || [])
 const patchPreviewRows = computed<PatchPreviewRow[]>(() => {
   const preview = patchPreview.value
@@ -979,6 +1301,16 @@ const patchPreviewRows = computed<PatchPreviewRow[]>(() => {
 const patchPreviewStatusText = computed(() => {
   if (!patchPreview.value) return ''
   return patchPreview.value.message || patchPreview.value.detail || patchPreview.value.reason || patchPreview.value.status
+})
+
+const dataQualityStatusClass = computed(() => qualityStatusClass(dataQualityBaseline.value?.status || 'unknown'))
+
+const dataQualityStatusLabel = computed(() => qualityStatusLabel(dataQualityBaseline.value?.status || 'unknown'))
+
+const dataQualityNote = computed(() => {
+  const summary = dataQualityBaseline.value?.summary
+  if (!summary) return '统计关键数据集当前可用性、更新时间和缺失风险。'
+  return `${summary.ok || 0}/${summary.total || 0} 正常，${summary.degraded || 0} 降级，${summary.unavailable || 0} 不可用`
 })
 
 const schedulerClass = computed(() => {
@@ -1028,6 +1360,24 @@ const readinessLabel = computed(() => {
   return mapping[status || ''] || status || 'unknown'
 })
 
+function qualityStatusClass(status?: string) {
+  if (status === 'ok') return 'idle'
+  if (status === 'degraded') return 'running'
+  if (status === 'unavailable' || status === 'error') return 'error'
+  return 'disabled'
+}
+
+function qualityStatusLabel(status?: string) {
+  const mapping: Record<string, string> = {
+    ok: '正常',
+    degraded: '降级',
+    unavailable: '不可用',
+    error: '异常',
+    unknown: '未知',
+  }
+  return mapping[status || ''] || status || '未知'
+}
+
 function formatNumber(num?: number | null) {
   if (num === null || num === undefined) return '-'
   return num.toLocaleString('zh-CN')
@@ -1052,6 +1402,25 @@ function formatSignedNumber(num?: number | null) {
   if (num === null || num === undefined) return '-'
   const sign = num > 0 ? '+' : ''
   return `${sign}${num.toFixed(2)}`
+}
+
+function regimeLabel(regime?: string) {
+  const mapping: Record<string, string> = {
+    strong_trend: '强趋势',
+    range_bound: '震荡市',
+    weak_market: '弱市场',
+  }
+  return mapping[regime || ''] || regime || '未知'
+}
+
+function validationStateLabel(state?: string) {
+  const mapping: Record<string, string> = {
+    insufficient_samples: '样本不足',
+    observed: '已观察',
+    positive_observation: '正向观察',
+    needs_more_review: '继续复盘',
+  }
+  return mapping[state || ''] || state || '-'
 }
 
 function formatWeight(num?: number | null) {
@@ -1132,6 +1501,24 @@ function proposalStatusClass(status?: string | null) {
   if (status === 'approved') return 'accepted'
   if (status === 'rejected') return 'rejected'
   return 'pending'
+}
+
+function statusLabel(status?: string | null) {
+  const labels: Record<string, string> = {
+    ok: '正常',
+    loading: '加载中',
+    pending: '待处理',
+    approved: '已通过',
+    rejected: '已驳回',
+    applied: '已应用',
+    preview_not_ready: '预览未就绪',
+    error: '错误',
+  }
+  return labels[status || ''] || status || '-'
+}
+
+function proposalStatusLabel(status?: string | null) {
+  return statusLabel(status)
 }
 
 function isAuditUpdating(auditId: number) {
@@ -1252,8 +1639,8 @@ async function loadPatchPreview(auditId: number) {
       max_delta: 0.08,
     })
   } catch (error) {
-    ElMessage.error('Patch preview failed')
-    console.error('Patch preview failed:', error)
+    ElMessage.error('补丁预览失败')
+    console.error('补丁预览失败:', error)
   } finally {
     patchPreviewLoadingAuditId.value = null
   }
@@ -1266,8 +1653,8 @@ async function loadPatchProposals() {
       limit: 20,
     })
   } catch (error) {
-    ElMessage.error('Load patch proposals failed')
-    console.error('Load patch proposals failed:', error)
+    ElMessage.error('加载补丁提案失败')
+    console.error('加载补丁提案失败:', error)
   } finally {
     proposalsLoading.value = false
   }
@@ -1282,8 +1669,8 @@ async function loadStrategyVersions(strategyId: string) {
       limit: 20,
     })
   } catch (error) {
-    ElMessage.error('Load strategy versions failed')
-    console.error('Load strategy versions failed:', error)
+    ElMessage.error('加载策略版本失败')
+    console.error('加载策略版本失败:', error)
   } finally {
     versionsLoading.value = false
   }
@@ -1308,14 +1695,14 @@ async function createPatchProposal() {
       },
     )
     if (proposal.status === 'preview_not_ready') {
-      ElMessage.warning('Patch preview is not ready for proposal')
+      ElMessage.warning('补丁预览尚未就绪，暂不能创建提案')
     } else {
-      ElMessage.success('Patch proposal saved')
+      ElMessage.success('补丁提案已保存')
     }
     await loadPatchProposals()
   } catch (error) {
-    ElMessage.error('Save patch proposal failed')
-    console.error('Save patch proposal failed:', error)
+    ElMessage.error('保存补丁提案失败')
+    console.error('保存补丁提案失败:', error)
   } finally {
     proposalSaving.value = false
   }
@@ -1329,10 +1716,10 @@ async function decidePatchProposal(proposalId: number, status: 'pending' | 'appr
     patchProposals.value = patchProposals.value.map((proposal) =>
       proposal.id === proposalId ? updated : proposal,
     )
-    ElMessage.success('Patch proposal updated')
+    ElMessage.success('补丁提案已更新')
   } catch (error) {
-    ElMessage.error('Update patch proposal failed')
-    console.error('Update patch proposal failed:', error)
+    ElMessage.error('更新补丁提案失败')
+    console.error('更新补丁提案失败:', error)
   }
 }
 
@@ -1345,11 +1732,11 @@ async function applyPatchProposal(proposalId: number) {
     patchProposals.value = patchProposals.value.map((proposal) =>
       proposal.id === proposalId ? updated : proposal,
     )
-    ElMessage.success('Patch proposal applied')
+    ElMessage.success('补丁提案已应用')
     await loadStrategyVersions(updated.strategy_id)
   } catch (error) {
-    ElMessage.error('Apply patch proposal failed')
-    console.error('Apply patch proposal failed:', error)
+    ElMessage.error('应用补丁提案失败')
+    console.error('应用补丁提案失败:', error)
   } finally {
     setProposalApplying(proposalId, false)
   }
@@ -1369,8 +1756,8 @@ async function loadImpactPreview(proposalId: number) {
       },
     )
   } catch (error) {
-    ElMessage.error('Load impact preview failed')
-    console.error('Load impact preview failed:', error)
+    ElMessage.error('加载影响预览失败')
+    console.error('加载影响预览失败:', error)
   } finally {
     impactPreviewLoadingProposalId.value = null
   }
@@ -1385,11 +1772,11 @@ async function rollbackStrategyVersion(versionId: number) {
         version.id === versionId ? { ...version, ...rolledBack } : version,
       )
     }
-    ElMessage.success('Strategy version rolled back')
+    ElMessage.success('策略版本已回滚')
     await refreshStrategyVersions()
   } catch (error) {
-    ElMessage.error('Rollback strategy version failed')
-    console.error('Rollback strategy version failed:', error)
+    ElMessage.error('回滚策略版本失败')
+    console.error('回滚策略版本失败:', error)
   } finally {
     setVersionRollingBack(versionId, false)
   }
@@ -1398,12 +1785,15 @@ async function rollbackStrategyVersion(versionId: number) {
 async function loadStats() {
   try {
     loading.value = true
-    const [overview, scheduler, readiness, report, factor, suggestions, audits, proposals] = await Promise.all([
+    const [overview, dataQuality, scheduler, readiness, report, factor, validation, topN, suggestions, audits, proposals] = await Promise.all([
       adminApi.getStatsOverview<StatsOverview>(),
+      adminApi.getDataQualityBaseline<DataQualityBaseline>(),
       adminApi.getResearchReviewScheduler<ReviewSchedulerStatus>(),
       adminApi.getResearchReviewReadiness<ReviewReadiness>(),
       adminApi.getResearchReviewReport<ReviewReport>(),
       adminApi.getResearchReviewFactorReport<FactorReport>(),
+      adminApi.getResearchReviewFactorValidation<FactorValidationReport>({ factor: selectedValidationFactor.value, min_reviews: 3 }),
+      adminApi.getResearchReviewTopNReport<TopNReviewReport>({ top_n: '5,10,20' }),
       adminApi.getResearchWeightSuggestions<WeightSuggestions>({ min_reviews: 3 }),
       adminApi.getResearchWeightSuggestionAudits<WeightSuggestionAudit[]>({ limit: 20 }),
       adminApi.getResearchWeightStrategyPatchProposals<StrategyPatchProposal[]>({ limit: 20 }),
@@ -1412,10 +1802,13 @@ async function loadStats() {
     callsByDay.value = overview.calls_by_day || []
     callsByModel.value = overview.calls_by_model || []
     topUsers.value = overview.top_users || []
+    dataQualityBaseline.value = dataQuality
     reviewScheduler.value = scheduler
     reviewReadiness.value = readiness
     reviewReport.value = report
     factorReport.value = factor
+    factorValidation.value = validation
+    topNReviewReport.value = topN
     weightSuggestions.value = suggestions
     weightSuggestionAudits.value = audits
     patchProposals.value = proposals
@@ -1425,6 +1818,22 @@ async function loadStats() {
     console.error('加载统计失败:', error)
   } finally {
     loading.value = false
+  }
+}
+
+async function loadFactorValidation(factor = selectedValidationFactor.value) {
+  try {
+    factorValidationLoading.value = true
+    selectedValidationFactor.value = factor
+    factorValidation.value = await adminApi.getResearchReviewFactorValidation<FactorValidationReport>({
+      factor,
+      min_reviews: 3,
+    })
+  } catch (error) {
+    ElMessage.error('加载因子验证报告失败')
+    console.error('加载因子验证报告失败:', error)
+  } finally {
+    factorValidationLoading.value = false
   }
 }
 
@@ -1500,6 +1909,7 @@ onMounted(loadStats)
 .stat-card,
 .chart-card,
 .review-table-card,
+.data-quality-card,
 .top-users-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -1538,6 +1948,44 @@ onMounted(loadStats)
 
 .stats-grid {
   margin-bottom: var(--space-6);
+}
+
+.data-quality-card {
+  padding: var(--space-5);
+  margin-bottom: var(--space-6);
+}
+
+.quality-note {
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.quality-table {
+  display: grid;
+  overflow-x: auto;
+}
+
+.quality-row {
+  display: grid;
+  grid-template-columns: 1.2fr 0.7fr 0.7fr 1.2fr 0.9fr 1.6fr;
+  gap: var(--space-3);
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.quality-row:last-child {
+  border-bottom: none;
+}
+
+.quality-head {
+  padding-top: 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .stat-card {
@@ -1716,6 +2164,16 @@ onMounted(loadStats)
   gap: var(--space-3);
 }
 
+.factor-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: var(--space-4);
+}
+
+.factor-table {
+  display: grid;
+  overflow-x: auto;
+}
+
 .summary-tile {
   padding: var(--space-4);
   border: 1px solid var(--color-border);
@@ -1874,6 +2332,8 @@ onMounted(loadStats)
 
 .strategy-table,
 .factor-table,
+.regime-factor-table,
+.topn-table,
 .suggestion-table,
 .audit-table,
 .version-table {
@@ -1882,6 +2342,8 @@ onMounted(loadStats)
 
 .strategy-row,
 .factor-row,
+.regime-factor-row,
+.topn-row,
 .suggestion-row,
 .audit-row,
 .version-row {
@@ -1893,7 +2355,30 @@ onMounted(loadStats)
 }
 
 .factor-row {
-  grid-template-columns: 1.3fr 0.7fr 0.7fr 0.8fr 0.8fr 0.9fr 0.9fr;
+  grid-template-columns: 1.2fr 0.55fr 0.65fr 0.6fr 0.75fr 0.75fr 0.75fr 0.75fr 0.8fr 0.8fr;
+  min-width: 980px;
+}
+
+.regime-factor-section {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.section-subtitle {
+  margin-bottom: var(--space-2);
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.regime-factor-row {
+  grid-template-columns: 0.9fr 1.4fr 0.7fr 0.7fr 0.8fr 0.8fr;
+}
+
+.topn-row {
+  grid-template-columns: 0.6fr 0.6fr 0.75fr 0.75fr 0.8fr 0.8fr 0.8fr 1fr;
+  min-width: 820px;
 }
 
 .suggestion-row {
@@ -1925,6 +2410,8 @@ onMounted(loadStats)
 
 .strategy-head,
 .factor-head,
+.regime-factor-head,
+.topn-head,
 .suggestion-head,
 .audit-head,
 .version-head {
@@ -2265,6 +2752,8 @@ onMounted(loadStats)
 
   .strategy-row,
   .factor-row,
+  .regime-factor-row,
+  .topn-row,
   .suggestion-row,
   .audit-row,
   .patch-row,
@@ -2274,6 +2763,8 @@ onMounted(loadStats)
 
   .strategy-head,
   .factor-head,
+  .regime-factor-head,
+  .topn-head,
   .suggestion-head,
   .audit-head,
   .patch-head,

@@ -38,9 +38,10 @@ def _with_quote_quality(result: dict, source: str, freshness: str = "realtime",
     if price == 0:
         quality_warnings.append("price is 0; quote may be unavailable or suspended")
     result["source"] = result.get("source") or source
+    result["updated_at"] = str(result.get("timestamp")) if result.get("timestamp") else datetime.now().isoformat()
     result["data_quality"] = _data_quality(
         source=result["source"],
-        updated_at=str(result.get("timestamp")) if result.get("timestamp") else None,
+        updated_at=result["updated_at"],
         freshness=freshness,
         confidence=confidence,
         is_fallback=is_fallback,
@@ -219,6 +220,7 @@ async def get_money_flow(symbol: str, days: int = 20):
                 "days": days,
                 "data": [],
                 "source": "eastmoney",
+                "updated_at": datetime.now().isoformat(),
                 "data_quality": _data_quality(
                     "eastmoney",
                     freshness="missing",
@@ -228,12 +230,14 @@ async def get_money_flow(symbol: str, days: int = 20):
                     warnings=["money_flow_empty"],
                 ),
             }
-        return {
-            "symbol": symbol,
-            "days": days,
-            "data": result,
-            "source": "eastmoney",
-            "data_quality": _data_quality("eastmoney", freshness="recent", confidence=0.85),
-        }
+            latest_date = result[-1].get("date") if result else None
+            return {
+                "symbol": symbol,
+                "days": days,
+                "data": result,
+                "source": "eastmoney",
+                "updated_at": latest_date or datetime.now().isoformat(),
+                "data_quality": _data_quality("eastmoney", updated_at=latest_date, freshness="recent", confidence=0.85, status="ok"),
+            }
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"资金流向获取失败: {str(e)}")

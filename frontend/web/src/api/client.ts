@@ -80,7 +80,8 @@ axiosInstance.interceptors.request.use(
 axiosInstance.interceptors.response.use(
   (response) => response.data,
   async (error) => {
-    if (error.response?.status === 401) {
+    const requestUrl = String(error.config?.url || '')
+    if (error.response?.status === 401 && !requestUrl.includes('/api/v1/auth/login')) {
       clearAuthState()
       redirectToLogin()
     }

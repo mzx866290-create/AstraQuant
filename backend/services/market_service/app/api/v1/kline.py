@@ -83,11 +83,13 @@ async def get_kline(
     if period in _INTRADAY_PERIODS and not kline_data:
         raise HTTPException(status_code=503, detail="minute kline source is temporarily unavailable")
 
+    latest_date = kline_data[-1].get("date") if kline_data else None
     result = {
         "symbol": symbol,
         "period": period.value,
         "count": len(kline_data),
         "source": source,
+        "updated_at": str(latest_date) if latest_date else None,
         "data": kline_data,
         "data_quality": kline_service.build_data_quality(source, period.value, kline_data),
     }

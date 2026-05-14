@@ -80,6 +80,14 @@ class MigrationContractTests(unittest.TestCase):
         self.assertIn('op.create_table(\n        "strategy_weight_versions"', revision)
         self.assertIn('"rollback_error"', revision)
 
+    def test_factor_snapshot_revision_exists_and_targets_strategy_weight_versions_revision(self) -> None:
+        revision = (self.ROOT / "backend/migrations/versions/20260513_0007_factor_snapshots.py").read_text(encoding="utf-8")
+
+        self.assertIn('revision = "20260513_0007"', revision)
+        self.assertIn('down_revision = "20260510_0006"', revision)
+        self.assertIn('factor_snapshot_json', revision)
+        self.assertIn('op.add_column', revision)
+
     def test_postgres_init_sql_bootstraps_research_tables(self) -> None:
         init_sql = (self.ROOT / "infra/postgres/init.sql").read_text(encoding="utf-8")
 
@@ -88,6 +96,7 @@ class MigrationContractTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS weight_suggestion_audits", init_sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS strategy_weight_patch_proposals", init_sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS strategy_weight_versions", init_sql)
+        self.assertIn("factor_snapshot_json", init_sql)
         self.assertIn("applied_error TEXT", init_sql)
         self.assertIn("rollback_error  TEXT", init_sql)
 

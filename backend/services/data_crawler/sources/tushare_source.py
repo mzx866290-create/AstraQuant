@@ -1,7 +1,7 @@
 """
 Tushare数据源 - 专业A股数据源 (需Token)
 pip install tushare
-提供: K线 / 行情 / 财务 / 资金流向 / 龙虎榜
+提供: K线 / 行情 / 财务 / 资金流向
 """
 import logging
 import importlib

@@ -253,6 +253,7 @@ class ResearchObservation(Base):
     score = Column(Float, nullable=False)
     score_breakdown_json = Column(JSON, nullable=True)
     evidence_chain_json = Column(JSON, nullable=True)
+    factor_snapshot_json = Column(JSON, nullable=True)
     debate_json = Column(JSON, nullable=True)
     veto_result_json = Column(JSON, nullable=True)
     close_price = Column(Float, nullable=True)
@@ -322,6 +323,55 @@ class StrategyWeightPatchProposal(Base):
     applied_error = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+
+class PipelineRunLog(Base):
+    """Pipeline 运行日志表"""
+    __tablename__ = "pipeline_run_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_date = Column(String(10), nullable=False, index=True)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=True)
+    status = Column(String(20), nullable=False, default="running")
+    total_collected = Column(Integer, default=0)
+    total_screened = Column(Integer, default=0)
+    total_scored = Column(Integer, default=0)
+    final_pool_size = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (UniqueConstraint("run_date", name="uix_pipeline_run_date"),)
+
+
+class DailySnapshot(Base):
+    """全市场每日行情快照（定时采集，用于异动筛选）"""
+    __tablename__ = "daily_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    trade_date = Column(String(10), nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    name = Column(String(100), nullable=True)
+    market = Column(String(10), nullable=False)
+    open = Column(Float, nullable=True)
+    high = Column(Float, nullable=True)
+    low = Column(Float, nullable=True)
+    close = Column(Float, nullable=True)
+    prev_close = Column(Float, nullable=True)
+    change_pct = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+    turnover = Column(Float, nullable=True)
+    turnover_rate = Column(Float, nullable=True)
+    total_mv = Column(Float, nullable=True)
+    circ_mv = Column(Float, nullable=True)
+    vol_ratio_5d = Column(Float, nullable=True)
+    ma5 = Column(Float, nullable=True)
+    ma20 = Column(Float, nullable=True)
+    ma60 = Column(Float, nullable=True)
+    source = Column(String(20), default="tencent")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (UniqueConstraint("trade_date", "symbol", name="uix_daily_snapshot"),)
 
 
 class StrategyWeightVersion(Base):

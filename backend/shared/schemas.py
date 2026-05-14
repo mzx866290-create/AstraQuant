@@ -224,8 +224,9 @@ class AIModelPublicResponse(BaseModel):
 class AIAnalysisRequest(BaseModel):
     model_id: int
     symbol: str = Field(..., min_length=1, max_length=20)
-    question: Optional[str] = None  # 鐢ㄦ埛鑷畾涔夋彁闂紝榛樿涓虹患鍚堝垎鏋?    framework: Optional[str] = None  # 鍒嗘瀽妗嗘灦: technical/fundamental/valuation/event
-    include_news: bool = True  # 鏄惁鍖呭惈杩戞湡鏂伴椈
+    question: Optional[str] = None
+    framework: Optional[str] = None
+    include_news: bool = True
     report_template: str = "quick"  # quick/professional/teaching
     report_mode: str = "summary"  # summary/detailed
     audience: str = "normal"  # normal/beginner
@@ -254,7 +255,8 @@ class AIFollowUpRequest(BaseModel):
 class AIAnalysisResponse(BaseModel):
     symbol: str
     model_name: str
-    analysis: str  # Markdown 鏍煎紡鐨勫垎鏋愭姤鍛?    tokens_used: int
+    analysis: str
+    tokens_used: int
     response_time_ms: int
     created_at: datetime
     requested_model: Optional[str] = None

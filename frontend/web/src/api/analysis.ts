@@ -4,7 +4,6 @@ import api from './client'
 const AI_ANALYSIS_TIMEOUT_MS = 300000
 const AI_FOLLOW_UP_TIMEOUT_MS = 120000
 const AI_BATCH_SUMMARY_TIMEOUT_MS = 120000
-const RECOMMENDATIONS_TIMEOUT_MS = 180000
 
 export const analysisApi = {
   getTechnical: (symbol: string, indicators: string = 'ma5,ma20,macd,boll,kdj,rsi') =>
@@ -19,6 +18,9 @@ export const analysisApi = {
   getScore: (symbol: string) =>
     api.get(`/api/v1/analysis/score/${symbol}`),
 
+  getStockDebate: <T = unknown>(symbol: string, strategy: string = 'auto', include_evidence: boolean = true) =>
+    api.get<T>(`/api/v1/analysis/score/${symbol}/debate`, { params: { strategy, include_evidence } }),
+
   getRecommendations: (
     market: string = 'ALL',
     limit: number = 10,
@@ -30,8 +32,17 @@ export const analysisApi = {
     initial_full_scan: boolean = false,
   ) =>
     api.get<RecommendationsResponse>('/api/v1/analysis/score/batch/recommend', {
-      params: { market, limit, force_refresh, strategy, max_candidates, include_evidence, include_debate, initial_full_scan },
-      timeout: RECOMMENDATIONS_TIMEOUT_MS,
+      params: {
+        market,
+        limit,
+        force_refresh,
+        strategy,
+        max_candidates,
+        include_evidence,
+        include_debate,
+        initial_full_scan,
+      },
+      timeout: 180000,
     }),
 
   getRecentReviews: <T = unknown>(

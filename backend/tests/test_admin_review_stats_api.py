@@ -229,6 +229,54 @@ class AdminReviewStatsApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("snapshot_from", response.json()["detail"])
 
+    def test_review_factor_validation_endpoint_passes_filters(self) -> None:
+        app = self._import_app()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, role="admin", is_active=True)
+        expected = {
+            "status": "ok",
+            "factor": "valuation",
+            "summary": {"reviews": 2, "min_reviews": 3, "validation_state": "observed"},
+            "by_offset": [],
+            "samples": [],
+        }
+
+        with patch("api.v1.admin_stats.build_single_factor_validation_report", return_value=expected) as report:
+            response = TestClient(app).get(
+                "/api/v1/admin/stats/review-factor-validation",
+                params={"factor": "valuation", "snapshot_from": "2026-05-01", "snapshot_to": "2026-05-10", "min_reviews": "3"},
+            )
+        app.dependency_overrides.clear()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), expected)
+        kwargs = report.call_args.kwargs
+        self.assertEqual(kwargs["factor"], "valuation")
+        self.assertEqual(kwargs["min_reviews"], 3)
+        self.assertEqual(str(kwargs["snapshot_from"]), "2026-05-01")
+        self.assertEqual(str(kwargs["snapshot_to"]), "2026-05-10")
+
+    def test_review_factor_validation_endpoint_rejects_invalid_date_range(self) -> None:
+        app = self._import_app()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, role="admin", is_active=True)
+
+        response = TestClient(app).get(
+            "/api/v1/admin/stats/review-factor-validation",
+            params={"factor": "valuation", "snapshot_from": "2026-05-11", "snapshot_to": "2026-05-10"},
+        )
+        app.dependency_overrides.clear()
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("snapshot_from", response.json()["detail"])
+
+    def test_review_factor_validation_endpoint_rejects_missing_factor(self) -> None:
+        app = self._import_app()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, role="admin", is_active=True)
+
+        response = TestClient(app).get("/api/v1/admin/stats/review-factor-validation")
+        app.dependency_overrides.clear()
+
+        self.assertEqual(response.status_code, 422)
+
     def test_review_weight_suggestions_endpoint_passes_filters_and_min_reviews(self) -> None:
         app = self._import_app()
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, role="admin", is_active=True)

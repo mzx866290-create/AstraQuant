@@ -10,14 +10,16 @@ router = APIRouter(tags=["新闻"])
 
 def _data_quality(source: str, updated_at: Optional[str] = None, freshness: str = "published",
                   confidence: float = 0.8, is_fallback: bool = False,
-                  warnings: Optional[list[str]] = None) -> dict:
+                  warnings: Optional[list[str]] = None, status: Optional[str] = None) -> dict:
+    quality_warnings = warnings or []
     return {
         "source": source,
+        "status": status or ("degraded" if quality_warnings else "ok"),
         "updated_at": updated_at or datetime.now().isoformat(),
         "freshness": freshness,
         "confidence": confidence,
         "is_fallback": is_fallback,
-        "warnings": warnings or [],
+        "warnings": quality_warnings,
     }
 
 
@@ -122,8 +124,9 @@ async def get_stock_news(
                 updated_at=latest_publish_time or updated_at,
                 freshness="published" if items else "empty",
                 confidence=0.8 if items else 0.2,
-                is_fallback=False,
+                is_fallback=live_loaded,
                 warnings=warnings,
+                status="ok" if items else "unavailable",
             ),
         }
     finally:
@@ -176,6 +179,7 @@ async def get_telegraph(
                 confidence=0.8 if items else 0.2,
                 is_fallback=False,
                 warnings=warnings,
+                status="ok" if items else "unavailable",
             ),
         }
     finally:

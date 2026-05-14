@@ -29,6 +29,8 @@ export const adminApi = {
 
   getStatsOverview: <T = unknown>() =>
     api.get<T>('/api/v1/admin/stats/overview'),
+  getDataQualityBaseline: <T = unknown>() =>
+    api.get<T>('/api/v1/admin/stats/data-quality-baseline'),
   getCallsByDay: (days?: number) =>
     api.get('/api/v1/admin/stats/calls-by-day', { params: { days } }),
   getCallsByModel: () =>
@@ -43,6 +45,10 @@ export const adminApi = {
     api.get<T>('/api/v1/admin/stats/review-report', { params }),
   getResearchReviewFactorReport: <T = unknown>(params?: unknown) =>
     api.get<T>('/api/v1/admin/stats/review-factor-report', { params }),
+  getResearchReviewFactorValidation: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/review-factor-validation', { params }),
+  getResearchReviewTopNReport: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/review-topn-report', { params }),
   getResearchWeightSuggestions: <T = unknown>(params?: unknown) =>
     api.get<T>('/api/v1/admin/stats/review-weight-suggestions', { params }),
   getResearchWeightSuggestionAudits: <T = unknown>(params?: unknown) =>

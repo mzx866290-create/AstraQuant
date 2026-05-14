@@ -9,7 +9,7 @@ CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-}"
 CLICKHOUSE_BACKUP_DESTINATION="${CLICKHOUSE_BACKUP_DESTINATION:-Disk('backups', '{name}.zip')}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-TABLES="stock_daily stock_minute stock_weekly stock_monthly money_flow dragon_tiger north_bound_flow stock_quotes technical_indicators sector_performance"
+TABLES="stock_daily stock_minute stock_weekly stock_monthly money_flow north_bound_flow stock_quotes technical_indicators sector_performance"
 
 for table in ${TABLES}; do
   name="stock_platform_${table}_${TIMESTAMP}"

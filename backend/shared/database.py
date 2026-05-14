@@ -107,7 +107,50 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db():
-    """初始化数据库表"""
+    """初始化数据库表，并按环境变量创建初始管理员账号（幂等）"""
+    import logging
+    import os
     from .models import Base
     Base.metadata.create_all(bind=engine)
+    _bootstrap_admin()
+
+
+def _bootstrap_admin() -> None:
+    import logging
+    import os
+    username = os.getenv("ADMIN_USERNAME", "").strip()
+    password = os.getenv("ADMIN_PASSWORD", "").strip()
+    if not username or not password:
+        return
+    from .models import User, UserQuota
+    from .security import hash_password
+    logger = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        existing = db.query(User).filter(User.username == username).first()
+        if existing:
+            if existing.role != "admin":
+                existing.role = "admin"
+                db.commit()
+                logger.info("bootstrap: promoted existing user '%s' to admin", username)
+            return
+        user = User(
+            username=username,
+            email=os.getenv("ADMIN_EMAIL", f"{username}@localhost"),
+            password_hash=hash_password(password),
+            nickname=username,
+            role="admin",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        quota = UserQuota(user_id=user.id, daily_limit=999999, monthly_limit=999999)
+        db.add(quota)
+        db.commit()
+        logger.info("bootstrap: admin user '%s' created", username)
+    except Exception as exc:
+        db.rollback()
+        logging.getLogger(__name__).warning("bootstrap admin failed: %s", exc)
+    finally:
+        db.close()
 

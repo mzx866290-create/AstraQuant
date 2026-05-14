@@ -34,6 +34,15 @@
             <p class="form-subtitle">{{ isLogin ? '登录以访问您的投资组合' : '注册开始使用智能分析' }}</p>
           </div>
 
+          <el-alert
+            v-if="submitError"
+            class="submit-error"
+            type="error"
+            show-icon
+            :closable="false"
+            :title="submitError"
+          />
+
           <el-form
             ref="formRef"
             :model="form"
@@ -122,6 +131,7 @@ const route = useRoute()
 const userStore = useUserStore()
 const isLogin = ref(true)
 const loading = ref(false)
+const submitError = ref('')
 const formRef = ref()
 
 const form = reactive({
@@ -150,9 +160,33 @@ function getSafeRedirect() {
   }
 }
 
+function loginErrorMessage(error: unknown) {
+  const response = (error as { response?: { status?: number; data?: { detail?: unknown } }; message?: string }).response
+  const detail = response?.data?.detail
+  if (Array.isArray(detail)) {
+    const validation = detail
+      .map((item) => (typeof item === 'object' && item && 'msg' in item ? String(item.msg) : ''))
+      .filter(Boolean)
+      .join('；')
+    if (validation) return validation
+  }
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (response?.status === 401) return '用户名或密码不正确'
+  if (response?.status === 403) return '账号已被禁用，请联系管理员'
+  if (response?.status === 429) return '登录尝试过于频繁，请稍后再试'
+  if (!response) return '无法连接用户服务，请检查服务是否已启动'
+  return '登录失败，请稍后重试'
+}
+
 async function handleSubmit() {
-  if (!formRef.value) return
-  await formRef.value.validate()
+  if (!formRef.value || loading.value) return
+  submitError.value = ''
+  try {
+    await formRef.value.validate()
+  } catch {
+    submitError.value = '请先填写完整的登录信息'
+    return
+  }
   loading.value = true
   try {
     if (isLogin.value) {
@@ -165,9 +199,9 @@ async function handleSubmit() {
       isLogin.value = true
     }
   } catch (error) {
-    const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
-    const msg = Array.isArray(detail) ? detail.map((d) => (d as { msg?: string }).msg).filter(Boolean).join('; ') : (detail || '操作失败')
-    ElMessage.error(msg as string)
+    const msg = isLogin.value ? loginErrorMessage(error) : loginErrorMessage(error).replace('登录', '操作')
+    submitError.value = msg
+    ElMessage.error(msg)
   } finally {
     loading.value = false
   }
@@ -322,6 +356,10 @@ async function handleSubmit() {
   font-size: 14px;
   color: var(--color-text-muted);
   margin: 0;
+}
+
+.submit-error {
+  margin-bottom: var(--space-4);
 }
 
 .login-form :deep(.el-input__wrapper) {

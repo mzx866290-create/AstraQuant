@@ -26,12 +26,6 @@ export const stockApi = {
   getSectors: <T = UnavailableFeatureResponse>() =>
     unavailableFeature<T>('sectors', '板块数据暂未接入真实数据源，当前不可用'),
 
-  getDragonTiger: <T = unknown>(tradeDate?: string) =>
-    api.get<T>('/api/v1/dragon-tiger', { params: { trade_date: tradeDate } }),
-
-  getStockDragonTiger: <T = unknown>(symbol: string, days: number = 30) =>
-    api.get<T>(`/api/v1/dragon-tiger/${symbol}`, { params: { days } }),
-
   getIndices: <T = UnavailableFeatureResponse>() =>
     unavailableFeature<T>('indices', '大盘指数行情暂未接入真实数据源，当前不可用'),
 

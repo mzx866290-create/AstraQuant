@@ -26,6 +26,11 @@
       <div v-if="readiness.missing_context?.length" class="readiness-hint">
         缺失项：{{ readiness.missing_context.join('、') }}。AI会按缺失数据处理，不会把空值当结论。
       </div>
+      <div v-if="isLoggedIn && readiness.missing_context?.some(t => ['financial','news','announcements'].includes(t))" class="readiness-hint">
+        <button class="btn-link" :disabled="crawling" @click="crawlMissing">
+          {{ crawling ? '补全中...' : '一键补全数据' }}
+        </button>
+      </div>
     </div>
 
     <div v-if="readinessError && isLoggedIn" class="status-panel warn">
@@ -242,7 +247,7 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { analysisApi } from '@/api'
+import { analysisApi, crawlApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 import { formatDuration } from '@/utils/formatters'
 
@@ -433,6 +438,7 @@ const promptStyle = ref<'default' | 'plain' | 'beginner' | 'professional' | 'ris
 const audience = computed<'normal' | 'beginner'>(() => promptStyle.value === 'plain' || promptStyle.value === 'beginner' ? 'beginner' : 'normal')
 const forceRefresh = ref(false)
 const analyzing = ref(false)
+const crawling = ref(false)
 const result = ref<AIAnalysisResult | null>(null)
 const followUpQuestion = ref('')
 const followUpLoading = ref(false)
@@ -824,6 +830,48 @@ async function loadReadiness() {
   }
 }
 
+async function crawlMissing() {
+  if (!readiness.value?.missing_context?.length) return
+  const types = readiness.value.missing_context.filter(t => ['financial', 'news', 'announcements'].includes(t))
+  if (!types.length) return
+  crawling.value = true
+  try {
+    type CrawlResult = { fetched?: number; saved?: number }
+    const calls = types.map(t => {
+      if (t === 'financial') return crawlApi.crawlFinancials<CrawlResult>(props.symbol)
+      if (t === 'news') return crawlApi.crawlNews<CrawlResult>(props.symbol)
+      return crawlApi.crawlAnnouncements<CrawlResult>(props.symbol)
+    })
+    const results = await Promise.allSettled(calls)
+    const total = results.reduce((sum, r) => {
+      if (r.status === 'fulfilled') {
+        return sum + (r.value?.saved ?? r.value?.fetched ?? 1)
+      }
+      return sum
+    }, 0)
+    ElMessage.success(`已补全数据，共获取 ${total} 条记录`)
+    await loadReadiness()
+  } catch (e) {
+    ElMessage.warning('部分数据源暂不可用，已跳过')
+  } finally {
+    crawling.value = false
+  }
+}
+
+async function recoverMissingData() {
+  if (!isLoggedIn.value) {
+    ElMessage.warning('请先登录后补全数据')
+    return
+  }
+  await loadReadiness()
+  const types = readiness.value?.missing_context?.filter(t => ['financial', 'news', 'announcements'].includes(t)) || []
+  if (!types.length) {
+    ElMessage.info('暂无可自动补全的数据缺口')
+    return
+  }
+  await crawlMissing()
+}
+
 async function loadModelHealth(refresh = false) {
   if (!isLoggedIn.value) return
   modelHealthError.value = ''
@@ -963,6 +1011,7 @@ onBeforeUnmount(stopLoadingTimer)
 onBeforeUnmount(() => {
   markdownRenderToken++
 })
+defineExpose({ loadReadiness, recoverMissingData })
 watch(isLoggedIn, () => loadData())
 watch(() => props.refreshKey, () => loadReadiness())
 watch(() => props.symbol, () => {

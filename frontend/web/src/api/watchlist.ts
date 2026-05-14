@@ -18,6 +18,9 @@ export const watchlistApi = {
   addToWatchlist: (watchlist_id: number, payload: WatchlistAddPayload) =>
     api.post(`/api/v1/watchlists/${watchlist_id}/items`, payload),
 
+  reorderWatchlistItems: <T = unknown>(watchlist_id: number, stock_ids: number[]) =>
+    api.put<T>(`/api/v1/watchlists/${watchlist_id}/items/reorder`, { stock_ids }),
+
   removeFromWatchlist: (watchlist_id: number, stock_id: number) =>
     api.delete(`/api/v1/watchlists/${watchlist_id}/items/${stock_id}`),
 }

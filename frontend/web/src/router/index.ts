@@ -14,6 +14,11 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/Stocks.vue')
   },
   {
+    path: '/compare',
+    name: 'StockCompare',
+    component: () => import('../views/StockCompare.vue')
+  },
+  {
     path: '/recommendations',
     name: 'Recommendations',
     component: () => import('../views/Recommendations.vue'),
@@ -74,7 +79,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'users', component: () => import('../views/admin/AdminUsers.vue') },
       { path: 'logs', component: () => import('../views/admin/AdminLogs.vue') },
     ]
-  }
+  },
+  { path: '/:pathMatch(.*)*', name: 'NotFound', component: () => import('../views/NotFound.vue') }
 ]
 
 const router = createRouter({
@@ -104,14 +110,17 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
-  if (to.meta.requiresAdmin && !userStore.isAdmin) {
+  if (to.meta.requiresAdmin) {
     if (profileRefreshFailed && userStore.isLoggedIn) {
-      next()
+      next({ name: 'Login', query: { redirect: to.fullPath } })
       return
     }
-    ElMessage.warning('当前账号没有管理员权限')
-    next({ name: 'Forbidden', query: { from: to.fullPath } })
-    return
+
+    if (!userStore.isAdmin) {
+      ElMessage.warning('当前账号没有管理员权限')
+      next({ name: 'Forbidden', query: { from: to.fullPath } })
+      return
+    }
   }
 
   next()

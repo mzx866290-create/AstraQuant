@@ -8,7 +8,19 @@ from typing import List
 from datetime import date, datetime, timedelta
 
 from backend.shared.database import get_db
-from backend.shared.models import User, AIModel, AIUsageLog, UserQuota
+from backend.shared.models import (
+    User,
+    AIModel,
+    AIUsageLog,
+    UserQuota,
+    DailySnapshot,
+    ResearchObservation,
+    ObservationReview,
+    FinancialReport,
+    CompanyAnnouncement,
+    StockNews,
+    CrawlStatus,
+)
 from backend.shared.auth import get_current_user, require_admin
 from backend.shared.schemas import AdminStatsResponse
 from backend.services.analysis_service.engine.review_scheduler import review_scheduler
@@ -16,6 +28,8 @@ from backend.services.analysis_service.engine.review_tracker import (
     build_factor_review_report,
     build_review_readiness,
     build_review_report,
+    build_single_factor_validation_report,
+    build_topn_review_report,
     build_weight_strategy_patch_preview,
     build_weight_adjustment_suggestions,
     apply_strategy_weight_patch_proposal,
@@ -33,7 +47,159 @@ from backend.services.analysis_service.engine.review_tracker import (
 router = APIRouter(prefix="/stats", tags=["管理员-统计"])
 
 
-@router.get("/overview", response_model=AdminStatsResponse)
+def _safe_iso(value):
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _age_hours(value) -> float | None:
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    now = datetime.now(value.tzinfo) if getattr(value, "tzinfo", None) else datetime.now()
+    return round(max((now - value).total_seconds(), 0) / 3600, 1)
+
+
+def _quality_item(
+    key: str,
+    label: str,
+    row_count: int,
+    latest_at=None,
+    source: str | None = None,
+    warning: str | None = None,
+    stale_after_hours: int = 48,
+) -> dict:
+    age_hours = _age_hours(latest_at)
+    warnings = []
+    if row_count <= 0:
+        warnings.append(warning or f"{key}_empty")
+    if age_hours is not None and age_hours > stale_after_hours:
+        warnings.append(f"{key}_stale")
+    if age_hours is None and row_count > 0:
+        warnings.append(f"{key}_latest_time_missing")
+    status = "ok" if row_count > 0 and not warnings else "degraded" if row_count > 0 else "unavailable"
+    confidence = 0.9 if status == "ok" else 0.55 if status == "degraded" else 0.1
+    return {
+        "key": key,
+        "label": label,
+        "status": status,
+        "source": source or "database",
+        "updated_at": _safe_iso(latest_at),
+        "age_hours": age_hours,
+        "row_count": row_count,
+        "confidence": confidence,
+        "is_fallback": False,
+        "warnings": warnings,
+    }
+
+
+@router.get("/data-quality-baseline")
+async def get_data_quality_baseline(
+    current_user=Depends(require_admin()),
+    db: Session = Depends(get_db),
+):
+    """Get current Phase 0/A1 data-quality baseline for core research datasets."""
+    latest_snapshot_date = db.query(func.max(DailySnapshot.trade_date)).scalar()
+    snapshot_count = 0
+    snapshot_source = None
+    if latest_snapshot_date:
+        snapshot_count = db.query(DailySnapshot).filter(DailySnapshot.trade_date == latest_snapshot_date).count()
+        snapshot_source = db.query(DailySnapshot.source).filter(DailySnapshot.trade_date == latest_snapshot_date).group_by(DailySnapshot.source).order_by(func.count(DailySnapshot.id).desc()).limit(1).scalar()
+
+    latest_observation_at = db.query(func.max(ResearchObservation.created_at)).scalar()
+    latest_review_at = db.query(func.max(ObservationReview.created_at)).scalar()
+    latest_financial_at = db.query(func.max(FinancialReport.created_at)).scalar()
+    latest_announcement_at = db.query(func.max(CompanyAnnouncement.created_at)).scalar()
+    latest_news_at = db.query(func.max(StockNews.created_at)).scalar()
+    latest_crawl_at = db.query(func.max(CrawlStatus.finished_at)).scalar()
+
+    items = [
+        _quality_item(
+            "daily_snapshots",
+            "每日行情快照",
+            snapshot_count,
+            latest_snapshot_date,
+            snapshot_source,
+            "daily_snapshots_empty",
+            stale_after_hours=72,
+        ),
+        _quality_item(
+            "research_observations",
+            "观察池快照",
+            db.query(ResearchObservation).count(),
+            latest_observation_at,
+            "analysis-service",
+            "research_observations_empty",
+            stale_after_hours=72,
+        ),
+        _quality_item(
+            "observation_reviews",
+            "观察池复盘",
+            db.query(ObservationReview).count(),
+            latest_review_at,
+            "analysis-service",
+            "observation_reviews_empty",
+            stale_after_hours=168,
+        ),
+        _quality_item(
+            "financial_reports",
+            "财务数据",
+            db.query(FinancialReport).count(),
+            latest_financial_at,
+            "database",
+            "financial_reports_empty",
+            stale_after_hours=24 * 120,
+        ),
+        _quality_item(
+            "announcements",
+            "公司公告",
+            db.query(CompanyAnnouncement).count(),
+            latest_announcement_at,
+            "database",
+            "announcements_empty",
+            stale_after_hours=24 * 14,
+        ),
+        _quality_item(
+            "stock_news",
+            "个股新闻",
+            db.query(StockNews).count(),
+            latest_news_at,
+            "database",
+            "stock_news_empty",
+            stale_after_hours=72,
+        ),
+        _quality_item(
+            "crawl_status",
+            "采集任务状态",
+            db.query(CrawlStatus).count(),
+            latest_crawl_at,
+            "crawler",
+            "crawl_status_empty",
+            stale_after_hours=72,
+        ),
+    ]
+    summary = {
+        "total": len(items),
+        "ok": sum(1 for item in items if item["status"] == "ok"),
+        "degraded": sum(1 for item in items if item["status"] == "degraded"),
+        "unavailable": sum(1 for item in items if item["status"] == "unavailable"),
+    }
+    return {
+        "status": "ok" if summary["unavailable"] == 0 else "degraded",
+        "generated_at": datetime.now().isoformat(),
+        "summary": summary,
+        "items": items,
+        "baseline_notes": [
+            "阶段0首版基线来自现有数据库和采集状态表",
+            "A1阶段优先处理 unavailable 或 stale 的核心数据集",
+        ],
+    }
+
+
+@router.get("/overview")
 async def get_overview(
     current_user = Depends(require_admin()),
     db: Session = Depends(get_db),
@@ -259,6 +425,44 @@ async def get_review_factor_report(
     if snapshot_from and snapshot_to and snapshot_from > snapshot_to:
         raise HTTPException(status_code=400, detail="snapshot_from must be earlier than or equal to snapshot_to")
     return build_factor_review_report(snapshot_from=snapshot_from, snapshot_to=snapshot_to)
+
+
+@router.get("/review-factor-validation")
+async def get_review_factor_validation(
+    factor: str = Query(..., min_length=1, max_length=80),
+    snapshot_from: date | None = Query(default=None),
+    snapshot_to: date | None = Query(default=None),
+    min_reviews: int = Query(default=1, ge=1, le=100),
+    current_user=Depends(require_admin()),
+):
+    """Get single-factor observation validation report."""
+    if snapshot_from and snapshot_to and snapshot_from > snapshot_to:
+        raise HTTPException(status_code=400, detail="snapshot_from must be earlier than or equal to snapshot_to")
+    return build_single_factor_validation_report(
+        factor=factor,
+        snapshot_from=snapshot_from,
+        snapshot_to=snapshot_to,
+        min_reviews=min_reviews,
+    )
+
+
+@router.get("/review-topn-report")
+async def get_review_topn_report(
+    top_n: str = Query(default="5,10,20"),
+    snapshot_from: date | None = Query(default=None),
+    snapshot_to: date | None = Query(default=None),
+    current_user=Depends(require_admin()),
+):
+    """Get Top N historical validation report."""
+    if snapshot_from and snapshot_to and snapshot_from > snapshot_to:
+        raise HTTPException(status_code=400, detail="snapshot_from must be earlier than or equal to snapshot_to")
+    try:
+        top_n_values = tuple(int(item.strip()) for item in top_n.split(",") if item.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="top_n only accepts comma-separated integers")
+    if not top_n_values or any(value <= 0 or value > 100 for value in top_n_values):
+        raise HTTPException(status_code=400, detail="top_n values must be between 1 and 100")
+    return build_topn_review_report(top_n_values=top_n_values, snapshot_from=snapshot_from, snapshot_to=snapshot_to)
 
 
 @router.get("/review-weight-suggestions")

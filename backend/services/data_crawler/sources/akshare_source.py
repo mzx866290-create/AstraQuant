@@ -1,10 +1,10 @@
 """
 AKShare数据源 - 免费开源A股数据全覆盖
 pip install akshare
-提供: K线 / 实时行情 / 财务数据 / 板块数据 / 龙虎榜
+提供: K线 / 实时行情 / 财务数据 / 板块数据
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from .base import BaseDataSource
@@ -284,47 +284,52 @@ class AKShareSource(BaseDataSource):
             for _, row in df.iterrows()
         ]
 
-    async def fetch_dragon_tiger(self, date: str = "") -> list[dict]:
-        """获取龙虎榜数据 (AKShare特色)"""
-        ak = self._get_ak()
-        loop = self._get_event_loop()
-        trade_date = date.replace("-", "") if date else datetime.now().strftime("%Y%m%d")
-        try:
-            df = await loop.run_in_executor(
-                None,
-                lambda: ak.stock_lhb_detail_em(start_date=trade_date, end_date=trade_date),
-            )
-            if df is None or df.empty:
-                return []
-            return df.to_dict("records")
-        except Exception as e:
-            logger.warning(f"龙虎榜获取失败: {e}")
-            return []
-
-    async def fetch_stock_dragon_tiger(self, symbol: str, days: int = 30) -> list[dict]:
-        """获取个股最近一段时间的龙虎榜历史"""
+    async def fetch_money_flow(self, symbol: str, limit: int = 20) -> list[dict]:
+        """获取A股资金流向数据，输出对齐 EastMoneySource.fetch_money_flow。"""
         ak = self._get_ak()
         loop = self._get_event_loop()
         code = self._to_ak_symbol(symbol)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=max(1, min(days, 365)))
-        try:
-            df = await loop.run_in_executor(
-                None,
-                lambda: ak.stock_lhb_detail_em(
-                    start_date=start_date.strftime("%Y%m%d"),
-                    end_date=end_date.strftime("%Y%m%d"),
-                ),
-            )
-            if df is None or df.empty:
-                return []
-            code_column = "代码" if "代码" in df.columns else "股票代码" if "股票代码" in df.columns else None
-            if code_column:
-                df = df[df[code_column].astype(str).str.zfill(6) == code]
-            return df.to_dict("records")
-        except Exception as e:
-            logger.warning(f"{symbol} 龙虎榜历史获取失败: {e}")
+
+        df = await loop.run_in_executor(
+            None,
+            lambda: ak.stock_individual_fund_flow(stock=code, market=self._ak_market(code)),
+        )
+        if df is None or df.empty:
             return []
+
+        rows = []
+        for _, row in df.tail(max(1, min(limit, 120))).iterrows():
+            date_value = self._first_present(row, ["日期", "date", "Date"])
+            rows.append({
+                "date": str(date_value)[:10],
+                "main_inflow": self._to_float(self._first_present(row, ["主力净流入-净额", "主力净流入", "主力净额", "主力净流入净额"])),
+                "small_inflow": self._to_float(self._first_present(row, ["小单净流入-净额", "小单净流入", "小单净额", "小单净流入净额"])),
+                "mid_inflow": self._to_float(self._first_present(row, ["中单净流入-净额", "中单净流入", "中单净额", "中单净流入净额"])),
+                "big_inflow": self._to_float(self._first_present(row, ["大单净流入-净额", "大单净流入", "大单净额", "大单净流入净额"])),
+                "super_inflow": self._to_float(self._first_present(row, ["超大单净流入-净额", "超大单净流入", "超大单净额", "超大单净流入净额"])),
+            })
+        return [row for row in rows if row["date"]]
+
+    def _ak_market(self, code: str) -> str:
+        if code.startswith(("6", "9", "5")):
+            return "sh"
+        if code.startswith(("0", "1", "2", "3")):
+            return "sz"
+        return "bj"
+
+    def _first_present(self, row, names: list[str]):
+        for name in names:
+            if name in row and row.get(name) not in (None, ""):
+                return row.get(name)
+        return None
+
+    def _to_float(self, value) -> float:
+        try:
+            if value is None:
+                return 0.0
+            return float(str(value).replace(",", ""))
+        except (TypeError, ValueError):
+            return 0.0
 
     async def fetch_stock_notices(self, symbol: str, limit: int = 20) -> list[dict]:
         """Fetch stock announcements from CNINFO public disclosure API."""

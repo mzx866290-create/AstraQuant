@@ -23,6 +23,7 @@ def _dimension_for_key(key: str) -> str:
         "news_sentiment": "sentiment",
         "industry_events": "industry_theme",
         "risk_lights": "risk",
+        "capital_flow": "capital_flow",
     }
     return mapping.get(key, "general")
 
@@ -38,6 +39,7 @@ def _source_meta_for_dimension(data_quality: dict, dimension: str) -> tuple[str,
         "retail_affordability": "quote",
         "market_cap": "quote",
         "risk": "quote",
+        "capital_flow": "capital_flow",
         "baseline": "quote",
         "general": "quote",
     }
@@ -71,6 +73,14 @@ def _value_threshold_for_key(stock_data: dict, key: str) -> tuple[Any, str]:
         return (stock_data.get("news_sentiment") or {}).get("weighted_dominant_sentiment"), "positive preferred"
     if key == "industry_events":
         return [item.get("theme") for item in ((stock_data.get("industry_event_context") or {}).get("themes") or [])[:3]], "theme evidence available"
+    if key == "capital_flow":
+        features = stock_data.get("capital_flow_features") or {}
+        return {
+            "signal": features.get("signal"),
+            "latest_date": features.get("latest_date"),
+            "latest_main_inflow": features.get("latest_main_inflow"),
+            "main_inflow_3d": features.get("main_inflow_3d"),
+        }, "capital flow should not materially contradict trend signal"
     if key.startswith("risk_"):
         light_key = key.replace("risk_", "", 1)
         return (stock_data.get("risk_lights") or {}).get(light_key), "no red light preferred"

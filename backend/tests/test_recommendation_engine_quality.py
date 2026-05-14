@@ -251,6 +251,20 @@ class RecommendationEngineQualityTests(unittest.TestCase):
         self.assertTrue(risky_reasons)
         self.assertEqual(clean_reasons[:2], risky_reasons[:2])
 
+    def test_sentiment_positive_adds_score_and_negative_subtracts(self) -> None:
+        base_data = _quality_stock_data()
+
+        neutral_data = {**base_data, "news_sentiment": {"weighted_dominant_sentiment": "中性"}}
+        positive_data = {**base_data, "news_sentiment": {"weighted_dominant_sentiment": "正面"}}
+        negative_data = {**base_data, "news_sentiment": {"weighted_dominant_sentiment": "负面"}}
+
+        neutral_score, _, _ = engine._score_daily_candidate(neutral_data, {}, "retail_small")
+        positive_score, _, _ = engine._score_daily_candidate(positive_data, {}, "retail_small")
+        negative_score, _, _ = engine._score_daily_candidate(negative_data, {}, "retail_small")
+
+        self.assertGreater(positive_score, neutral_score, "positive sentiment must raise score above neutral")
+        self.assertLess(negative_score, neutral_score, "negative sentiment must lower score below neutral")
+
     def test_score_breakdown_marks_sparse_data_and_risk_boundaries(self) -> None:
         sparse_stock_data = {
             "price": 0,

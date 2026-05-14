@@ -116,30 +116,6 @@ PARTITION BY toYYYYMM(date)
 ORDER BY (symbol, date)
 TTL date + INTERVAL 3 YEAR;
 
-CREATE TABLE IF NOT EXISTS dragon_tiger
-(
-    trade_date     Date,
-    symbol         LowCardinality(String),
-    name           LowCardinality(String),
-    reason         String,
-    close_price    Decimal(18, 4),
-    change_pct     Decimal(10, 4),
-    turnover       Decimal(24, 4),
-    buy_amount     Decimal(24, 4),
-    sell_amount    Decimal(24, 4),
-    net_amount     Decimal(24, 4),
-    buy_seats      String,
-    sell_seats     String,
-    source         LowCardinality(String),
-    record_version UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
-    updated_at     DateTime DEFAULT now(),
-    etl_batch_id   String DEFAULT ''
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(trade_date)
-ORDER BY (trade_date, symbol)
-TTL trade_date + INTERVAL 1 YEAR;
-
 CREATE TABLE IF NOT EXISTS north_bound_flow
 (
     date       Date,
@@ -249,13 +225,6 @@ ALTER TABLE IF EXISTS money_flow
 ALTER TABLE IF EXISTS money_flow
     ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now();
 ALTER TABLE IF EXISTS money_flow
-    ADD COLUMN IF NOT EXISTS etl_batch_id String DEFAULT '';
-
-ALTER TABLE IF EXISTS dragon_tiger
-    ADD COLUMN IF NOT EXISTS record_version UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3)));
-ALTER TABLE IF EXISTS dragon_tiger
-    ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now();
-ALTER TABLE IF EXISTS dragon_tiger
     ADD COLUMN IF NOT EXISTS etl_batch_id String DEFAULT '';
 
 ALTER TABLE IF EXISTS stock_quotes

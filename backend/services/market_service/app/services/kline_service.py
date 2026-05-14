@@ -53,9 +53,10 @@ def build_data_quality(source: str, period: str, kline_data: list[dict]) -> dict
         source=source,
         updated_at=str(latest_date) if latest_date else None,
         freshness="generated" if source == "local-fallback" else period,
-        confidence=0.35 if source == "local-fallback" else 0.9,
+        confidence=0.35 if source == "local-fallback" else 0.8 if source.endswith("-aggregated") else 0.9,
         is_fallback=source == "local-fallback",
         warnings=warnings,
+        status="ok" if kline_data and not warnings else "degraded" if kline_data else "unavailable",
     )
 
 
@@ -66,9 +67,11 @@ def data_quality(
     confidence: float = 0.9,
     is_fallback: bool = False,
     warnings: Optional[list[str]] = None,
+    status: str = "ok",
 ) -> dict:
     return {
         "source": source,
+        "status": status,
         "updated_at": updated_at or datetime.now().isoformat(),
         "freshness": freshness,
         "confidence": confidence,

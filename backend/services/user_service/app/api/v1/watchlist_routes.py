@@ -27,6 +27,10 @@ class AddItemRequest(BaseModel):
     sector: Optional[str] = None
 
 
+class ReorderItemsRequest(BaseModel):
+    stock_ids: List[int]
+
+
 def _api_symbol(stock: Stock) -> str:
     code = stock.symbol[:6]
     return f"{code}.{stock.market}"
@@ -113,7 +117,12 @@ async def get_watchlists(
 
     result = []
     for wl in lists:
-        items = db.query(WatchlistItem).filter(WatchlistItem.watchlist_id == wl.id).all()
+        items = (
+            db.query(WatchlistItem)
+            .filter(WatchlistItem.watchlist_id == wl.id)
+            .order_by(WatchlistItem.sort_order, WatchlistItem.id)
+            .all()
+        )
         item_data = []
         for item in items:
             stock = db.query(Stock).filter(Stock.id == item.stock_id).first()
@@ -194,7 +203,14 @@ async def add_to_watchlist(
     if existing:
         raise_bad_request("该股票已在自选股中")
 
-    item = WatchlistItem(watchlist_id=watchlist_id, stock_id=stock.id)
+    max_sort = (
+        db.query(WatchlistItem.sort_order)
+        .filter(WatchlistItem.watchlist_id == watchlist_id)
+        .order_by(WatchlistItem.sort_order.desc())
+        .first()
+    )
+    next_sort_order = ((max_sort[0] if max_sort else -1) or 0) + 1
+    item = WatchlistItem(watchlist_id=watchlist_id, stock_id=stock.id, sort_order=next_sort_order)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -207,6 +223,34 @@ async def add_to_watchlist(
         "sort_order": item.sort_order,
         "added_at": item.added_at.isoformat() if item.added_at else None,
     }
+
+
+@router.put("/{watchlist_id}/items/reorder")
+async def reorder_watchlist_items(
+    watchlist_id: int,
+    body: ReorderItemsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """按 stock_id 顺序重排自选股"""
+    wl = db.query(Watchlist).filter(Watchlist.id == watchlist_id).first()
+    if not wl or wl.user_id != current_user.id:
+        raise_not_found("自选股分组")
+
+    items = db.query(WatchlistItem).filter(WatchlistItem.watchlist_id == watchlist_id).all()
+    item_by_stock_id = {item.stock_id: item for item in items}
+    ordered_ids = []
+    seen = set()
+    for stock_id in body.stock_ids:
+        if stock_id in item_by_stock_id and stock_id not in seen:
+            ordered_ids.append(stock_id)
+            seen.add(stock_id)
+    ordered_ids.extend(item.stock_id for item in items if item.stock_id not in seen)
+
+    for index, stock_id in enumerate(ordered_ids):
+        item_by_stock_id[stock_id].sort_order = index
+    db.commit()
+    return {"message": "排序已更新", "stock_ids": ordered_ids}
 
 
 @router.delete("/{watchlist_id}/items/{stock_id}")

@@ -10,6 +10,7 @@
           <nav class="header-nav" aria-label="主导航">
             <router-link to="/" class="nav-link">首页</router-link>
             <router-link to="/stocks" class="nav-link">股票</router-link>
+            <router-link to="/compare" class="nav-link">多股对比</router-link>
             <router-link to="/recommendations" class="nav-link">每日观察</router-link>
             <router-link to="/watchlist" class="nav-link">自选股</router-link>
             <router-link to="/alerts" class="nav-link">预警</router-link>

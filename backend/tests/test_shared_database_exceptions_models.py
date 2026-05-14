@@ -230,11 +230,13 @@ class SharedModelsContractTests(unittest.TestCase):
             "financial_reports",
             "crawl_status",
             "stock_news",
+            "daily_snapshots",
             "research_observations",
             "observation_reviews",
             "weight_suggestion_audits",
             "strategy_weight_patch_proposals",
             "strategy_weight_versions",
+            "pipeline_run_logs",
         }
 
         self.assertEqual(set(self.models.Base.metadata.tables), expected_tables)
