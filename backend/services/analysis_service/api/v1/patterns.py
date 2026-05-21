@@ -202,6 +202,15 @@ DETECTORS = [
 ]
 
 
+@router.get("/list")
+async def list_patterns():
+    """列出所有支持的K线形态"""
+    return {
+        "total": len(PATTERNS),
+        "patterns": [{"name": k, "description": v} for k, v in PATTERNS.items()],
+    }
+
+
 @router.get("/{symbol}")
 async def detect_patterns(
     symbol: str,
@@ -233,7 +242,6 @@ async def detect_patterns(
                 result["price"] = bar.get("close", 0)
                 found.append(result)
 
-    # 按日期倒序，每种形态只保留最新一个
     found.sort(key=lambda x: x.get("date", ""), reverse=True)
     seen_names = set()
     unique = []
@@ -248,13 +256,4 @@ async def detect_patterns(
         "count": len(found),
         "data_points": len(kline_data),
         "updated_at": datetime.now().isoformat(),
-    }
-
-
-@router.get("/list")
-async def list_patterns():
-    """列出所有支持的K线形态"""
-    return {
-        "total": len(PATTERNS),
-        "patterns": [{"name": k, "description": v} for k, v in PATTERNS.items()],
     }

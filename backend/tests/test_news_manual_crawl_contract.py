@@ -45,7 +45,10 @@ class NewsManualCrawlContractTests(unittest.TestCase):
         self.assertEqual(result["symbol"], "600519")
         self.assertEqual(result["count"], 0)
         self.assertEqual(result["news"], [])
+        self.assertEqual(result["sentiment_summary"], {"positive": 0, "negative": 0, "neutral": 0, "dominant": "暂无"})
         self.assertEqual(result["data_quality"]["source"], "database")
+        self.assertEqual(result["data_quality"]["status"], "empty")
+        self.assertEqual(result["data_quality"]["freshness"], "empty")
         self.assertIn("no news available", result["data_quality"]["warnings"])
 
     def test_manual_news_crawl_skips_recent_success_without_external_fetch(self) -> None:

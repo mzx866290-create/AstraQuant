@@ -87,10 +87,10 @@
         <div class="card-header" @click="goDetail(item)">
           <div class="stock-identity">
             <div class="stock-avatar">
-              <span class="avatar-text">{{ item.name?.charAt(0) }}</span>
+              <span class="avatar-text">{{ stockAvatarText(item) }}</span>
             </div>
             <div class="stock-names">
-              <h3 class="stock-name">{{ item.name }}</h3>
+              <h3 class="stock-name">{{ stockDisplayName(item) }}</h3>
               <span class="stock-symbol">{{ item.symbol }}</span>
             </div>
           </div>
@@ -364,6 +364,22 @@ function riskList(risks?: Record<string, Omit<RiskLight, 'key'>>) {
   return Object.entries(risks).map(([key, value]) => ({ key, ...value }))
 }
 
+function isPlaceholderName(value?: string) {
+  const text = (value || '').trim()
+  if (!text) return true
+  if (/^[?？\uFFFD]+$/.test(text)) return true
+  return ['unknown', 'null', 'none', 'nan'].includes(text.toLowerCase())
+}
+
+function stockDisplayName(item: WatchlistItem) {
+  if (!isPlaceholderName(item.name)) return item.name!.trim()
+  return item.symbol?.slice(0, 6) || '未知股票'
+}
+
+function stockAvatarText(item: WatchlistItem) {
+  return stockDisplayName(item).charAt(0)
+}
+
 async function confirmAdd() {
   const code = addSymbol.value.trim()
   if (code.length < 6 || !watchlistId.value) return
@@ -409,7 +425,7 @@ async function confirmImport() {
 
 function exportWatchlist() {
   const content = watchlistItems.value
-    .map((item) => [item.symbol, item.name || '', item.market || ''].join(','))
+    .map((item) => [item.symbol, stockDisplayName(item), item.market || ''].join(','))
     .join('\n')
   const blob = new Blob([`symbol,name,market\n${content}`], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -902,11 +918,26 @@ onMounted(() => {
 
   .header-actions {
     justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .header-actions .el-button {
+    flex: 1 1 calc(50% - var(--space-2));
+    min-width: 0;
   }
 
   .watchlist-grid,
   .skeleton-grid {
     grid-template-columns: 1fr;
+  }
+
+  .watch-card {
+    padding: var(--space-4);
+  }
+
+  .card-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 </style>

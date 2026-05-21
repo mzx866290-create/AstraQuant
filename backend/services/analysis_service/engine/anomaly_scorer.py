@@ -39,8 +39,9 @@ def _compute_score(item: dict) -> dict:
     vol_price = _score_volume_price(item)
     tech_pos = _score_technical_position(item)
     attention = _score_market_attention(item)
+    bucket_fit = _score_bucket_fit(item)
 
-    total = round(trend + safety + vol_price + tech_pos + attention, 1)
+    total = min(100.0, round(trend + safety + vol_price + tech_pos + attention + bucket_fit, 1))
 
     return {
         "total": total,
@@ -49,7 +50,35 @@ def _compute_score(item: dict) -> dict:
         "volume_price": round(vol_price, 1),
         "technical_position": round(tech_pos, 1),
         "market_attention": round(attention, 1),
+        "bucket_fit": round(bucket_fit, 1),
     }
+
+
+def _score_bucket_fit(item: dict) -> float:
+    bucket = item.get("observation_bucket")
+    change_pct = item.get("change_pct") or 0
+    trend = item.get("trend_features") or {}
+    quality = item.get("quality_features") or {}
+
+    if bucket == "trend_strength":
+        if -1 <= change_pct <= 5 and trend.get("recent_5d_gain", 0) <= 12:
+            return 6
+        return 3
+    if bucket == "pullback_support":
+        score = 8
+        if quality.get("controlled_pullback"):
+            score += 4
+        if -3 <= change_pct <= 1:
+            score += 3
+        return min(score, 15)
+    if bucket == "oversold_reversal":
+        score = 7
+        if change_pct >= -2:
+            score += 3
+        if 0.8 <= (item.get("vol_ratio_5d") or 1.0) <= 2.5:
+            score += 3
+        return min(score, 13)
+    return 0.0
 
 
 def _score_trend_quality(item: dict) -> float:

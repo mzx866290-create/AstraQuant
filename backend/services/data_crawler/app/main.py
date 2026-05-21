@@ -358,6 +358,14 @@ def scheduled_news_enabled() -> bool:
     return os.getenv("DATA_CRAWLER_ENABLE_SCHEDULED_NEWS", "false").strip().lower() in {"1", "true", "yes"}
 
 
+def _env_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, min_value), max_value)
+
+
 class DataCrawler:
     """Multi-source A-share data crawler."""
 
@@ -481,12 +489,30 @@ class DataCrawler:
             replace_existing=True,
         )
         self.scheduler.add_job(
+            self.collect_telegraph,
+            "cron",
+            day_of_week="0-4",
+            hour="9-15",
+            minute="*/30",
+            id="collect_telegraph",
+            replace_existing=True,
+        )
+        self.scheduler.add_job(
             self.collect_financial_reports,
             "cron",
             day="1-5",
             hour=2,
             minute=7,
             id="collect_financial_reports",
+            replace_existing=True,
+        )
+        self.scheduler.add_job(
+            self.cleanup_market_redundancy_task,
+            "cron",
+            day_of_week="0-4",
+            hour=_env_int("MARKET_REDUNDANCY_CLEANUP_HOUR", 16, min_value=0, max_value=23),
+            minute=_env_int("MARKET_REDUNDANCY_CLEANUP_MINUTE", 50, min_value=0, max_value=59),
+            id="cleanup_market_redundancy",
             replace_existing=True,
         )
 
@@ -812,6 +838,29 @@ class DataCrawler:
         finally:
             db.close()
 
+    async def collect_telegraph(self):
+        """采集财联社电报，保存到 stock_news 表（event_category='市场'）。"""
+        logger.info("[%s] collecting CLS telegraph", datetime.now())
+        from backend.shared.database import SessionLocal
+        started_at = now_utc()
+        try:
+            items = await self.news_chain.fetch_telegraph(limit=50)
+            if not items:
+                self._record_status("GLOBAL", "telegraph", "empty", started_at, source="财联社", fetched=0, saved=0)
+                return {"task": "telegraph", "fetched": 0, "saved": 0}
+            db = SessionLocal()
+            try:
+                saved = await self.news_etl.save(db, "MARKET", items)
+            finally:
+                db.close()
+            self._record_status("GLOBAL", "telegraph", "success", started_at, source="财联社", fetched=len(items), saved=saved)
+            logger.info("Telegraph collected: fetched=%s saved=%s", len(items), saved)
+            return {"task": "telegraph", "fetched": len(items), "saved": saved}
+        except Exception as exc:
+            self._record_status("GLOBAL", "telegraph", "error", started_at, error_message=str(exc))
+            logger.error("Telegraph collection failed: %s", exc)
+            return {"task": "telegraph", "error": str(exc)}
+
     def _daily_kline_target_date(self) -> str:
         configured = os.getenv("DATA_CRAWLER_DAILY_TARGET_DATE", "").strip()
         if configured:
@@ -1012,6 +1061,29 @@ class DataCrawler:
         self._record_status("GLOBAL", task_name[:30], "empty_symbol_pool", started_at, error_message=message)
         logger.warning("%s", message)
         return {"task": task_name, "status": "empty_symbol_pool", "message": message, "success": 0, "total": 0}
+
+    async def cleanup_market_redundancy_task(self):
+        started_at = now_utc()
+        logger.info("[%s] cleaning redundant market runtime data", datetime.now())
+        try:
+            from backend.services.analysis_service.engine.daily_snapshot_collector import cleanup_market_redundancy
+
+            result = await asyncio.to_thread(cleanup_market_redundancy)
+            deleted_total = sum((result.get("deleted") or {}).values())
+            self._record_status(
+                "GLOBAL",
+                "market_redundancy_cleanup",
+                "success",
+                started_at,
+                source="retention-policy",
+                fetched=0,
+                saved=deleted_total,
+            )
+            return {"task": "market_redundancy_cleanup", **result}
+        except Exception as exc:
+            self._record_status("GLOBAL", "market_redundancy_cleanup", "error", started_at, error_message=str(exc))
+            logger.error("market redundancy cleanup failed: %s", exc)
+            return {"task": "market_redundancy_cleanup", "status": "error", "error": str(exc)}
 
     def _record_status(self, symbol: str, data_type: str, status: str, started_at, **kwargs):
         metric_task_name = kwargs.pop("metric_task_name", None) or data_type

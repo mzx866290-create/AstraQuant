@@ -2,8 +2,10 @@
 行情服务 - FastAPI 入口 v2
 A股行情 / K线 / 搜索 / 板块
 """
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from contextlib import asynccontextmanager
 import uuid
 import time
@@ -30,17 +32,20 @@ dotenv_path = os.path.join(_PROJECT_ROOT, ".env")
 if not is_production() and os.path.exists(dotenv_path):
     load_dotenv(dotenv_path, override=True)
 
+from backend.shared.auth import get_current_user, get_token_from_auth
+
 # 本地运行：检测并启用 SQLite 模式
 if not is_production():
     _db_host = os.getenv("DB_HOST", "")
-    if _db_host in (None, "", "postgres"):
+    if _db_host in (None, ""):
         os.environ["DB_HOST"] = "localhost"
-    if os.getenv("USE_SQLITE", "").lower() != "true" and _db_host in (None, "", "postgres", "localhost"):
+        _db_host = "localhost"
+    if os.getenv("USE_SQLITE", "").lower() != "true" and _db_host in ("localhost", "127.0.0.1"):
         import socket
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(1)
-            if s.connect_ex(("localhost", 5432)) != 0:
+            if s.connect_ex((_db_host, 5432)) != 0:
                 os.environ["USE_SQLITE"] = "true"
             s.close()
         except Exception:
@@ -96,18 +101,67 @@ app = FastAPI(
 
 install_metrics(app, "market-service")
 
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "https://yhang.cc.cd,http://localhost:5175,http://localhost:5173",
+    ).split(",")
+    if origin.strip()
+]
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5175", "http://localhost:5173",
-        "http://localhost", "http://localhost:80",
-        "https://yhang.cc.cd",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _credentials_from_request(request: Request) -> HTTPAuthorizationCredentials | None:
+    token = get_token_from_auth(auth_header=request.headers.get("authorization"))
+    if not token:
+        return None
+    return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+
+
+PUBLIC_READ_PREFIXES = (
+    "/api/v1/stocks",
+    "/api/v1/quotes",
+    "/api/v1/kline",
+    "/api/v1/search",
+    "/api/v1/sectors",
+    "/api/v1/indices",
+    "/api/v1/announcements",
+    "/api/v1/financials",
+    "/api/v1/news",
+)
+
+
+def _is_public_read_path(request: Request) -> bool:
+    path = request.url.path
+    if request.method != "GET":
+        return False
+    if path.startswith(PUBLIC_READ_PREFIXES):
+        return True
+    return path.startswith("/api/v1/crawl/") and path.endswith("/status")
+
+
+@app.middleware("http")
+async def api_authentication(request: Request, call_next):
+    if request.method == "OPTIONS" or not request.url.path.startswith("/api/v1") or _is_public_read_path(request):
+        return await call_next(request)
+    try:
+        request.state.current_user = await get_current_user(_credentials_from_request(request))
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -156,4 +210,4 @@ async def ready_check(response: Response):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=False)
+    uvicorn.run("app.main:app", host=os.getenv("BIND_HOST", "0.0.0.0"), port=8001, reload=False)

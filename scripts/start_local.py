@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from shutil import which
 from pathlib import Path
 
 
@@ -22,10 +23,26 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 PORTS = [8001, 8002, 8003, 5175]
 PUBLIC_URL = "http://mzxstock.duckdns.org:5175/"
+DOCKER_BASE_SERVICES = ["postgres", "redis", "clickhouse"]
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=str(cwd or ROOT), capture_output=True, text=True, shell=False)
+
+
+def ensure_docker_base_services() -> None:
+    """Bring up the shared container dependencies used by the installed stack."""
+    docker = which("docker")
+    if not docker:
+        print("[warn] docker not found; skipping container startup")
+        return
+    compose = [docker, "compose", "up", "-d", *DOCKER_BASE_SERVICES]
+    print(f"[start] docker base services: {' '.join(compose)}")
+    result = _run(compose, cwd=ROOT)
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr)
+        raise SystemExit(result.returncode)
 
 
 def pids_on_port(port: int) -> set[int]:
@@ -102,6 +119,8 @@ def main() -> int:
     os.chdir(ROOT)
     print("Stock platform local startup")
     print("=" * 36)
+    ensure_docker_base_services()
+    time.sleep(3)
     stop_ports()
     time.sleep(1)
 

@@ -45,6 +45,7 @@
         v-else
         :data="watchlistStocks"
         v-loading="watchlistLoading"
+        empty-text="暂无自选股"
         stripe
         size="small"
         class="watchlist-table"
@@ -67,7 +68,7 @@
 
     <el-empty v-if="!alerts.length && !loading" description="暂无预警规则" />
 
-    <el-table v-else :data="alerts" v-loading="loading" stripe>
+    <el-table v-else :data="alerts" v-loading="loading" empty-text="暂无预警规则" stripe>
       <el-table-column prop="stock_symbol" label="股票代码" width="100" />
       <el-table-column prop="stock_name" label="股票名称" width="120" />
       <el-table-column prop="alert_type" label="预警类型" width="120">
@@ -165,6 +166,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { alertApi, watchlistApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
+import { useUserStore } from '@/stores/user'
 
 type AlertType = 'price_above' | 'price_below' | 'change_pct'
 
@@ -231,6 +233,8 @@ const formRef = ref<FormInstance>()
 const lastCheck = ref<AlertCheckSummary | null>(null)
 const checkResultMap = ref<Record<number, CheckResult>>({})
 const schedulerStatus = ref<SchedulerStatus | null>(null)
+const userStore = useUserStore()
+const canViewSchedulerStatus = computed(() => userStore.isAdmin)
 
 const form = reactive({
   stock_id: null as number | null,
@@ -256,6 +260,10 @@ async function loadAlerts() {
 }
 
 async function loadSchedulerStatus() {
+  if (!canViewSchedulerStatus.value) {
+    schedulerStatus.value = null
+    return
+  }
   try {
     schedulerStatus.value = await alertApi.getSchedulerStatus<SchedulerStatus>()
   } catch {
@@ -460,6 +468,12 @@ onMounted(() => {
 
   .header-actions {
     justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .header-actions .el-button {
+    flex: 1 1 140px;
+    min-width: 0;
   }
 }
 </style>

@@ -92,17 +92,33 @@ async def check_rate_limit(
         redis = None
         logger.warning("rate limiter cache unavailable for %s: %s", scope, exc)
 
-    if redis is None and is_production():
-        if fail_closed:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="rate limiter is unavailable",
-                headers={"Retry-After": str(retry_after)},
-            )
-        logger.warning("rate limiter running fail-open for %s because Redis is unavailable", scope)
-        return RateLimitResult(True, key, 0, limit, retry_after)
+    if redis is None:
+        if is_production():
+            if fail_closed:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="rate limiter is unavailable",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            logger.warning("rate limiter running fail-open for %s because Redis is unavailable", scope)
+            return RateLimitResult(True, key, 0, limit, retry_after)
+        count = await _increment_memory(key, window_seconds, now)
+        return RateLimitResult(count <= limit, key, count, limit, retry_after)
 
-    count = await _increment_redis(redis, key, window_seconds) if redis is not None else await _increment_memory(key, window_seconds, now)
+    try:
+        count = await _increment_redis(redis, key, window_seconds)
+    except Exception as exc:
+        logger.warning("rate limiter Redis operation failed for %s: %s", scope, exc)
+        if is_production():
+            if fail_closed:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="rate limiter is unavailable",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            logger.warning("rate limiter running fail-open for %s because Redis operation failed", scope)
+            return RateLimitResult(True, key, 0, limit, retry_after)
+        count = await _increment_memory(key, window_seconds, now)
     return RateLimitResult(count <= limit, key, count, limit, retry_after)
 
 

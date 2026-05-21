@@ -2,8 +2,10 @@
 分析服务 - FastAPI 入口
 技术分析 / 多股对比 / 综合评分 / K线形态 / AI分析
 """
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from contextlib import asynccontextmanager
 import uuid
 import time
@@ -32,14 +34,15 @@ from backend.shared.observability import database_check, install_metrics, readin
 # 本地运行：检测并启用 SQLite 模式
 if not is_production():
     _db_host = os.getenv("DB_HOST", "")
-    if _db_host in (None, "", "postgres"):
+    if _db_host in (None, ""):
         os.environ["DB_HOST"] = "localhost"
-    if os.getenv("USE_SQLITE", "").lower() != "true" and _db_host in (None, "", "postgres", "localhost"):
+        _db_host = "localhost"
+    if os.getenv("USE_SQLITE", "").lower() != "true" and _db_host in ("localhost", "127.0.0.1"):
         import socket
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(1)
-            if s.connect_ex(("localhost", 5432)) != 0:
+            if s.connect_ex((_db_host, 5432)) != 0:
                 os.environ["USE_SQLITE"] = "true"
             s.close()
         except Exception:
@@ -54,7 +57,7 @@ from api.v1.admin_users import router as admin_users_router
 from api.v1.admin_stats import router as admin_stats_router
 from api.v1.admin_logs import router as admin_logs_router
 from api.v1.ai_analysis import router as ai_analysis_router
-from backend.shared.auth import require_admin
+from backend.shared.auth import get_current_user, get_token_from_auth, require_admin
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -122,17 +125,66 @@ app = FastAPI(
 
 install_metrics(app, "analysis-service")
 
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "https://yhang.cc.cd,http://localhost:5175,http://localhost:5173",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5175", "http://localhost:5173",
-        "http://localhost", "http://localhost:80",
-        "https://yhang.cc.cd",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _credentials_from_request(request: Request) -> HTTPAuthorizationCredentials | None:
+    token = get_token_from_auth(auth_header=request.headers.get("authorization"))
+    if not token:
+        return None
+    return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+
+
+PUBLIC_READ_PREFIXES = (
+    "/api/v1/analysis/compare",
+    "/api/v1/analysis/technical",
+    "/api/v1/analysis/score",
+    "/api/v1/analysis/patterns",
+    "/api/v1/analysis/financial",
+    "/api/v1/analysis/valuation",
+    "/api/v1/analysis/reviews/recent",
+)
+
+
+def _is_public_read_path(request: Request) -> bool:
+    path = request.url.path
+    if request.method != "GET":
+        return False
+    return path == "/api/v1/analysis/public-health" or path.startswith(PUBLIC_READ_PREFIXES)
+
+
+@app.middleware("http")
+async def api_authentication(request: Request, call_next):
+    if (
+        request.method == "OPTIONS"
+        or not request.url.path.startswith("/api/v1")
+        or _is_public_read_path(request)
+    ):
+        return await call_next(request)
+    try:
+        request.state.current_user = await get_current_user(_credentials_from_request(request))
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -208,10 +260,22 @@ def _probe_http(name: str, url: str, timeout: float = 2.5) -> dict:
 
 
 def _health_urls() -> tuple[str, str, str]:
+    if os.getenv("DB_HOST") == "postgres":
+        defaults = (
+            "http://market-service:8000/health",
+            "http://user-service:8000/health",
+            "http://analysis-service:8000/health",
+        )
+    else:
+        defaults = (
+            "http://127.0.0.1:8001/health",
+            "http://127.0.0.1:8002/health",
+            "http://127.0.0.1:8003/health",
+        )
     return (
-        os.getenv("MARKET_SERVICE_HEALTH_URL", "http://127.0.0.1:8001/health"),
-        os.getenv("USER_SERVICE_HEALTH_URL", "http://127.0.0.1:8002/health"),
-        os.getenv("ANALYSIS_SERVICE_HEALTH_URL", "http://127.0.0.1:8003/health"),
+        os.getenv("MARKET_SERVICE_HEALTH_URL", defaults[0]),
+        os.getenv("USER_SERVICE_HEALTH_URL", defaults[1]),
+        os.getenv("ANALYSIS_SERVICE_HEALTH_URL", defaults[2]),
     )
 
 
@@ -255,4 +319,4 @@ async def system_health(current_user=Depends(require_admin())):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8003, reload=False)
+    uvicorn.run("app.main:app", host=os.getenv("BIND_HOST", "0.0.0.0"), port=8003, reload=False)

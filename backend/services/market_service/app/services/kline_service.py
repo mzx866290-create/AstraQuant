@@ -5,6 +5,8 @@ import math
 import random
 from typing import Optional
 
+from backend.services.market_service.app.utils.symbols import bj_legacy_920_symbol
+
 
 INTRADAY_PERIODS = {"1m", "5m", "15m", "30m", "60m"}
 AGGREGATED_PERIODS = {"1w", "1M"}
@@ -45,15 +47,20 @@ def build_data_quality(source: str, period: str, kline_data: list[dict]) -> dict
         warnings.append("local fallback kline generated from local financial data; not exchange sourced")
     if source.endswith("-aggregated"):
         warnings.append(f"{period} kline aggregated from daily source because native period source was unavailable")
+    is_stale = bool(kline_data) and ("-stale" in source or is_kline_stale(kline_data))
+    if is_stale:
+        warnings.append("kline_stale")
     if any(row.get("open") == 0 or row.get("high") == 0 or row.get("low") == 0 or row.get("close") == 0 for row in kline_data):
         warnings.append("one or more kline price fields are 0; source data may be incomplete")
 
     latest_date = kline_data[-1].get("date") if kline_data else None
+    freshness = "generated" if source == "local-fallback" else "stale" if is_stale else period
+    confidence = 0.35 if source == "local-fallback" else 0.45 if is_stale else 0.8 if source.endswith("-aggregated") else 0.9
     return data_quality(
         source=source,
         updated_at=str(latest_date) if latest_date else None,
-        freshness="generated" if source == "local-fallback" else period,
-        confidence=0.35 if source == "local-fallback" else 0.8 if source.endswith("-aggregated") else 0.9,
+        freshness=freshness,
+        confidence=confidence,
         is_fallback=source == "local-fallback",
         warnings=warnings,
         status="ok" if kline_data and not warnings else "degraded" if kline_data else "unavailable",
@@ -81,29 +88,43 @@ def data_quality(
 
 
 async def fetch_daily_kline(symbol: str, adjust: str) -> tuple[list[dict], str]:
-    try:
-        from backend.services.data_crawler.sources.sina_tencent_source import SinaTencentSource
+    stale_candidates: list[tuple[list[dict], str]] = []
+    for candidate, suffix in kline_lookup_symbols(symbol):
+        try:
+            from backend.services.data_crawler.sources.sina_tencent_source import SinaTencentSource
 
-        st = SinaTencentSource()
-        data = await st.fetch_daily_kline(symbol)
-        if data:
-            return data, "sina-tencent"
-    except Exception:
-        pass
+            st = SinaTencentSource()
+            data = await st.fetch_daily_kline(candidate)
+            if data:
+                source = f"sina-tencent{suffix}"
+                if not is_kline_stale(data):
+                    return data, source
+                stale_candidates.append((data, source))
+        except Exception:
+            pass
 
     data, source = await fetch_eastmoney_period_kline(symbol, "1d", adjust)
     if data:
-        return data, source
+        if not is_kline_stale(data):
+            return data, source
+        stale_candidates.append((data, source))
 
-    try:
-        from backend.services.data_crawler.sources.akshare_source import AKShareSource
+    for candidate, suffix in kline_lookup_symbols(symbol):
+        try:
+            from backend.services.data_crawler.sources.akshare_source import AKShareSource
 
-        ak = AKShareSource()
-        data = await ak.fetch_daily_kline(symbol, adjust=adjust)
-        if data:
-            return data, "akshare"
-    except Exception:
-        pass
+            ak = AKShareSource()
+            data = await ak.fetch_daily_kline(candidate, adjust=adjust)
+            if data:
+                source = f"akshare{suffix}"
+                if not is_kline_stale(data):
+                    return data, source
+                stale_candidates.append((data, source))
+        except Exception:
+            pass
+    if stale_candidates:
+        data, source = newest_kline_candidate(stale_candidates)
+        return data, f"{source}-stale"
     return [], "unavailable"
 
 
@@ -113,19 +134,43 @@ async def fetch_eastmoney_period_kline(
     adjust: str,
     limit: int = 500,
 ) -> tuple[list[dict], str]:
-    try:
-        from backend.services.data_crawler.sources.eastmoney_source import EastMoneySource
-
-        em = EastMoneySource()
+    stale_candidates: list[tuple[list[dict], str]] = []
+    for candidate, suffix in kline_lookup_symbols(symbol):
         try:
-            data = await em.fetch_kline(symbol, period=period, adjust=adjust, limit=limit)
-        finally:
-            await em.close()
-        if data:
-            return data, "eastmoney"
-    except Exception:
-        pass
+            from backend.services.data_crawler.sources.eastmoney_source import EastMoneySource
+
+            em = EastMoneySource()
+            try:
+                data = await em.fetch_kline(candidate, period=period, adjust=adjust, limit=limit)
+            finally:
+                await em.close()
+            if data:
+                source = f"eastmoney{suffix}"
+                if not is_kline_stale(data):
+                    return data, source
+                stale_candidates.append((data, source))
+        except Exception:
+            pass
+    if stale_candidates:
+        data, source = newest_kline_candidate(stale_candidates)
+        return data, f"{source}-stale"
     return [], "eastmoney"
+
+
+def kline_lookup_symbols(symbol: str) -> list[tuple[str, str]]:
+    alias = bj_legacy_920_symbol(symbol)
+    candidates = [(symbol, "")]
+    if alias and alias.upper() != (symbol or "").upper():
+        candidates.append((alias, "-bj920-alias"))
+    return candidates
+
+
+def newest_kline_candidate(candidates: list[tuple[list[dict], str]]) -> tuple[list[dict], str]:
+    def latest_date(item: tuple[list[dict], str]) -> date:
+        rows, _source = item
+        return parse_kline_date(rows[-1].get("date")) if rows else date.min
+
+    return max(candidates, key=latest_date)
 
 
 def aggregate_kline(rows: list[dict], period: str) -> list[dict]:
@@ -185,6 +230,15 @@ def parse_kline_date(value) -> Optional[date]:
         return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
     except ValueError:
         return None
+
+
+def is_kline_stale(rows: list[dict], max_age_days: int = 10) -> bool:
+    if not rows:
+        return False
+    latest = parse_kline_date(rows[-1].get("date"))
+    if not latest:
+        return False
+    return datetime.now().date() - latest > timedelta(days=max_age_days)
 
 
 def safe_float(value) -> Optional[float]:

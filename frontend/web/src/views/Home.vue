@@ -1,22 +1,78 @@
 <template>
   <div v-if="isLoggedIn" class="signed-home">
-    <section class="member-hero">
-      <div>
-        <span class="member-kicker">AstraQuant 工作台</span>
-        <h1>每日观察池</h1>
-        <p>登录成功后直接进入观察、复核、加入自选和设置预警的闭环流程。</p>
+    <section class="market-summary-card">
+      <div class="summary-left">
+        <div class="summary-greeting">
+          <span class="live-dot"></span>
+          <span>{{ greetingText }}</span>
+        </div>
+        <h2 class="summary-headline" v-if="marketBrief">{{ marketBrief }}</h2>
+        <h2 class="summary-headline" v-else>加载中...</h2>
+        <p class="summary-stat-line">
+          <span v-if="poolCount > 0" class="stat-item">
+            <el-icon><TrendCharts /></el-icon>
+            观察池纳入 <strong>{{ poolCount }}</strong> 只信号股
+          </span>
+          <span v-else>暂无观察池数据，请等待盘后自动刷新</span>
+          <span v-if="riskCount > 0" class="stat-item stat-risk">
+            <el-icon><Bell /></el-icon>
+            {{ riskCount }} 只有风险提示
+          </span>
+          <span v-if="poolDataDate" class="stat-item">
+            基于 <strong>{{ poolDataDate }}</strong> 收盘
+          </span>
+          <span v-if="poolTargetDate" class="stat-item">
+            用于 <strong>{{ poolTargetDate }}</strong> 观察
+          </span>
+          <span v-if="poolPhaseLabel" class="stat-item">
+            {{ poolPhaseLabel }}
+          </span>
+        </p>
       </div>
-      <div class="member-actions">
-        <el-button type="primary" :icon="Search" @click="router.push('/stocks')">
-          浏览股票
+      <div class="summary-actions">
+        <el-button type="primary" size="large" :icon="ArrowRight" @click="router.push('/recommendations')">
+          进入观察池
         </el-button>
-        <el-button :icon="Star" @click="router.push('/watchlist')">
+        <el-button size="large" :icon="Star" @click="router.push('/watchlist')">
           我的自选
         </el-button>
       </div>
     </section>
 
-    <Recommendations />
+    <section v-if="topSignals.length" class="top-signals">
+      <h3 class="section-title">观察池重点信号</h3>
+      <div class="signal-cards">
+        <article
+          v-for="(item, i) in topSignals"
+          :key="item.symbol"
+          class="signal-card"
+          role="button"
+          tabindex="0"
+          @click="router.push(`/stocks/${item.symbol}`)"
+          @keyup.enter="router.push(`/stocks/${item.symbol}`)"
+          @keyup.space.prevent="router.push(`/stocks/${item.symbol}`)"
+        >
+          <div class="signal-card-header">
+            <span class="signal-rank">#{{ i + 1 }}</span>
+            <strong>{{ item.name || item.symbol }}</strong>
+            <span class="signal-change" :class="(item.change_pct ?? 0) >= 0 ? 'up' : 'down'">
+              {{ item.change_pct != null ? ((item.change_pct >= 0 ? '+' : '') + item.change_pct.toFixed(2) + '%') : '--' }}
+            </span>
+          </div>
+          <p class="signal-summary">{{ item.summary_text || item.fallbackReason || '暂无 AI 解读' }}</p>
+        </article>
+      </div>
+      <div class="view-all-row">
+        <el-button text type="primary" :icon="ArrowRight" @click="router.push('/recommendations')">
+          查看全部 {{ poolCount }} 只
+        </el-button>
+      </div>
+    </section>
+
+    <section v-else-if="!loadingSummary" class="empty-signals">
+      <p>观察池还没有可用数据，通常在交易日 15:45 后盘后刷新。</p>
+      <el-button type="primary" plain @click="router.push('/stocks')">浏览股票</el-button>
+    </section>
   </div>
 
   <div v-else class="landing-page">
@@ -128,7 +184,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowRight,
@@ -141,12 +197,82 @@ import {
   TrendCharts,
 } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/user'
-import Recommendations from './Recommendations.vue'
+import { analysisApi } from '@/api/analysis'
+import {
+  recommendationPlainReason,
+} from '@/utils/recommendations'
 
 const router = useRouter()
 const userStore = useUserStore()
 
 const isLoggedIn = computed(() => userStore.isLoggedIn)
+
+// --- 首页摘要数据 ---
+const loadingSummary = ref(false)
+const poolCount = ref(0)
+const riskCount = ref(0)
+const marketBrief = ref('')
+const poolDataDate = ref('')
+const poolTargetDate = ref('')
+const poolPhaseLabel = ref('')
+const topSignals = ref<Array<{
+  symbol: string
+  name: string
+  score: number
+  change_pct: number | null
+  summary_text: string | null
+  fallbackReason: string
+}>>([])
+
+const greetingText = computed(() => {
+  const h = new Date().getHours()
+  if (h < 6) return '夜深了'
+  if (h < 12) return '早上好'
+  if (h < 14) return '中午好'
+  if (h < 18) return '下午好'
+  return '晚上好'
+})
+
+onMounted(async () => {
+  if (!isLoggedIn.value) return
+  loadingSummary.value = true
+  try {
+    const res = await analysisApi.getRecommendations('ALL', 20, false, 'auto', 200, false, true) as any
+    const items = res?.recommendations || []
+    poolDataDate.value = res?.data_date || items.find((r: any) => r.snapshot_date)?.snapshot_date || ''
+    poolTargetDate.value = res?.target_date || ''
+    poolPhaseLabel.value = res?.pool_phase_label || ''
+    poolCount.value = items.length
+
+    const withRisk = items.filter(
+      (r: any) => r.bear_case?.length > 0 || r.veto_result?.warnings?.length > 0
+    )
+    riskCount.value = withRisk.length
+
+    if (items.length === 0) {
+      marketBrief.value = '暂无观察信号'
+    } else if (items.length <= 5) {
+      marketBrief.value = '观察信号较少，观望为主'
+    } else if (items.length <= 15) {
+      marketBrief.value = '观察池活跃度中等'
+    } else {
+      marketBrief.value = '观察池信号丰富，注意甄别'
+    }
+
+    topSignals.value = items.slice(0, 3).map((r: any) => ({
+      symbol: r.symbol,
+      name: r.name || r.symbol,
+      score: r.score,
+      change_pct: r.change_pct ?? null,
+      summary_text: r.summary_text || null,
+      fallbackReason: recommendationPlainReason(r),
+    }))
+  } catch {
+    marketBrief.value = '数据加载失败，请稍后重试'
+  } finally {
+    loadingSummary.value = false
+  }
+})
 const observationButtonText = computed(() => (isLoggedIn.value ? '进入每日观察池' : '登录查看观察池'))
 const observationIcon = computed(() => (isLoggedIn.value ? ArrowRight : Lock))
 
@@ -209,51 +335,168 @@ function openObservationPool() {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
+  max-width: 840px;
+  margin: 0 auto;
 }
 
-.member-hero {
+/* --- 今日市场摘要卡 --- */
+.market-summary-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-5);
-  overflow: hidden;
   padding: var(--space-6);
   border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 12% 20%, rgba(226, 59, 59, 0.22), transparent 28%),
-    radial-gradient(circle at 88% 18%, rgba(22, 163, 106, 0.18), transparent 30%),
+    radial-gradient(circle at 12% 20%, rgba(226, 59, 59, 0.18), transparent 28%),
+    radial-gradient(circle at 88% 18%, rgba(22, 163, 106, 0.15), transparent 30%),
     linear-gradient(135deg, #05070d 0%, #111827 58%, #060b13 100%);
   color: #f8fafc;
-  box-shadow: 0 18px 60px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
 }
 
-.member-kicker {
-  color: rgba(248, 250, 252, 0.68);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.member-hero h1 {
-  margin: var(--space-2) 0;
-  color: #fff;
-  font-size: clamp(32px, 5vw, 54px);
-  line-height: 1.05;
-  font-weight: 900;
-}
-
-.member-hero p {
-  max-width: 640px;
-  margin: 0;
-  color: rgba(248, 250, 252, 0.78);
-  line-height: 1.7;
-}
-
-.member-actions {
+.summary-greeting {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: rgba(248, 250, 252, 0.68);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.summary-headline {
+  margin: 0 0 var(--space-2) 0;
+  font-size: clamp(22px, 3.5vw, 32px);
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.2;
+}
+
+.summary-stat-line {
+  margin: 0;
+  display: flex;
+  gap: var(--space-4);
+  font-size: 14px;
+  color: rgba(248, 250, 252, 0.78);
+}
+
+.summary-stat-line strong {
+  color: #60a5fa;
+}
+
+.stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-risk {
+  color: #fbbf24;
+}
+
+.summary-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   flex-shrink: 0;
+}
+
+/* --- Top 信号卡片 --- */
+.section-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 var(--space-3) 0;
+  color: var(--color-text-primary);
+}
+
+.signal-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.signal-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  cursor: pointer;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.signal-card:hover {
+  border-color: #409eff;
+  box-shadow: 0 4px 16px rgba(64, 158, 255, 0.1);
+}
+
+.signal-card:focus-visible {
+  outline: 2px solid #409eff;
+  outline-offset: 2px;
+}
+
+.signal-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.signal-rank {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--color-text-muted);
+  background: var(--color-bg-subtle, #f0f0f0);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.signal-change {
+  margin-left: auto;
+  font-weight: 700;
+  font-size: 14px;
+  font-family: var(--font-number, monospace);
+}
+
+.signal-change.up { color: #e23b3b; }
+.signal-change.down { color: #16a36a; }
+
+.signal-summary {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--color-text-secondary);
+}
+
+.view-all-row {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-3);
+}
+
+.empty-signals {
+  text-align: center;
+  padding: var(--space-6);
+  color: var(--color-text-muted);
+}
+
+.empty-signals p {
+  margin-bottom: var(--space-3);
+}
+
+@media (max-width: 640px) {
+  .market-summary-card {
+    flex-direction: column;
+    text-align: center;
+  }
+  .summary-stat-line {
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+  }
+  .summary-actions {
+    flex-direction: row;
+  }
 }
 
 .hero-section {

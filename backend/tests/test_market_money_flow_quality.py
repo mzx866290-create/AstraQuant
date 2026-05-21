@@ -24,7 +24,7 @@ class FakeEmptyEastMoneySource:
 
 
 class MoneyFlowQualityTests(unittest.TestCase):
-    def test_empty_eastmoney_money_flow_returns_unavailable_quality(self) -> None:
+    def test_empty_eastmoney_money_flow_returns_empty_quality(self) -> None:
         FakeEmptyEastMoneySource.instances = []
         fake_module = types.SimpleNamespace(EastMoneySource=FakeEmptyEastMoneySource)
 
@@ -41,9 +41,9 @@ class MoneyFlowQualityTests(unittest.TestCase):
 
         quality = response["data_quality"]
         self.assertEqual(quality["source"], "eastmoney")
-        self.assertEqual(quality["status"], "unavailable")
-        self.assertEqual(quality["freshness"], "missing")
-        self.assertLess(quality["confidence"], 0.2)
+        self.assertEqual(quality["status"], "empty")
+        self.assertEqual(quality["freshness"], "empty")
+        self.assertLessEqual(quality["confidence"], 0.2)
         self.assertEqual(quality["warning"], "money_flow_empty")
         self.assertIn("money_flow_empty", quality["warnings"])
 

@@ -56,7 +56,7 @@
 
     <div v-if="!isLoggedIn" class="login-prompt">
       登录后可使用 AI 分析。
-      <router-link to="/login" class="btn-link">去登录</router-link>
+      <router-link :to="loginRoute" class="btn-link">去登录</router-link>
     </div>
 
     <div v-else-if="initLoading" class="loading-models">加载模型中...</div>
@@ -246,10 +246,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { analysisApi, crawlApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 import { formatDuration } from '@/utils/formatters'
+import { formatConfidenceLabel, formatQualitySource, formatQualityWarning } from '@/utils/dataQuality'
 
 const props = defineProps<{
   symbol: string
@@ -399,6 +401,8 @@ interface ReadinessDisplayItem {
   }
 }
 
+const route = useRoute()
+const router = useRouter()
 const userStore = useUserStore()
 interface MarkdownRenderer {
   render(src: string, env?: unknown): string
@@ -455,6 +459,7 @@ const renderedFollowUpAnswers = ref<Record<string, string>>({})
 let analysisTimer: number | null = null
 
 const isLoggedIn = computed(() => userStore.isLoggedIn)
+const loginRoute = computed(() => ({ path: '/login', query: { redirect: route.fullPath } }))
 const quotaAvailable = computed(() => {
   if (!quota.value) return true
   return quota.value.daily_remaining > 0 && quota.value.monthly_remaining > 0
@@ -593,7 +598,7 @@ const dataQualityWarnings = computed(() => {
     if (item.is_fallback || fallbackSource) warnings.push(`${key} 使用本地兜底数据，结论可信度需下调。`)
     if (unavailable) warnings.push(`${key} 数据不可用，相关结论可能缺失或降级。`)
     if (lowConfidence) warnings.push(`${key} 数据置信度较低，请结合原始来源复核。`)
-    ;(item.warnings || []).forEach((warning) => warnings.push(`${key}：${warning}`))
+    ;(item.warnings || []).forEach((warning) => warnings.push(`${key}：${formatQualityWarning(warning)}`))
   })
 
   return Array.from(new Set(warnings))
@@ -786,8 +791,24 @@ function promptStyleLabel(value?: string) {
 
 function qualityTitle(item: ReadinessDisplayItem) {
   const q = item.quality || {}
-  const warnings = q.warnings?.length ? `；提示：${q.warnings.join('、')}` : ''
-  return `${item.message || ''}；来源：${q.source || '未知'}；置信度：${q.confidence || 'unknown'}${warnings}`
+  const warnings = q.warnings?.length ? `；提示：${q.warnings.map(formatQualityWarning).join('、')}` : ''
+  return `${formatReadinessMessage(item.message)}；来源：${formatQualitySource(q.source) || '未知'}；置信度：${formatConfidenceLabel(q.confidence) || '未知'}${warnings}`
+}
+
+function formatReadinessMessage(message?: string) {
+  if (!message) return ''
+  const mapping: Record<string, string> = {
+    'quote available': '行情数据可用',
+    'kline available': 'K 线数据可用',
+    'money flow available': '资金流数据可用',
+    'financial reports available': '财报数据可用',
+    'news available': '新闻数据可用',
+    'announcements available': '公告数据可用',
+    'PE/PB available': '估值指标可用',
+    'price unavailable': '价格暂不可用',
+    'PE/PB missing': '估值指标暂缺',
+  }
+  return mapping[message] || formatQualityWarning(message)
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -816,6 +837,10 @@ function stopLoadingTimer() {
     analysisTimer = null
   }
   analysisStartedAt.value = null
+}
+
+function goLogin() {
+  router.push(loginRoute.value)
 }
 
 async function loadReadiness() {
@@ -861,6 +886,7 @@ async function crawlMissing() {
 async function recoverMissingData() {
   if (!isLoggedIn.value) {
     ElMessage.warning('请先登录后补全数据')
+    goLogin()
     return
   }
   await loadReadiness()
@@ -930,6 +956,7 @@ async function loadData() {
 async function startAnalysis() {
   if (!isLoggedIn.value) {
     ElMessage.warning('请先登录后再使用 AI 分析')
+    goLogin()
     return
   }
   if (!selectedModelId.value) {

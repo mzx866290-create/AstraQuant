@@ -7,19 +7,28 @@
     >
       {{ risk }}
     </span>
-    <span v-if="quality.source" class="quality-item">来源: {{ quality.source }}</span>
+    <span v-if="quality.source" class="quality-item">来源: {{ formatQualitySource(quality.source) }}</span>
     <span v-if="quality.updated_at" class="quality-item">更新时间: {{ formatQualityTime(quality.updated_at) }}</span>
-    <span v-if="quality.freshness" class="quality-item">新鲜度: {{ quality.freshness }}</span>
-    <span v-if="quality.confidence !== undefined && quality.confidence !== null && quality.confidence !== ''" class="quality-item">置信度: {{ formatConfidence(quality.confidence) }}</span>
+    <span v-if="quality.freshness" class="quality-item">新鲜度: {{ formatFreshness(quality.freshness) }}</span>
+    <span v-if="quality.confidence !== undefined && quality.confidence !== null && quality.confidence !== ''" class="quality-item">置信度: {{ formatConfidenceLabel(quality.confidence) }}</span>
     <span v-for="warning in qualityWarnings(quality)" :key="warning" class="quality-warning">
-      {{ warning }}
+      {{ formatQualityWarning(warning) }}
     </span>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { formatConfidence, formatQualityTime, qualityRiskTags, qualityWarnings, type DataQualityItem } from '@/utils/dataQuality'
+import {
+  formatConfidenceLabel,
+  formatFreshness,
+  formatQualitySource,
+  formatQualityTime,
+  formatQualityWarning,
+  qualityRiskTags,
+  qualityWarnings,
+  type DataQualityItem,
+} from '@/utils/dataQuality'
 
 const props = defineProps<{
   quality: DataQualityItem | null

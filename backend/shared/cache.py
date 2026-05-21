@@ -81,6 +81,7 @@ def cache_category_for_kline_period(period: str) -> str:
 redis_client: Optional[Any] = None
 _redis_unavailable = False
 _fallback_memory: dict = {}
+_MEMORY_CACHE_MAX_SIZE = 2000
 
 
 async def init_redis():
@@ -160,6 +161,15 @@ class CacheManager:
                 pass
         # 内存缓存降级
         import time
+        if len(self._memory) >= _MEMORY_CACHE_MAX_SIZE:
+            now = time.time()
+            expired_keys = [k for k, v in self._memory.items() if now >= v["expires"]]
+            for k in expired_keys:
+                del self._memory[k]
+            if len(self._memory) >= _MEMORY_CACHE_MAX_SIZE:
+                oldest_keys = sorted(self._memory, key=lambda k: self._memory[k]["expires"])[:len(self._memory) // 4]
+                for k in oldest_keys:
+                    del self._memory[k]
         self._memory[key] = {
             "value": value,
             "expires": time.time() + effective_ttl.total_seconds(),

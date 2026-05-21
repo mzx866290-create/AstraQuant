@@ -28,7 +28,7 @@
       <div>暂无公告</div>
       <small v-if="emptyReason">{{ emptyReason }}</small>
       <el-button size="small" type="primary" :loading="crawling" @click="crawlCurrentAnnouncements">
-        立即采集 {{ props.symbol }} 公告
+        {{ isLoggedIn ? `立即采集 ${props.symbol} 公告` : '登录后采集公告' }}
       </el-button>
     </div>
 
@@ -57,9 +57,12 @@
 
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { safeOpen } from '@/utils/safeOpen'
 import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
 import { crawlStatusLevel, crawlStatusReason, formatCrawlError, formatCrawlStatus, pickDataQuality, type CrawlStatus, type DataQualityItem } from '@/utils/dataQuality'
+import { useUserStore } from '@/stores/user'
 
 interface AnnouncementItem {
   id: number | string
@@ -90,7 +93,13 @@ interface AnnouncementParams {
 }
 
 const props = defineProps<{ symbol: string }>()
-const emit = defineEmits<{ crawlComplete: [] }>()
+const emit = defineEmits<{
+  crawlComplete: []
+  dataQualityChange: [quality: DataQualityItem | null, source: string]
+}>()
+const router = useRouter()
+const route = useRoute()
+const userStore = useUserStore()
 
 const items = ref<AnnouncementItem[]>([])
 const categoryFilter = ref('')
@@ -100,6 +109,7 @@ const crawlStatus = ref<CrawlStatus | null>(null)
 const crawlError = ref('')
 const dataQuality = ref<DataQualityItem | null>(null)
 const emptyReason = computed(() => crawlStatusReason(crawlStatus.value))
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 
 async function fetchAnnouncements() {
   loading.value = true
@@ -110,17 +120,23 @@ async function fetchAnnouncements() {
     const resp = await api.get<AnnouncementsResponse>(`/api/v1/announcements/${props.symbol}`, { params })
     items.value = resp.announcements || []
     dataQuality.value = pickDataQuality(resp.data_quality, 'announcements')
+    emit('dataQualityChange', dataQuality.value, dataQuality.value?.source || '')
     await loadCrawlStatus()
   } catch (e) {
     console.error('获取公告失败:', e)
     items.value = []
     dataQuality.value = null
+    emit('dataQualityChange', null, '')
   } finally {
     loading.value = false
   }
 }
 
 async function loadCrawlStatus() {
+  if (!isLoggedIn.value) {
+    crawlStatus.value = null
+    return
+  }
   try {
     const { crawlApi } = await import('@/api')
     const resp = await crawlApi.getCrawlStatus<CrawlStatusResponse>(props.symbol)
@@ -131,6 +147,12 @@ async function loadCrawlStatus() {
 }
 
 async function crawlCurrentAnnouncements() {
+  if (!isLoggedIn.value) {
+    crawlError.value = ''
+    ElMessage.warning('请先登录后采集公告')
+    router.push({ path: '/login', query: { redirect: route.fullPath } })
+    return
+  }
   crawling.value = true
   crawlError.value = ''
   try {

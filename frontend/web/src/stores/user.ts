@@ -19,6 +19,7 @@ export const useUserStore = defineStore('user', () => {
   const userInfo = ref<UserInfo | null>(null)
   const initialized = ref(false)
   const fetchingMe = ref<Promise<UserInfo | null> | null>(null)
+  const fetchingMeToken = ref('')
   const fetchMeError = ref<string>('')
 
   const isLoggedIn = computed(() => !!token.value)
@@ -48,20 +49,24 @@ export const useUserStore = defineStore('user', () => {
   async function login(username: string, password: string) {
     const resp = await userApi.login(username, password)
     setToken(resp.access_token)
-    await fetchMe()
+    await fetchMe(true)
     return resp
   }
 
-  async function fetchMe() {
-    const storedToken = localStorage.getItem('access_token')
-    if (!storedToken && !token.value) {
+  async function fetchMe(force = false) {
+    const requestToken = localStorage.getItem('access_token') || token.value
+    if (!requestToken) {
       initialized.value = true
       return null
     }
-    if (fetchingMe.value) return fetchingMe.value
+    if (!force && fetchingMe.value && fetchingMeToken.value === requestToken) return fetchingMe.value
+    fetchingMeToken.value = requestToken
 
     fetchingMe.value = userApi.getProfile<UserInfo>()
       .then((resp) => {
+        if ((localStorage.getItem('access_token') || token.value) !== requestToken) {
+          return userInfo.value
+        }
         setUserInfo(resp)
         fetchMeError.value = ''
         initialized.value = true
@@ -70,7 +75,9 @@ export const useUserStore = defineStore('user', () => {
       .catch((error) => {
         const status = (error as { response?: { status?: number } })?.response?.status
         if (status === 401 || status === 403) {
-          logout()
+          if ((localStorage.getItem('access_token') || token.value) === requestToken) {
+            logout()
+          }
           initialized.value = true
           return null
         }
@@ -80,7 +87,10 @@ export const useUserStore = defineStore('user', () => {
         throw error
       })
       .finally(() => {
-        fetchingMe.value = null
+        if (fetchingMeToken.value === requestToken) {
+          fetchingMe.value = null
+          fetchingMeToken.value = ''
+        }
       })
 
     return fetchingMe.value

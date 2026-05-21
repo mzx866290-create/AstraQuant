@@ -1,5 +1,4 @@
 @import './tokens.css';
-@import './notifications.css';
 
 * {
   box-sizing: border-box;
@@ -175,5 +174,27 @@ html {
 
   .el-card.dashboard-card > .el-card__body {
     padding: var(--space-4);
+  }
+}
+
+@media (max-width: 640px) {
+  .el-dialog {
+    width: calc(100vw - 24px) !important;
+    max-width: 520px;
+  }
+
+  .el-dialog__body,
+  .el-dialog__footer {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .el-segmented {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .el-segmented::-webkit-scrollbar {
+    display: none;
   }
 }

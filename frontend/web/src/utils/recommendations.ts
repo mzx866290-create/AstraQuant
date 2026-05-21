@@ -23,6 +23,7 @@ export interface RecommendationCapitalFlowFeatures {
   positive_days?: number
   sample_size?: number
   updated_at?: string
+  snapshot_date?: string | null
   warnings?: string[]
 }
 
@@ -89,6 +90,7 @@ export interface RecommendationItem {
   total_mv?: number | string | null
   industry_themes?: string[]
   updated_at?: string
+  snapshot_date?: string | null
   candidate_source?: string
   source?: string
   warnings?: string[]
@@ -201,6 +203,23 @@ export interface RecommendationItem {
     vetoes?: RiskVetoItem[]
     warnings?: RiskVetoItem[]
   }
+  summary_text?: string | null
+  // 分层与观察动作（次日作战台）
+  tier?: 'A' | 'B' | 'C' | null
+  tier_reason?: string | null
+  priority_score?: number | null
+  observation_action?: string | null
+  observation_bucket?: string | null
+  observation_bucket_label?: string | null
+  trigger_condition?: string | null
+  invalidation_condition?: string | null
+  risk_warning?: string | null
+  chase_high_penalty?: {
+    original_score?: number
+    penalized_score?: number
+    multiplier?: number
+    reason?: string
+  } | null
 }
 
 export interface RecommendationsResponse {
@@ -258,6 +277,24 @@ export interface RecommendationsResponse {
   disclaimer?: string
   cache_hit?: boolean
   updated_at?: string
+  data_date?: string | null
+  data_date_note?: string
+  target_date?: string | null
+  target_date_note?: string
+  pool_phase?: string
+  pool_phase_label?: string
+  pool_phase_message?: string
+  pool_recovery?: boolean
+  pool_recovery_reason?: string
+  news_enriched_count?: number
+  pool_summary?: {
+    pool_style?: string
+    recommended_strategy?: string
+    biggest_risk?: string
+    tier_counts?: { A?: number; B?: number; C?: number }
+    action_counts?: Record<string, number>
+    highlight_symbols?: Array<{ symbol: string; name: string; action: string }>
+  }
 }
 
 export type RecommendationTrustLevel = 'stable' | 'warning' | 'blocked'
@@ -280,6 +317,29 @@ export function ratingTag(level?: string): TagProps['type'] {
   if (level === 'A') return 'success'
   if (level === 'B') return 'primary'
   if (level === 'C') return 'warning'
+  return 'info'
+}
+
+export function tierTag(tier?: string | null): TagProps['type'] {
+  if (tier === 'A') return 'success'
+  if (tier === 'B') return 'primary'
+  if (tier === 'C') return 'info'
+  return 'info'
+}
+
+export function tierLabel(tier?: string | null): string {
+  if (tier === 'A') return 'A档｜优先观察'
+  if (tier === 'B') return 'B档｜条件观察'
+  if (tier === 'C') return 'C档｜低优先级'
+  return '待分层'
+}
+
+export function observationActionTag(action?: string | null): TagProps['type'] {
+  if (action === '回踩承接') return 'success'
+  if (action === '放量突破') return 'warning'
+  if (action === '缩量企稳') return 'primary'
+  if (action === '只看不追') return 'info'
+  if (action === '消息验证') return 'warning'
   return 'info'
 }
 
@@ -328,7 +388,7 @@ export function recommendationPlainReason(row: RecommendationItem): string {
     .slice(0, 3)
     .map((item) => BREAKDOWN_PLAIN_LABELS[item.key] || item.label)
   const unique = Array.from(new Set(positives))
-  if (unique.length >= 2) return `${unique.join('、')}表现较好，系统把它列入今日观察池。`
+  if (unique.length >= 2) return `${unique.join('、')}表现较好，系统把它列入每日观察池。`
   if (unique.length === 1) return `${unique[0]}是主要入选线索，适合继续核查走势和风险。`
   if (row.bull_case?.[0]?.argument) return row.bull_case[0].argument
   return '当前有观察信号，但强度不突出，建议先作为跟踪线索。'
@@ -563,8 +623,8 @@ export function recommendationEmptyReason(meta: RecommendationsResponse | null |
 export function recommendationRowWarnings(row: RecommendationItem, metaSource?: string) {
   const warnings = Array.isArray(row.warnings) ? [...row.warnings] : []
   if (isFallbackCandidate(row, metaSource)) warnings.unshift('开发兜底候选')
-  if (row.data_grade?.grade) warnings.push(`数据等级 ${row.data_grade.grade}：${row.data_grade.label || '未说明'}`)
-  if (row.data_grade?.analysis_scope) warnings.push(row.data_grade.analysis_scope)
+  if (row.data_grade?.grade && row.data_grade.grade !== 'A') warnings.push(`数据等级 ${row.data_grade.grade}：${row.data_grade.label || '未说明'}`)
+  if (row.data_grade?.grade && row.data_grade.grade !== 'A' && row.data_grade?.analysis_scope) warnings.push(row.data_grade.analysis_scope)
   if (Array.isArray(row.data_grade?.warnings)) warnings.push(...row.data_grade.warnings)
   if (Array.isArray(row.veto_result?.warnings)) warnings.push(...row.veto_result.warnings.map((item) => item.detail || item.type || '').filter(Boolean))
   return Array.from(new Set(warnings.filter(Boolean)))

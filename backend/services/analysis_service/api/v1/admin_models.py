@@ -121,45 +121,29 @@ async def test_model(
     from backend.shared.auth import decrypt_api_key
     api_key = decrypt_api_key(model.api_key_encrypted)
 
-    # 简单的连通性测试
     try:
-        if model.provider == "openai":
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key, base_url=model.api_base_url or None)
-            response = client.chat.completions.create(
-                model=model.model_id,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_tokens=5,
-            )
-            audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:success")
-            db.commit()
-            return {"status": "success", "message": "连接成功", "response": "OK"}
-        elif model.provider == "anthropic":
-            from anthropic import Anthropic
-            client = Anthropic(api_key=api_key)
-            response = client.messages.create(
-                model=model.model_id,
-                max_tokens=5,
-                messages=[{"role": "user", "content": "Hi"}],
-            )
-            audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:success")
-            db.commit()
-            return {"status": "success", "message": "连接成功", "response": "OK"}
-        elif model.provider == "deepseek":
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key, base_url=model.api_base_url or "https://api.deepseek.com")
-            response = client.chat.completions.create(
-                model=model.model_id,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_tokens=5,
-            )
-            audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:success")
-            db.commit()
-            return {"status": "success", "message": "连接成功", "response": "OK"}
-        else:
-            audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:unsupported")
-            db.commit()
-            return {"status": "error", "message": f"不支持的 provider: {model.provider}"}
+        from backend.services.analysis_service.engine.ai_client import ai_client
+
+        result = await ai_client.analyze(
+            provider=model.provider,
+            model_id=model.model_id,
+            api_key=api_key,
+            api_base_url=model.api_base_url,
+            config={"max_tokens": 16, "timeout": 20, "max_retries": 0},
+            system_prompt="你是模型连通性测试器，只回复 OK。",
+            user_prompt="请回复 OK",
+        )
+        content = (result.get("content") or "").strip()
+        if not content:
+            raise RuntimeError("模型返回为空")
+        audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:success")
+        db.commit()
+        return {
+            "status": "success",
+            "message": "连接成功",
+            "response": content[:80],
+            "latency_ms": result.get("response_time_ms"),
+        }
     except Exception as e:
         audit_log(db, action="admin.model_test", actor=current_user, request=request, target=f"model:{model_id}:error")
         db.commit()

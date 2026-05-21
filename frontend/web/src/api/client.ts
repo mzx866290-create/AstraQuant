@@ -16,6 +16,7 @@ export const normalizeApiBaseUrl = (value?: string | null): string => (value || 
 export const isDirectServiceBaseUrl = (value?: string | null): boolean => {
   const normalized = normalizeApiBaseUrl(value)
   if (!normalized) return false
+  if (normalized.startsWith('/')) return false
 
   try {
     const parsed = new URL(normalized, window.location.origin)
@@ -65,6 +66,28 @@ const redirectToLogin = () => {
   window.location.replace(`/login?redirect=${encodeURIComponent(currentPath)}`)
 }
 
+const shouldRedirectOnUnauthorized = (error: {
+  config?: { url?: unknown; headers?: Record<string, unknown> }
+  response?: { status?: number }
+}) => {
+  if (error.response?.status !== 401) return false
+  const requestUrl = String(error.config?.url || '')
+  if (requestUrl.includes('/api/v1/auth/login') || requestUrl.includes('/api/v1/auth/register')) {
+    return false
+  }
+
+  const requestHadToken = Boolean(error.config?.headers?.Authorization)
+  const storedToken = Boolean(localStorage.getItem('access_token'))
+  const isSessionProbe = requestUrl.includes('/api/v1/auth/me')
+  return requestHadToken || storedToken || isSessionProbe
+}
+
+const getRequestBearerToken = (headers?: Record<string, unknown>) => {
+  const auth = String(headers?.Authorization || headers?.authorization || '')
+  const match = auth.match(/^Bearer\s+(.+)$/i)
+  return match?.[1] || ''
+}
+
 axiosInstance.interceptors.request.use(
   (config) => {
     config.baseURL = getBaseURL()
@@ -80,10 +103,13 @@ axiosInstance.interceptors.request.use(
 axiosInstance.interceptors.response.use(
   (response) => response.data,
   async (error) => {
-    const requestUrl = String(error.config?.url || '')
-    if (error.response?.status === 401 && !requestUrl.includes('/api/v1/auth/login')) {
-      clearAuthState()
-      redirectToLogin()
+    if (shouldRedirectOnUnauthorized(error)) {
+      const failedToken = getRequestBearerToken(error.config?.headers)
+      const currentToken = localStorage.getItem('access_token') || ''
+      if (!failedToken || failedToken === currentToken) {
+        clearAuthState()
+        redirectToLogin()
+      }
     }
     return Promise.reject(error)
   },

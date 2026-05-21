@@ -23,11 +23,26 @@ class SinaTencentSource(BaseDataSource):
         super().__init__(name="Sina/Tencent", priority=3)
 
     def _code(self, symbol: str) -> str:
-        return symbol[:6]
+        match = re.search(r"\d{6}", (symbol or "").upper())
+        return match.group(0) if match else ""
+
+    def _market(self, symbol: str) -> str:
+        text = (symbol or "").strip().upper()
+        code = self._code(text)
+        if text.endswith(".BJ") or text.startswith("BJ"):
+            return "BJ"
+        if text.endswith(".SH") or text.endswith(".SS") or text.startswith("SH"):
+            return "SH"
+        if text.endswith(".SZ") or text.startswith("SZ"):
+            return "SZ"
+        if code.startswith(("4", "8", "920")):
+            return "BJ"
+        if code.startswith(("5", "6", "9")):
+            return "SH"
+        return "SZ"
 
     def _market_prefix(self, symbol: str) -> str:
-        code = self._code(symbol)
-        return "sh" if code.startswith(("5", "6", "9")) else "sz"
+        return self._market(symbol).lower()
 
     def _tencent_symbol(self, symbol: str) -> str:
         return f"{self._market_prefix(symbol)}{self._code(symbol)}"
@@ -98,7 +113,7 @@ class SinaTencentSource(BaseDataSource):
             timeout=12,
         )
         resp.raise_for_status()
-        text = resp.text.strip()
+        text = resp.content.decode("gbk", errors="ignore").strip()
         match = re.search(r'="(.*)"', text)
         if not match:
             raise RuntimeError(f"Tencent quote response is empty for {symbol}")
@@ -135,8 +150,8 @@ class SinaTencentSource(BaseDataSource):
             "turnover": f(37) * 10000,        # ten-thousand yuan -> yuan.
             "turnover_rate": f(38),
             "pe_ttm": f(39),
-            "total_mv": f(44) * 100000000,
-            "circ_mv": f(45) * 100000000,
+            "total_mv": f(45) * 100000000,
+            "circ_mv": f(44) * 100000000,
             "pb": f(46),
             "timestamp": formatted_time,
             "source": "tencent",

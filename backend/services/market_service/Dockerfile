@@ -10,13 +10,16 @@ RUN apt-get update && apt-get install -y \
 
 # 复制项目文件
 COPY backend/services/market_service/requirements.txt .
-COPY backend/shared ../shared
-COPY backend/shared /backend/shared
-COPY backend/services /backend/services
 
 # 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY backend/shared ../shared
+COPY backend/shared /backend/shared
+COPY backend/services /backend/services
+COPY alembic.ini ./alembic.ini
+COPY backend/migrations ./backend/migrations
+COPY backend/shared ./backend/shared
 COPY backend/services/market_service/app ./app
 
 # 健康检查

@@ -74,7 +74,7 @@ def normalize_stock_master_row(row: dict) -> dict | None:
     if market not in {"SH", "SZ", "BJ"}:
         return None
     return {
-        "symbol": code,
+        "symbol": f"{code}.{market}",
         "name": name,
         "market": market,
         "sector": str(row.get("sector") or "").strip() or None,
@@ -112,12 +112,16 @@ class StockMasterETL:
         updated = 0
         now = datetime.now(timezone.utc)
         for row in normalized:
-            stock = by_code.get(row["symbol"])
+            code = _stock_code(row["symbol"])
+            stock = by_code.get(code)
             if stock is None:
                 db.add(Stock(**row, updated_at=now))
                 inserted += 1
                 continue
             changed = False
+            if stock.symbol != row["symbol"]:
+                stock.symbol = row["symbol"]
+                changed = True
             for field in ("name", "market", "sector", "list_date", "is_active"):
                 value = row[field]
                 if getattr(stock, field) != value:

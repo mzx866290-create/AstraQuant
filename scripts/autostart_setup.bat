@@ -2,8 +2,8 @@
 REM 注册 Windows 任务计划：开机自动启动股票平台本地服务
 REM 以管理员身份运行此脚本
 
-set PYTHON_EXE=python
-set SCRIPT_PATH=%~dp0start_local.py
+set POWERSHELL_EXE=powershell
+set SCRIPT_PATH=%~dp0start_docker_stack.ps1
 set TASK_NAME=StockPlatformAutoStart
 set WORK_DIR=%~dp0..
 
@@ -22,10 +22,10 @@ schtasks /Delete /TN "%TASK_NAME%" /F >nul 2>&1
 REM 创建任务：用户登录时触发，延迟30秒启动（等网络就绪）
 schtasks /Create ^
   /TN "%TASK_NAME%" ^
-  /TR "\"%PYTHON_EXE%\" \"%SCRIPT_PATH%\"" ^
+  /TR "\"%POWERSHELL_EXE%\" -NoProfile -ExecutionPolicy Bypass -File \"%SCRIPT_PATH%\"" ^
   /SC ONLOGON ^
-  /DELAY 0000:30 ^
-  /RL HIGHEST ^
+  /DELAY 0001:30 ^
+  /RL LIMITED ^
   /F
 
 if %ERRORLEVEL% EQU 0 (

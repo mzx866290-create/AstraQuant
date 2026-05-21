@@ -101,7 +101,7 @@ async def get_announcements(
                 confidence=0.85 if items else 0.2,
                 is_fallback=live_loaded,
                 warnings=warnings,
-                status="ok" if items else "unavailable",
+                status="ok" if items else "empty",
             ),
         }
     finally:

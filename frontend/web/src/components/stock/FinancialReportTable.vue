@@ -16,15 +16,15 @@
 
     <div v-if="loading" class="loading">加载中...</div>
     <div v-else-if="!reports.length" class="empty">
-      <div>暂无财报数据，请先运行数据采集</div>
+      <div>{{ isLoggedIn ? '暂无财报数据，请先运行数据采集' : '暂无财报数据，登录后可尝试采集补全' }}</div>
       <small v-if="emptyReason">{{ emptyReason }}</small>
       <el-button size="small" type="primary" :loading="crawling" @click="crawlCurrentFinancials">
-        立即采集 {{ props.symbol }} 财报
+        {{ isLoggedIn ? `立即采集 ${props.symbol} 财报` : '登录后采集财报' }}
       </el-button>
     </div>
 
     <div v-else class="table-wrapper">
-      <el-table :data="reports" size="small" stripe>
+      <el-table :data="reports" size="small" stripe empty-text="暂无财报数据">
         <el-table-column prop="report_date" label="报告期" width="110">
           <template #default="{ row }">
             {{ row.report_date?.slice(0, 10) }}
@@ -92,8 +92,11 @@
 
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
 import { crawlStatusLevel, crawlStatusReason, formatCrawlError, formatCrawlStatus, pickDataQuality, type CrawlStatus, type DataQualityItem } from '@/utils/dataQuality'
+import { useUserStore } from '@/stores/user'
 
 interface FinancialReport {
   report_date?: string
@@ -127,7 +130,13 @@ interface CrawlFinancialsResponse {
 
 
 const props = defineProps<{ symbol: string }>()
-const emit = defineEmits<{ crawlComplete: [] }>()
+const emit = defineEmits<{
+  crawlComplete: []
+  dataQualityChange: [quality: DataQualityItem | null, source: string]
+}>()
+const router = useRouter()
+const route = useRoute()
+const userStore = useUserStore()
 
 const reports = ref<FinancialReport[]>([])
 const loading = ref(false)
@@ -136,6 +145,7 @@ const crawlStatus = ref<CrawlStatus | null>(null)
 const crawlError = ref('')
 const dataQuality = ref<DataQualityItem | null>(null)
 const emptyReason = computed(() => crawlStatusReason(crawlStatus.value))
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 
 async function fetchFinancials() {
   loading.value = true
@@ -144,17 +154,23 @@ async function fetchFinancials() {
     const resp = await api.get<FinancialsResponse>(`/api/v1/financials/${props.symbol}`)
     reports.value = (resp.reports || []).slice(0, 8)
     dataQuality.value = pickDataQuality(resp.data_quality, 'financial')
+    emit('dataQualityChange', dataQuality.value, dataQuality.value?.source || '')
     await loadCrawlStatus()
   } catch (e) {
     console.error('获取财报失败:', e)
     reports.value = []
     dataQuality.value = null
+    emit('dataQualityChange', null, '')
   } finally {
     loading.value = false
   }
 }
 
 async function loadCrawlStatus() {
+  if (!isLoggedIn.value) {
+    crawlStatus.value = null
+    return
+  }
   try {
     const { crawlApi } = await import('@/api')
     const resp = await crawlApi.getCrawlStatus<CrawlStatusResponse>(props.symbol)
@@ -165,6 +181,12 @@ async function loadCrawlStatus() {
 }
 
 async function crawlCurrentFinancials() {
+  if (!isLoggedIn.value) {
+    crawlError.value = ''
+    ElMessage.warning('请先登录后采集财报')
+    router.push({ path: '/login', query: { redirect: route.fullPath } })
+    return
+  }
   crawling.value = true
   crawlError.value = ''
   try {

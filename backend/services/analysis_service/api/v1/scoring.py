@@ -3,7 +3,7 @@ A股综合评分 API — 多维度股票评分模型
 评分维度: 动量/技术/价值/质量/情绪
 所有维度优先使用真实数据，数据不足时明确返回不足原因，不生成随机数据
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import os
 
 from fastapi import APIRouter, Query, HTTPException, Request
@@ -79,6 +79,169 @@ def _query_default(value, fallback):
     if default is not None:
         return default
     return fallback if value is None else value
+
+
+def _next_weekday(value: date) -> date:
+    candidate = value + timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _observation_target_date(data_date: str | None) -> str | None:
+    if not data_date:
+        return None
+    try:
+        return _next_weekday(date.fromisoformat(data_date)).isoformat()
+    except ValueError:
+        return None
+
+
+def _has_news_impact(row) -> bool:
+    chain = row.evidence_chain_json or []
+    if not isinstance(chain, list):
+        return False
+    return any(isinstance(item, dict) and item.get("factor") == "news_impact_agent" for item in chain)
+
+
+def _is_recovery_pool(rows: list) -> bool:
+    return any(getattr(row, "strategy_id", None) == "snapshot_fast_recovery" for row in rows or [])
+
+
+def _prefer_formal_pool(query, model):
+    formal_query = query.filter(model.strategy_id != "snapshot_fast_recovery")
+    return formal_query if formal_query.first() is not None else query
+
+
+def _observation_bucket_from_factor_snapshot(factor_snapshot) -> str:
+    if isinstance(factor_snapshot, list):
+        return "trend_strength"
+    if not isinstance(factor_snapshot, dict):
+        return "trend_strength"
+    return str(factor_snapshot.get("observation_bucket") or "trend_strength")
+
+
+def _rebalance_rows_by_observation_bucket(rows: list, limit: int) -> list:
+    if not rows:
+        return []
+    caps = {
+        "trend_strength": max(1, int(limit * 0.65)),
+        "pullback_support": max(1, int(limit * 0.30)),
+        "oversold_reversal": max(1, int(limit * 0.20)),
+    }
+    selected = []
+    overflow = []
+    counts: dict[str, int] = {}
+    for row in rows:
+        bucket = _observation_bucket_from_factor_snapshot(row.factor_snapshot_json)
+        count = counts.get(bucket, 0)
+        if count < caps.get(bucket, limit):
+            selected.append(row)
+            counts[bucket] = count + 1
+        else:
+            overflow.append(row)
+    return (selected + overflow)[:limit]
+
+
+def _pool_phase_metadata(
+    *,
+    data_date: str | None,
+    target_date: str | None,
+    pipeline_status: str,
+    rows: list,
+    now: datetime | None = None,
+) -> dict:
+    if not rows or not data_date:
+        return {
+            "pool_phase": "empty",
+            "pool_phase_label": "暂无观察池",
+            "pool_phase_message": "当前还没有可用的每日观察池。",
+            "news_enriched_count": 0,
+        }
+
+    now = now or datetime.now()
+    today = now.date()
+    data_day = date.fromisoformat(data_date)
+    target_day = date.fromisoformat(target_date) if target_date else _next_weekday(data_day)
+    enriched_count = sum(1 for row in rows if _has_news_impact(row))
+    is_recovery = _is_recovery_pool(rows)
+    weekend = today.weekday() >= 5
+
+    if is_recovery:
+        return {
+            "pool_phase": "recovery_enriched" if enriched_count else "recovery_base",
+            "pool_phase_label": "应急恢复池",
+            "pool_phase_message": (
+                f"当前观察池基于 {data_date} 收盘快照应急恢复生成"
+                f"{'，已完成资讯影响增强' if enriched_count else '，资讯影响增强尚未完成'}；"
+                "可用于临时观察，但仍需等待完整评分流水线复核。"
+            ),
+            "news_enriched_count": enriched_count,
+            "pool_recovery": True,
+            "pool_recovery_reason": "snapshot_fast_recovery",
+        }
+
+    if pipeline_status == "stale" and today > target_day:
+        return {
+            "pool_phase": "stale",
+            "pool_phase_label": "沿用旧观察池",
+            "pool_phase_message": f"当前沿用基于 {data_date} 收盘数据生成的观察池，等待下一次交易日盘后更新。",
+            "news_enriched_count": enriched_count,
+        }
+
+    if weekend and today < target_day:
+        return {
+            "pool_phase": "weekend_base",
+            "pool_phase_label": "周末基础观察池",
+            "pool_phase_message": f"周末休市期间沿用基于 {data_date} 收盘数据生成的基础观察池，资讯影响 Agent 会持续收集重大资讯，{target_date} 开盘前形成最终观察池。",
+            "news_enriched_count": enriched_count,
+        }
+
+    if today < target_day:
+        label = "资讯增强中" if enriched_count == 0 else "资讯已增强"
+        phase = "enriching" if enriched_count == 0 else "preopen_final"
+        message = (
+            f"基础观察池已基于 {data_date} 收盘数据生成，资讯影响 Agent 正在为 {target_date} 开盘前做二次筛选。"
+            if enriched_count == 0 else
+            f"观察池已结合资讯影响 Agent 完成增强，用于 {target_date} 观察。"
+        )
+        return {
+            "pool_phase": phase,
+            "pool_phase_label": label,
+            "pool_phase_message": message,
+            "news_enriched_count": enriched_count,
+        }
+
+    if today == target_day:
+        if enriched_count > 0:
+            return {
+                "pool_phase": "final",
+                "pool_phase_label": "今日观察池",
+                "pool_phase_message": f"今日观察池基于 {data_date} 收盘数据和隔夜资讯影响生成，用于 {target_date} 交易日观察。",
+                "news_enriched_count": enriched_count,
+            }
+        return {
+            "pool_phase": "base_pending_news",
+            "pool_phase_label": "基础观察池",
+            "pool_phase_message": f"当前为基于 {data_date} 收盘数据生成的基础观察池，资讯影响增强尚未完成。",
+            "news_enriched_count": enriched_count,
+        }
+
+    return {
+        "pool_phase": "base",
+        "pool_phase_label": "基础观察池",
+        "pool_phase_message": f"基于 {data_date} 收盘数据生成，用于下一交易日观察。",
+        "news_enriched_count": enriched_count,
+    }
+
+
+def _symbol_aliases(symbol: str) -> list[str]:
+    raw = str(symbol or "").strip().upper()
+    code = clean_symbol(raw)
+    aliases = [raw, code]
+    if code and "." not in raw:
+        aliases.extend([f"{code}.SH", f"{code}.SZ", f"{code}.BJ"])
+    return list(dict.fromkeys(item for item in aliases if item))
 
 
 def _append_theme_validation_evidence(evidence_chain: list[dict], theme_validation: dict, strategy: dict) -> list[dict]:
@@ -197,6 +360,30 @@ async def get_stock_score(symbol: str, request: Request = None):
         "warnings": sentiment.get("warnings", []),
         "updated_at": datetime.now().isoformat(),
     }
+
+
+@router.get("/{symbol}/observation-summary")
+async def get_observation_summary(symbol: str):
+    """查询个股最近一次观察池摘要（用于详情页 AI 解读卡片）"""
+    from backend.shared.database import SessionLocal
+    from backend.shared.models import ResearchObservation
+    from sqlalchemy import desc
+    db = SessionLocal()
+    try:
+        row = db.query(ResearchObservation).filter(
+            ResearchObservation.symbol.in_(_symbol_aliases(symbol)),
+            ResearchObservation.summary_text.isnot(None),
+        ).order_by(desc(ResearchObservation.snapshot_date)).first()
+        if not row:
+            return {"symbol": symbol, "summary_text": None, "snapshot_date": None}
+        return {
+            "symbol": symbol,
+            "summary_text": row.summary_text,
+            "score": row.score,
+            "snapshot_date": row.snapshot_date.strftime("%Y-%m-%d") if row.snapshot_date else None,
+        }
+    finally:
+        db.close()
 
 
 @router.get("/{symbol}/debate")
@@ -352,6 +539,10 @@ async def get_recommendations(
     concurrency = int(_query_default(concurrency, 16))
     initial_full_scan = bool(_query_default(initial_full_scan, False))
 
+    public_force_refresh_allowed = _bool_env("ALLOW_PUBLIC_RECOMMEND_FORCE_REFRESH", False)
+    if force_refresh and not public_force_refresh_allowed:
+        force_refresh = False
+
     if request is not None:
         ip = client_ip(request)
         await enforce_rate_limit(scope="score:recommend:ip", identity=ip, limit=10, window_seconds=60, fail_closed=False)
@@ -412,7 +603,7 @@ async def get_recommendations(
             "used": run_initial_full_scan,
             "status": initial_full_scan_status,
         }
-        await cache.set("daily_recommendations", cache_key, result)
+        await cache.set("daily_recommendations", cache_key, value=result)
         return result
 
     from backend.shared.database import SessionLocal
@@ -429,16 +620,27 @@ async def get_recommendations(
         if market != "ALL":
             query = query.filter(ResearchObservation.symbol.like(f"%.{market}"))
 
-        query = query.order_by(ResearchObservation.score.desc()).limit(limit)
+        query = _prefer_formal_pool(query, ResearchObservation)
+        query = query.order_by(ResearchObservation.score.desc()).limit(limit * 3)
         rows = query.all()
+        rows = _rebalance_rows_by_observation_bucket(rows, limit)
 
         pipeline_status = "ok"
         if not rows:
-            query = db.query(ResearchObservation)
+            latest_snapshot_date = db.query(ResearchObservation.snapshot_date)
             if market != "ALL":
-                query = query.filter(ResearchObservation.symbol.like(f"%.{market}"))
-            query = query.order_by(ResearchObservation.snapshot_date.desc(), ResearchObservation.score.desc()).limit(limit)
-            rows = query.all()
+                latest_snapshot_date = latest_snapshot_date.filter(ResearchObservation.symbol.like(f"%.{market}"))
+            latest_snapshot_date = latest_snapshot_date.order_by(ResearchObservation.snapshot_date.desc()).limit(1).scalar()
+            if latest_snapshot_date is not None:
+                query = db.query(ResearchObservation).filter(
+                    ResearchObservation.snapshot_date == latest_snapshot_date,
+                )
+                if market != "ALL":
+                    query = query.filter(ResearchObservation.symbol.like(f"%.{market}"))
+                query = _prefer_formal_pool(query, ResearchObservation)
+                query = query.order_by(ResearchObservation.score.desc()).limit(limit * 3)
+                rows = query.all()
+                rows = _rebalance_rows_by_observation_bucket(rows, limit)
             pipeline_status = "stale" if rows else "empty"
 
         symbols = [row.symbol for row in rows]
@@ -454,17 +656,36 @@ async def get_recommendations(
             change_map = {r.symbol: r.change_pct for r in snap_rows if r.change_pct is not None}
             if not name_map:
                 from backend.shared.models import Stock
-                stock_rows = db.query(Stock.symbol, Stock.name).filter(Stock.symbol.in_(symbols)).all()
-                name_map = {r.symbol: r.name or "" for r in stock_rows}
+                aliases_by_symbol = {symbol: _symbol_aliases(symbol) for symbol in symbols}
+                lookup_values = list({alias for aliases in aliases_by_symbol.values() for alias in aliases})
+                stock_rows = db.query(Stock.symbol, Stock.name).filter(Stock.symbol.in_(lookup_values)).all()
+                stock_name_by_symbol = {r.symbol: r.name or "" for r in stock_rows}
+                name_map = {
+                    symbol: next((stock_name_by_symbol[alias] for alias in aliases if stock_name_by_symbol.get(alias)), "")
+                    for symbol, aliases in aliases_by_symbol.items()
+                }
 
+        data_date = rows[0].snapshot_date.strftime("%Y-%m-%d") if rows and rows[0].snapshot_date else None
+        target_date = _observation_target_date(data_date)
+        phase_metadata = _pool_phase_metadata(
+            data_date=data_date,
+            target_date=target_date,
+            pipeline_status=pipeline_status,
+            rows=rows,
+        )
         recommendations = []
         for row in rows:
             debate_json = row.debate_json or {}
+            factor_snapshot = row.factor_snapshot_json or {}
+            # factor_snapshot 可能是旧的 list 格式（兼容）或新的 dict 格式
+            if isinstance(factor_snapshot, list):
+                factor_snapshot = {"factors": factor_snapshot}
             rec = {
                 "symbol": row.symbol,
                 "name": name_map.get(row.symbol, ""),
                 "score": row.score,
                 "strategy_id": row.strategy_id,
+                "candidate_source": "snapshot_fast_recovery" if row.strategy_id == "snapshot_fast_recovery" else "database",
                 "price": row.close_price,
                 "change_pct": change_map.get(row.symbol),
                 "score_breakdown": row.score_breakdown_json or [],
@@ -478,8 +699,33 @@ async def get_recommendations(
                 "falsification": debate_json.get("falsification", []) if include_debate else [],
                 "regime": row.regime,
                 "snapshot_date": row.snapshot_date.strftime("%Y-%m-%d") if row.snapshot_date else None,
+                "summary_text": row.summary_text or None,
+                # 新增分层/动作字段
+                "tier": factor_snapshot.get("tier"),
+                "tier_reason": factor_snapshot.get("tier_reason"),
+                "priority_score": factor_snapshot.get("priority_score"),
+                "observation_action": factor_snapshot.get("observation_action"),
+                "observation_bucket": factor_snapshot.get("observation_bucket"),
+                "observation_bucket_label": factor_snapshot.get("observation_bucket_label"),
+                "trigger_condition": factor_snapshot.get("trigger_condition"),
+                "invalidation_condition": factor_snapshot.get("invalidation_condition"),
+                "risk_warning": factor_snapshot.get("risk_warning"),
+                "chase_high_penalty": factor_snapshot.get("chase_high_penalty"),
             }
             recommendations.append(rec)
+
+        # pool_summary: 优先从 Redis 读取（pipeline 写入），fallback 实时计算
+        cached_pool_summary = {}
+        try:
+            cached_pool_summary = await cache.get("pool_summary", "latest") or {}
+        except Exception:
+            pass
+        if not cached_pool_summary and recommendations:
+            try:
+                from backend.services.analysis_service.engine.pool_summary_generator import generate_pool_summary
+                cached_pool_summary = generate_pool_summary(recommendations, {})
+            except Exception:
+                pass
 
         result = {
             "recommendations": recommendations,
@@ -487,6 +733,17 @@ async def get_recommendations(
             "market": market,
             "status": "ok",
             "pipeline_status": pipeline_status,
+            "candidate_source": "snapshot_fast_recovery" if _is_recovery_pool(rows) else "database",
+            "data_date": data_date,
+            "pool_summary": cached_pool_summary,
+            "target_date": target_date,
+            "target_date_note": "next_trading_day" if target_date else "empty",
+            **phase_metadata,
+            "data_date_note": (
+                "latest_trading_day" if pipeline_status == "stale" else
+                "current_trading_day" if pipeline_status == "ok" else
+                "empty"
+            ),
             "method": {
                 "name": "anomaly_driven_v1",
                 "description": "基于全市场量价异动筛选，定时采集+本地评分，秒级响应。",
@@ -501,7 +758,7 @@ async def get_recommendations(
             "disclaimer": "每日观察池仅用于筛选值得继续研究的标的，不是买入建议；需结合个人风险承受能力和完整信息独立判断。",
         }
         if recommendations:
-            await cache.set("daily_recommendations", cache_key, result)
+            await cache.set("daily_recommendations", cache_key, value=result)
         return result
     finally:
         db.close()

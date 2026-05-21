@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/shared /backend/shared
 COPY backend/services /backend/services
+COPY alembic.ini ./alembic.ini
+COPY backend/migrations ./backend/migrations
+COPY backend/shared ./backend/shared
 COPY backend/services/analysis_service /app
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

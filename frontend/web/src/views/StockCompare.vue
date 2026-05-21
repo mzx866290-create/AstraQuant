@@ -79,7 +79,7 @@
         </div>
       </template>
 
-      <el-table :data="indicatorRows" v-loading="loading" stripe>
+      <el-table :data="indicatorRows" v-loading="loading" empty-text="请先选择至少两只股票并点击对比" stripe>
         <el-table-column prop="symbol" label="股票" min-width="140">
           <template #default="{ row }">
             <router-link class="stock-link" :to="`/stocks/${row.symbol}`">{{ stockLabel(row.symbol) }}</router-link>
@@ -87,6 +87,17 @@
         </el-table-column>
         <el-table-column prop="latest_price" label="最新价" min-width="100" align="right">
           <template #default="{ row }">{{ formatNumber(row.latest_price) }}</template>
+        </el-table-column>
+        <el-table-column prop="status" label="数据状态" min-width="120">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="row.status.includes('不足') || row.status.includes('失败') ? 'warning' : 'info'"
+              effect="light"
+            >
+              {{ row.status }}
+            </el-tag>
+          </template>
         </el-table-column>
         <el-table-column prop="ma5" label="MA5" min-width="100" align="right">
           <template #default="{ row }">{{ formatNumber(row.ma5) }}</template>
@@ -122,6 +133,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ECharts } from 'echarts/core'
 import { analysisApi, stockApi } from '@/api'
 import { loadKLineECharts } from '@/components/charts/echartsLoader'
+import { readableApiError } from '@/utils/dataQuality'
+import { normalizeStockSymbol } from '@/utils/symbols'
 
 interface SearchResult {
   symbol: string
@@ -152,6 +165,7 @@ interface PerformanceResponse {
 
 interface IndicatorRow {
   symbol: string
+  status: string
   latest_price?: number | null
   ma5?: number | null
   ma20?: number | null
@@ -184,6 +198,7 @@ const indicatorRows = computed<IndicatorRow[]>(() => selectedSymbols.value.map((
   const performance = item.performance || {}
   return {
     symbol,
+    status: item.error || (item.data_points ? `${item.data_points} 条K线` : '待加载'),
     latest_price: item.latest_price,
     ma5: indicators.ma5,
     ma20: indicators.ma20,
@@ -195,10 +210,7 @@ const indicatorRows = computed<IndicatorRow[]>(() => selectedSymbols.value.map((
 }))
 
 function normalizeSymbol(raw: string) {
-  const value = raw.trim().toUpperCase()
-  if (!value) return ''
-  if (value.includes('.')) return value
-  return value.startsWith('6') ? `${value}.SH` : `${value}.SZ`
+  return raw.trim() ? normalizeStockSymbol(raw) : ''
 }
 
 function stockLabel(symbol: string) {
@@ -237,7 +249,7 @@ async function searchStocks(query: string) {
       symbolNames.value[item.symbol] = item.name
     }
   } catch (e) {
-    console.error('搜索股票失败', e)
+    error.value = readableApiError(e, '搜索服务暂不可用，请稍后重试')
     searchResults.value = []
   } finally {
     searchLoading.value = false
@@ -320,8 +332,7 @@ async function loadCompare() {
     await nextTick()
     renderCharts()
   } catch (e) {
-    console.error('加载多股对比失败', e)
-    error.value = '多股对比数据暂不可用，请稍后重试'
+    error.value = readableApiError(e, '多股对比数据暂不可用，请稍后重试')
   } finally {
     loading.value = false
   }

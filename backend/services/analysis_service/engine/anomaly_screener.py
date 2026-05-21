@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
 
 from sqlalchemy import text
@@ -10,11 +11,29 @@ from backend.shared.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-MIN_MARKET_CAP = 20e8
-MAX_SINGLE_DAY_GAIN = 9.0
-MAX_5D_GAIN = 15.0
-MAX_DISTANCE_MA20 = 0.15
-MIN_TREND_R2 = 0.30
+def _env_float(name: str, default: float, *, min_value: float | None = None, max_value: float | None = None) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+MIN_MARKET_CAP = _env_float("DAILY_POOL_MIN_MARKET_CAP_YI", 20.0, min_value=1.0) * 1e8
+MAX_SINGLE_DAY_GAIN = _env_float("DAILY_POOL_MAX_SINGLE_DAY_GAIN", 9.0, min_value=3.0, max_value=20.0)
+MAX_5D_GAIN = _env_float("DAILY_POOL_MAX_5D_GAIN", 15.0, min_value=5.0, max_value=40.0)
+MAX_DISTANCE_MA20 = _env_float("DAILY_POOL_MAX_DISTANCE_MA20", 0.15, min_value=0.03, max_value=0.50)
+MIN_TREND_R2 = _env_float("DAILY_POOL_MIN_TREND_R2", 0.30, min_value=0.05, max_value=0.90)
+MIN_PULLBACK_20D_GAIN = _env_float("DAILY_POOL_MIN_PULLBACK_20D_GAIN", 6.0, min_value=0.0, max_value=30.0)
+MIN_REVERSAL_5D_DROP = _env_float("DAILY_POOL_MIN_REVERSAL_5D_DROP", -10.0, min_value=-30.0, max_value=-3.0)
+
+POOL_TREND = "trend_strength"
+POOL_PULLBACK = "pullback_support"
+POOL_REVERSAL = "oversold_reversal"
 
 
 SNAPSHOT_COLUMNS = [
@@ -74,7 +93,7 @@ def _load_base_candidates(db, trade_date: str) -> list[dict]:
           AND (s.total_mv IS NULL OR s.total_mv >= :min_mv)
           AND s.name NOT LIKE '%ST%'
           AND s.change_pct < :max_gain
-          AND s.change_pct > -5.0
+          AND s.change_pct > -9.5
     """)
     rows = db.execute(stmt, {
         "td": trade_date,
@@ -91,34 +110,25 @@ def _evaluate_candidate(item: dict, hist: list[dict]) -> dict | None:
 
     item = _fill_missing_technical_fields(item, hist, close)
     ma20 = item.get("ma20") or 0
-    ma60 = item.get("ma60") or 0
+    ma60 = item.get("ma60") or item.get("ma60_proxy") or 0
     ma5 = item.get("ma5") or 0
 
-    if ma20 and ma60 and ma5:
-        if close <= ma20 or ma5 <= ma20 or ma20 <= ma60:
-            return None
+    if ma20 and ma5:
         distance_ma20 = (close - ma20) / ma20
-        if distance_ma20 < 0 or distance_ma20 > MAX_DISTANCE_MA20:
-            return None
     else:
-        distance_ma20 = 0.08
+        distance_ma20 = _short_history_distance(item, close, ma5)
         item["ma5"] = ma5 or close
-        item["ma20"] = ma20 or close / (1 + distance_ma20)
-        item["ma60"] = ma60 or item["ma20"] * 0.98
+        item["ma20"] = ma20 or (close / (1 + distance_ma20) if distance_ma20 > -0.95 else close)
+        item["ma60_proxy"] = ma60 or item["ma20"] * 0.98
         item["technical_fallback"] = "insufficient_snapshot_history"
 
     recent_5d_gain = _period_return(hist, 5, close)
     if recent_5d_gain is None:
         recent_5d_gain = item.get("change_pct") or 0
-    if recent_5d_gain > MAX_5D_GAIN:
-        return None
 
     closes_20 = [close] + [h["close"] for h in hist[:19] if h.get("close")]
     trend = _linear_regression(closes_20)
-    if trend:
-        if trend["slope_pct"] <= 0 or trend["r2"] < MIN_TREND_R2:
-            return None
-    else:
+    if not trend:
         trend = {
             "slope_pct": max(0.01, (item.get("change_pct") or 0) / 5),
             "r2": 0.35,
@@ -126,7 +136,11 @@ def _evaluate_candidate(item: dict, hist: list[dict]) -> dict | None:
         }
 
     quality = _build_quality_features(item, hist, close, distance_ma20, recent_5d_gain)
-    reasons = _build_reasons(item, trend, quality, distance_ma20)
+    bucket = _classify_observation_bucket(item, trend, quality, distance_ma20, recent_5d_gain)
+    if not bucket:
+        return None
+
+    reasons = _build_reasons(item, trend, quality, distance_ma20, bucket)
     if not reasons:
         return None
 
@@ -138,7 +152,74 @@ def _evaluate_candidate(item: dict, hist: list[dict]) -> dict | None:
     }
     item["quality_features"] = quality
     item["anomaly_reasons"] = reasons
+    item["observation_bucket"] = bucket["id"]
+    item["observation_bucket_label"] = bucket["label"]
     return item
+
+
+def _classify_observation_bucket(
+    item: dict,
+    trend: dict,
+    quality: dict,
+    distance_ma20: float,
+    recent_5d_gain: float,
+) -> dict | None:
+    close = item.get("close") or 0
+    ma5 = item.get("ma5") or 0
+    ma20 = item.get("ma20") or 0
+    ma60 = item.get("ma60") or item.get("ma60_proxy") or 0
+    change_pct = item.get("change_pct") or 0
+    roc_20 = quality.get("roc_20d")
+    vol_ratio = item.get("vol_ratio_5d") or 1.0
+    trend_ok = trend.get("slope_pct", 0) > 0 and trend.get("r2", 0) >= MIN_TREND_R2
+    ma_bullish = bool(close and ma5 and ma20 and ma60 and close > ma20 and ma5 >= ma20 and ma20 >= ma60)
+    short_history = bool(item.get("technical_fallback"))
+
+    if short_history:
+        if -0.06 <= distance_ma20 <= 0.02 and recent_5d_gain <= 3 and -5.5 <= change_pct <= 1.5:
+            return {"id": POOL_PULLBACK, "label": "回调承接"}
+        if distance_ma20 < -0.06 and recent_5d_gain <= -6 and -8.5 <= change_pct <= 2.5:
+            return {"id": POOL_REVERSAL, "label": "超跌反弹"}
+        if -0.02 <= distance_ma20 <= MAX_DISTANCE_MA20 and recent_5d_gain <= MAX_5D_GAIN:
+            return {"id": POOL_TREND, "label": "趋势强势"}
+        return None
+
+    if (
+        ma20
+        and ma60
+        and close >= ma60
+        and -0.06 <= distance_ma20 <= 0.05
+        and recent_5d_gain <= 6
+        and (roc_20 is None or roc_20 >= MIN_PULLBACK_20D_GAIN)
+        and -5.5 <= change_pct <= 2.5
+    ):
+        return {"id": POOL_PULLBACK, "label": "回调承接"}
+
+    if (
+        ma20
+        and distance_ma20 <= -0.03
+        and recent_5d_gain <= min(MIN_REVERSAL_5D_DROP, -6.0)
+        and -8.5 <= change_pct <= 4.0
+        and 0.8 <= vol_ratio <= 3.5
+    ):
+        return {"id": POOL_REVERSAL, "label": "超跌反弹"}
+
+    if (
+        ma_bullish
+        and trend_ok
+        and 0 <= distance_ma20 <= MAX_DISTANCE_MA20
+        and recent_5d_gain <= MAX_5D_GAIN
+    ):
+        return {"id": POOL_TREND, "label": "趋势强势"}
+
+    return None
+
+
+def _short_history_distance(item: dict, close: float, ma5: float) -> float:
+    if ma5:
+        return (close - ma5) / ma5
+    change_pct = item.get("change_pct") or 0
+    return change_pct / 100
 
 
 def _fill_missing_technical_fields(item: dict, hist: list[dict], close: float) -> dict:
@@ -150,6 +231,8 @@ def _fill_missing_technical_fields(item: dict, hist: list[dict], close: float) -
         item["ma20"] = sum(closes[:20]) / 20
     if not item.get("ma60") and len(closes) >= 60:
         item["ma60"] = sum(closes[:60]) / 60
+    if not item.get("ma60") and len(closes) >= 20:
+        item["ma60_proxy"] = min(closes[:20])
     if not item.get("vol_ratio_5d") and len(volumes) >= 6:
         avg_5 = _average(volumes[1:6])
         if avg_5:
@@ -202,12 +285,16 @@ def _build_quality_features(
     }
 
 
-def _build_reasons(item: dict, trend: dict, quality: dict, distance_ma20: float) -> list[str]:
-    reasons = ["线性趋势向上"]
+def _build_reasons(item: dict, trend: dict, quality: dict, distance_ma20: float, bucket: dict) -> list[str]:
+    reasons = [bucket["label"]]
     if item.get("technical_fallback"):
         reasons.append("快照历史不足")
-    else:
+    elif bucket["id"] == POOL_TREND:
         reasons.append("MA多头排列")
+    elif bucket["id"] == POOL_PULLBACK:
+        reasons.append("趋势回踩均线")
+    elif bucket["id"] == POOL_REVERSAL:
+        reasons.append("跌后反弹观察")
 
     if trend["r2"] >= 0.55:
         reasons.append("趋势稳定")

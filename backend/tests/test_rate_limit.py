@@ -25,6 +25,11 @@ class _FakeRedis:
         self.expirations[key] = ttl
 
 
+class _FailingRedis:
+    async def incr(self, key: str) -> int:
+        raise RuntimeError("redis closed")
+
+
 class RateLimitUnitTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         from backend.shared.rate_limit import reset_rate_limit_state
@@ -100,6 +105,44 @@ class RateLimitUnitTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.allowed)
         self.assertEqual(result.count, 0)
+
+    async def test_redis_operation_failure_falls_back_to_memory_in_development(self) -> None:
+        from backend.shared.rate_limit import check_rate_limit
+
+        async def fake_cache():
+            return _FakeCache(redis=_FailingRedis())
+
+        with patch.dict("os.environ", {"APP_ENV": "development"}, clear=True):
+            with patch("backend.shared.rate_limit.get_cache_manager", fake_cache):
+                result = await check_rate_limit(
+                    scope="auth:login:ip",
+                    identity="ip:redis-closed",
+                    limit=5,
+                    window_seconds=60,
+                    fail_closed=True,
+                )
+
+        self.assertTrue(result.allowed)
+        self.assertEqual(result.count, 1)
+
+    async def test_redis_operation_failure_fail_closed_in_production(self) -> None:
+        from backend.shared.rate_limit import check_rate_limit
+
+        async def fake_cache():
+            return _FakeCache(redis=_FailingRedis())
+
+        with patch.dict("os.environ", {"APP_ENV": "production"}, clear=True):
+            with patch("backend.shared.rate_limit.get_cache_manager", fake_cache):
+                with self.assertRaises(HTTPException) as ctx:
+                    await check_rate_limit(
+                        scope="auth:login:ip",
+                        identity="ip:redis-closed",
+                        limit=5,
+                        window_seconds=60,
+                        fail_closed=True,
+                    )
+
+        self.assertEqual(ctx.exception.status_code, 503)
 
     def test_identity_helpers_are_stable(self) -> None:
         from backend.shared.rate_limit import client_ip, user_identity

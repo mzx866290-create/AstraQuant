@@ -58,6 +58,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/Login.vue')
   },
   {
+    path: '/forgot-password',
+    name: 'ForgotPassword',
+    component: () => import('../views/ForgotPassword.vue')
+  },
+  {
+    path: '/reset-password',
+    name: 'ResetPassword',
+    component: () => import('../views/ResetPassword.vue')
+  },
+  {
     path: '/profile',
     name: 'Profile',
     component: () => import('../views/Profile.vue'),
@@ -85,13 +95,17 @@ const routes: RouteRecordRaw[] = [
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
-  routes
+  routes,
+  scrollBehavior(_to, _from, savedPosition) {
+    return savedPosition || { top: 0 }
+  }
 })
 
 router.beforeEach(async (to, _from, next) => {
   const userStore = useUserStore()
   const storedToken = localStorage.getItem('access_token')
-  const requiresUser = to.meta.requiresAuth || to.meta.requiresAdmin
+  const requiresUser = to.matched.some((record) => record.meta.requiresAuth || record.meta.requiresAdmin)
+  const requiresAdmin = to.matched.some((record) => record.meta.requiresAdmin)
   let profileRefreshFailed = false
 
   // 尝试恢复登录状态
@@ -105,12 +119,12 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
-  if (to.meta.requiresAuth && !userStore.isLoggedIn) {
+  if (requiresUser && !userStore.isLoggedIn) {
     next({ name: 'Login', query: { redirect: to.fullPath } })
     return
   }
 
-  if (to.meta.requiresAdmin) {
+  if (requiresAdmin) {
     if (profileRefreshFailed && userStore.isLoggedIn) {
       next({ name: 'Login', query: { redirect: to.fullPath } })
       return

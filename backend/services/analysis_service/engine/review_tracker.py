@@ -85,7 +85,7 @@ def save_observation_snapshots(
                 "score": float(item.get("score") or 0),
                 "score_breakdown_json": item.get("score_breakdown") or [],
                 "evidence_chain_json": item.get("evidence_chain") or [],
-                "factor_snapshot_json": build_factor_snapshot(item),
+                "factor_snapshot_json": _build_factor_snapshot_with_tier(item),
                 "debate_json": {
                     "bull_case": item.get("bull_case") or [],
                     "bear_case": item.get("bear_case") or [],
@@ -527,6 +527,25 @@ def _infer_direction(*values: float | None) -> str:
 
 def _factor_contribution(item: dict) -> float:
     return abs(_safe_float(item.get("weighted_delta"), 0.0)) + abs(_safe_float(item.get("evidence_impact"), 0.0)) + abs(_safe_float(item.get("score_delta"), 0.0))
+
+
+def _build_factor_snapshot_with_tier(item: dict) -> dict:
+    """构建 factor_snapshot，包含原有因子快照列表和新增分层/动作字段。"""
+    base_factors = build_factor_snapshot(item)
+    return {
+        "factors": base_factors,
+        "tier": item.get("tier"),
+        "tier_reason": item.get("tier_reason"),
+        "resonance_count": item.get("resonance_count"),
+        "priority_score": item.get("priority_score"),
+        "observation_action": item.get("observation_action"),
+        "observation_bucket": item.get("observation_bucket"),
+        "observation_bucket_label": item.get("observation_bucket_label"),
+        "trigger_condition": item.get("trigger_condition"),
+        "invalidation_condition": item.get("invalidation_condition"),
+        "risk_warning": item.get("risk_warning"),
+        "chase_high_penalty": item.get("chase_high_penalty"),
+    }
 
 
 def build_factor_snapshot(item: dict) -> list[dict]:

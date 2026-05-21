@@ -239,3 +239,15 @@ async def get_activity_log_count(
         query = query.filter(UserActivityLog.created_at <= datetime.fromisoformat(date_to))
 
     return {"total": query.scalar() or 0}
+
+
+
+@router.post("/news-enrich/trigger")
+async def trigger_news_enrich(
+    trade_date: str = None,
+    current_user=Depends(require_admin()),
+):
+    """手动触发新闻增强（管理员用）"""
+    from backend.services.analysis_service.engine.news_enricher import enrich_with_news
+    result = await enrich_with_news(trade_date)
+    return result

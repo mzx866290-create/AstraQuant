@@ -101,7 +101,12 @@
             <span><span class="status-chip" :class="qualityStatusClass(item.status)">{{ qualityStatusLabel(item.status) }}</span></span>
             <span>{{ formatNumber(item.row_count) }}</span>
             <span>{{ formatDateTime(item.updated_at) }}</span>
-            <span>{{ item.source || '-' }}</span>
+            <span>
+              {{ item.source || '-' }}
+              <small v-if="formatSourceBreakdown(item)" class="quality-source-breakdown">
+                {{ formatSourceBreakdown(item) }}
+              </small>
+            </span>
             <span>{{ item.warnings?.length ? item.warnings.join(', ') : '正常' }}</span>
           </div>
         </div>
@@ -900,6 +905,8 @@ interface DataQualityItem {
   label: string
   status: string
   source?: string | null
+  source_breakdown?: Record<string, number>
+  trade_date?: string | null
   updated_at?: string | null
   age_hours?: number | null
   row_count: number
@@ -1376,6 +1383,15 @@ function qualityStatusLabel(status?: string) {
     unknown: '未知',
   }
   return mapping[status || ''] || status || '未知'
+}
+
+function formatSourceBreakdown(item: DataQualityItem) {
+  const entries = Object.entries(item.source_breakdown || {})
+    .filter(([, count]) => Number(count) > 0)
+    .slice(0, 3)
+  if (!entries.length) return ''
+  const date = item.trade_date ? `${item.trade_date} ` : ''
+  return `${date}${entries.map(([source, count]) => `${source}:${formatNumber(count)}`).join(' / ')}`
 }
 
 function formatNumber(num?: number | null) {
@@ -1986,6 +2002,14 @@ onMounted(loadStats)
   color: var(--color-text-muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.quality-source-breakdown {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .stat-card {

@@ -55,6 +55,11 @@ export const analysisApi = {
       params: { symbols: symbols.join(','), strategy, offsets, limit_per_symbol },
     }),
 
+  getObservationSummary: (symbol: string) =>
+    api.get<{ symbol: string; summary_text: string | null; score?: number; snapshot_date?: string | null }>(
+      `/api/v1/analysis/score/${symbol}/observation-summary`
+    ),
+
   getSystemHealth: <T = unknown>() =>
     api.get<T>('/api/v1/analysis/system-health'),
 

@@ -1,5 +1,13 @@
 <template>
   <div class="stock-detail" v-loading="loading">
+    <el-alert
+      v-if="error"
+      :title="error"
+      type="error"
+      show-icon
+      closable
+      class="error-alert"
+    />
     <section class="stock-hero dashboard-card">
       <div class="stock-identity">
         <div>
@@ -33,17 +41,19 @@
       <template #default>
         <div class="data-alert-actions">
           <el-button size="small" type="warning" plain :loading="dataRecoveryLoading" @click="recoverMissingDataFromTop">
-            一键补全上下文数据
+            {{ userStore.isLoggedIn ? '一键补全上下文数据' : '登录后补全上下文数据' }}
           </el-button>
         </div>
       </template>
     </el-alert>
 
-    <div class="beginner-guide">
-      <div v-for="item in beginnerChecks" :key="item.key" class="guide-item" :class="item.level">
-        <span class="guide-label">{{ item.label }}</span>
-        <span class="guide-text">{{ item.text }}</span>
+    <div v-if="observationSummary" class="ai-summary-card">
+      <div class="ai-summary-header">
+        <el-icon class="ai-summary-icon"><DataAnalysis /></el-icon>
+        <span class="ai-summary-title">AI 投资解读</span>
+        <span class="ai-summary-date">{{ observationSummaryDate }}</span>
       </div>
+      <p class="ai-summary-body">{{ observationSummary }}</p>
     </div>
 
     <el-card class="chart-card dashboard-card" shadow="never">
@@ -56,9 +66,16 @@
           </el-radio-group>
         </div>
       </template>
-      <KLineChart v-if="chartMode === 'kline'" :symbol="symbol" />
+      <KLineChart v-if="chartMode === 'kline'" :symbol="symbol" @data-quality-change="onKlineQualityChange" />
       <TimeShareChart v-else :symbol="symbol" />
     </el-card>
+
+    <div class="content-grid news-grid">
+      <NewsFeed :symbol="rawSymbol" @crawl-complete="refreshReadiness" @data-quality-change="onNewsQualityChange" />
+      <AnnouncementTimeline :symbol="rawSymbol" @crawl-complete="refreshReadiness" @data-quality-change="onAnnouncementQualityChange" />
+    </div>
+
+    <AIAnalysisCard id="ai-analysis-section" ref="aiAnalysisCardRef" :symbol="symbol" :refresh-key="refreshKey" />
 
     <div class="content-grid two-column">
       <el-card class="dashboard-card" shadow="never">
@@ -78,7 +95,7 @@
           <el-descriptions-item label="流通市值">{{ formatMarketValue(quote.circ_mv || stockInfo.circMv) }}</el-descriptions-item>
           <el-descriptions-item label="总股本">{{ formatShares(stockInfo.totalShares) }}</el-descriptions-item>
           <el-descriptions-item label="市盈率(动)">{{ quote.pe_ttm ? quote.pe_ttm.toFixed(2) : '--' }}</el-descriptions-item>
-          <el-descriptions-item label="资料来源">{{ stockInfo.source || stockInfo.dataQuality?.source || '--' }}</el-descriptions-item>
+          <el-descriptions-item label="资料来源">{{ formatQualitySource(stockInfo.source || stockInfo.dataQuality?.source) || '--' }}</el-descriptions-item>
           <el-descriptions-item label="资料更新">{{ formatQualityTime(stockInfo.updatedAt || stockInfo.dataQuality?.updated_at) || '--' }}</el-descriptions-item>
           <el-descriptions-item label="数据质量">
             {{ profileQualityText }}
@@ -86,20 +103,13 @@
         </el-descriptions>
         <div v-if="profileWarnings.length" class="profile-quality-warnings">
           <el-tag v-for="warning in profileWarnings" :key="warning" size="small" type="warning" effect="light">
-            {{ warning }}
+            {{ formatQualityWarning(warning) }}
           </el-tag>
         </div>
       </el-card>
     </div>
 
-    <AIAnalysisCard id="ai-analysis-section" ref="aiAnalysisCardRef" :symbol="symbol" :refresh-key="refreshKey" />
-
-    <div class="content-grid news-grid">
-      <NewsFeed :symbol="rawSymbol" @crawl-complete="refreshReadiness" />
-      <AnnouncementTimeline :symbol="rawSymbol" @crawl-complete="refreshReadiness" />
-    </div>
-
-    <FinancialReportTable :symbol="rawSymbol" @crawl-complete="refreshReadiness" />
+    <FinancialReportTable :symbol="rawSymbol" @crawl-complete="refreshReadiness" @data-quality-change="onFinancialQualityChange" />
 
     <!-- Analysis panels -->
     <el-collapse v-model="activeAnalysisSections" class="analysis-collapse">
@@ -130,7 +140,10 @@
               </tbody>
             </table>
             <div v-if="techData.warnings && techData.warnings.length" class="analysis-warnings">
-              <span v-for="(w, i) in techData.warnings" :key="i" class="analysis-warning-item">⚠ {{ w }}</span>
+              <span v-for="(w, i) in techData.warnings" :key="i" class="analysis-warning-item">
+                <el-icon><WarningFilled /></el-icon>
+                {{ w }}
+              </span>
             </div>
           </template>
           <span v-else-if="techError" class="analysis-unavailable">技术评分暂不可用</span>
@@ -338,30 +351,24 @@
 
     <SourceAttributionBanner :sources="dataSources" />
     <Disclaimer />
-
-    <el-alert
-      v-if="error"
-      :title="error"
-      type="error"
-      show-icon
-      closable
-      class="error-alert"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, defineAsyncComponent, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { DataAnalysis, WarningFilled } from '@element-plus/icons-vue'
 import QuotePanel from '@/components/stock/QuotePanel.vue'
 import Disclaimer from '@/components/common/Disclaimer.vue'
 import SourceAttributionBanner from '@/components/common/SourceAttributionBanner.vue'
 import { useStockData, type QuoteData } from '@/composables/useStockData'
 import { stockApi } from '@/api'
 import { analysisApi } from '@/api/analysis'
+import { useUserStore } from '@/stores/user'
 import { formatDelta, formatMarketValue, formatPct, formatPrice, formatShares, formatSigned } from '@/utils/formatters'
-import { formatConfidence, formatQualityTime, qualityWarnings } from '@/utils/dataQuality'
+import { formatConfidenceLabel, formatQualitySource, formatQualityStatus, formatQualityTime, formatQualityWarning, qualityWarnings } from '@/utils/dataQuality'
 import type { DataQualityItem } from '@/utils/dataQuality'
+import { marketLabels, normalizeStockSymbol, parseStockSymbol, stockCode, type MarketCode } from '@/utils/symbols'
 
 const KLineChart = defineAsyncComponent(() => import('@/components/charts/KLineChart.vue'))
 const TimeShareChart = defineAsyncComponent(() => import('@/components/charts/TimeShareChart.vue'))
@@ -376,6 +383,8 @@ interface AIAnalysisCardExpose {
 }
 
 const route = useRoute()
+const router = useRouter()
+const userStore = useUserStore()
 const symbol = ref((route.params.symbol as string) || '600519.SH')
 const stockName = ref('')
 const loading = ref(false)
@@ -384,9 +393,19 @@ const quoteError = ref<string | null>(null)
 const detailError = ref<string | null>(null)
 const chartMode = ref('kline')
 const quote = reactive<Partial<QuoteData>>({})
+const klineQuality = ref<DataQualityItem | null>(null)
+const klineSource = ref('')
+const financialQuality = ref<DataQualityItem | null>(null)
+const financialSource = ref('')
+const newsQuality = ref<DataQualityItem | null>(null)
+const newsSource = ref('')
+const announcementQuality = ref<DataQualityItem | null>(null)
+const announcementSource = ref('')
 const refreshKey = ref(0)
 const aiAnalysisCardRef = ref<AIAnalysisCardExpose | null>(null)
 const dataRecoveryLoading = ref(false)
+const observationSummary = ref<string | null>(null)
+const observationSummaryDate = ref<string | null>(null)
 const stockInfo = reactive({
   name: '',
   sector: '',
@@ -423,14 +442,16 @@ interface QuotePayload {
 
 const { fetchQuote } = useStockData()
 
-const rawSymbol = computed(() => symbol.value.replace(/\.(SH|SZ|SS)$/, ''))
-const hasDetailData = computed(() => Boolean(stockInfo.name || stockInfo.sector || stockInfo.listDate))
+const rawSymbol = computed(() => stockCode(symbol.value))
 const dataSources = computed(() => ({
-  kline: quote.data_quality?.source || quote.source || '东方财富/AKShare',
-  financial: stockInfo.dataQuality?.source || stockInfo.source || (hasDetailData.value ? 'AKShare' : '暂不可用'),
-  news: '东方财富/新浪/AKShare',
-  announcements: 'AKShare/东方财富',
-  financialFreshness: stockInfo.dataQuality?.freshness || (hasDetailData.value ? 'today' : 'unavailable'),
+  kline: klineQuality.value?.source || klineSource.value || quote.data_quality?.source || quote.source || '东方财富/AKShare',
+  klineFreshness: klineQuality.value?.freshness,
+  financial: financialQuality.value?.source || financialSource.value || '暂不可用',
+  financialFreshness: financialQuality.value?.freshness || 'unavailable',
+  news: newsQuality.value?.source || newsSource.value || '暂不可用',
+  newsFreshness: newsQuality.value?.freshness || 'unavailable',
+  announcements: announcementQuality.value?.source || announcementSource.value || '暂不可用',
+  announcementsFreshness: announcementQuality.value?.freshness || 'unavailable',
 }))
 const dataAvailabilityMessage = computed(() => {
   if (quoteError.value && detailError.value) return '行情和个股基础信息暂不可用，页面数值可能为空，请稍后重试。'
@@ -439,8 +460,9 @@ const dataAvailabilityMessage = computed(() => {
   return ''
 })
 
-const marketText = ref('沪市')
-const marketClass = computed(() => marketText.value === '沪市' ? 'tag-sh' : 'tag-sz')
+const marketCode = ref<MarketCode>('SH')
+const marketText = computed(() => marketLabels[marketCode.value])
+const marketClass = computed(() => `tag-${marketCode.value.toLowerCase()}`)
 const priceClass = computed(() => {
   const value = Number(quote.change_pct)
   if (!Number.isFinite(value)) return ''
@@ -450,39 +472,43 @@ const profileWarnings = computed(() => qualityWarnings(stockInfo.dataQuality))
 const profileQualityText = computed(() => {
   const quality = stockInfo.dataQuality
   if (!quality) return '暂无质量信息'
-  const confidence = formatConfidence(quality.confidence)
-  const status = quality.status || (quality.is_fallback ? 'fallback' : 'ok')
-  return `${status}${confidence ? ` · 置信度 ${confidence}` : ''}${quality.is_fallback ? ' · 降级数据' : ''}`
+  const confidence = formatConfidenceLabel(quality.confidence)
+  const status = formatQualityStatus(quality.status || (quality.is_fallback ? 'fallback' : 'ok'))
+  const source = (quality.source || '').toLowerCase()
+  const isPublicSource = ['akshare', 'eastmoney', 'tencent', 'sina-tencent'].some((value) => source.includes(value))
+  const fallback = quality.is_fallback ? ` · ${isPublicSource ? '公开源补充' : '降级数据'}` : ''
+  return `${status}${confidence ? ` · 置信度 ${confidence}` : ''}${fallback}`
 })
-
-const beginnerChecks = computed(() => [
-  {
-    key: 'price',
-    label: '价格有效性',
-    level: quote.price && quote.price > 0 ? 'ok' : 'warn',
-    text: quote.price && quote.price > 0
-      ? `当前行情来自 ${quote.source || quote.data_quality?.source || '行情源'}${quote.data_quality?.is_fallback ? '，但属于降级数据' : ''}`
-      : quoteError.value || '价格为空或为0，不能作为交易价格依据',
-  },
-  {
-    key: 'valuation',
-    label: '估值可判断性',
-    level: quote.pe_ttm && quote.pe_ttm > 0 ? 'ok' : 'warn',
-    text: quote.pe_ttm && quote.pe_ttm > 0 ? `PE(TTM) ${Number(quote.pe_ttm).toFixed(2)}，可作为估值参考` : 'PE/PB不完整，暂时无法判断贵不贵',
-  },
-  {
-    key: 'company',
-    label: '个股信息',
-    level: stockInfo.name ? 'ok' : 'warn',
-    text: stockInfo.name ? `${stockInfo.name}，行业：${stockInfo.sector || '未披露'}` : '个股基础信息未加载完整',
-  },
-])
 
 function refreshReadiness() {
   refreshKey.value += 1
 }
 
+function onKlineQualityChange(quality: DataQualityItem | null, source: string) {
+  klineQuality.value = quality
+  klineSource.value = source
+}
+
+function onFinancialQualityChange(quality: DataQualityItem | null, source: string) {
+  financialQuality.value = quality
+  financialSource.value = source
+}
+
+function onNewsQualityChange(quality: DataQualityItem | null, source: string) {
+  newsQuality.value = quality
+  newsSource.value = source
+}
+
+function onAnnouncementQualityChange(quality: DataQualityItem | null, source: string) {
+  announcementQuality.value = quality
+  announcementSource.value = source
+}
+
 async function recoverMissingDataFromTop() {
+  if (!userStore.isLoggedIn) {
+    router.push({ path: '/login', query: { redirect: route.fullPath } })
+    return
+  }
   dataRecoveryLoading.value = true
   refreshReadiness()
   await nextTick()
@@ -495,14 +521,11 @@ async function recoverMissingDataFromTop() {
 }
 
 function normalizeSymbol(rawValue: string) {
-  const raw = rawValue || '600519.SH'
-  if (raw.includes('.')) return raw
-  return raw.startsWith('6') ? `${raw}.SH` : `${raw}.SZ`
+  return normalizeStockSymbol(rawValue)
 }
 
 function updateMarketText(value: string) {
-  if (value.endsWith('.SH') || value.startsWith('6')) marketText.value = '沪市'
-  else marketText.value = '深市'
+  marketCode.value = parseStockSymbol(value).market
 }
 
 function resetStockInfo() {
@@ -568,6 +591,16 @@ async function loadStockDetail(rawValue: string) {
   error.value = null
   quoteError.value = null
   detailError.value = null
+  observationSummary.value = null
+  observationSummaryDate.value = null
+  klineQuality.value = null
+  klineSource.value = ''
+  financialQuality.value = null
+  financialSource.value = ''
+  newsQuality.value = null
+  newsSource.value = ''
+  announcementQuality.value = null
+  announcementSource.value = ''
   try {
     const [q, info] = await Promise.all([
       fetchQuote(nextSymbol).catch((err) => {
@@ -590,6 +623,16 @@ async function loadStockDetail(rawValue: string) {
   } finally {
     loading.value = false
   }
+
+  // 非阻塞加载 AI 摘要
+  analysisApi.getObservationSummary(nextSymbol)
+    .then((res: any) => {
+      if (res?.summary_text) {
+        observationSummary.value = res.summary_text
+        observationSummaryDate.value = res.snapshot_date || null
+      }
+    })
+    .catch(() => {})
 }
 
 // ---- Analysis panels state ----
@@ -1038,11 +1081,24 @@ async function loadAnalysis(sym: string) {
   }
 }
 
+const analysisLoaded = ref(false)
+
+watch(activeAnalysisSections, (sections) => {
+  if (sections.length > 0 && !analysisLoaded.value) {
+    analysisLoaded.value = true
+    loadAnalysis(normalizeSymbol(symbol.value))
+  }
+})
+
 watch(
   () => route.params.symbol as string,
   (value) => {
     loadStockDetail(value || '600519.SH')
-    loadAnalysis(normalizeSymbol(value || '600519.SH'))
+    analysisLoaded.value = false
+    if (activeAnalysisSections.value.length > 0) {
+      analysisLoaded.value = true
+      loadAnalysis(normalizeSymbol(value || '600519.SH'))
+    }
   },
   { immediate: true }
 )
@@ -1116,6 +1172,11 @@ watch(
   color: #128052;
 }
 
+.tag-bj {
+  background: #fff7e6;
+  color: #ad6800;
+}
+
 .hero-price {
   min-width: 220px;
   text-align: right;
@@ -1141,6 +1202,46 @@ watch(
   margin-top: var(--space-2);
   font-family: var(--font-number);
   font-size: 14px;
+}
+
+.ai-summary-card {
+  background: linear-gradient(135deg, #f0f7ff 0%, #e8f4fd 100%);
+  border: 1px solid #b3d8f5;
+  border-left: 4px solid #409eff;
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
+}
+
+.ai-summary-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.ai-summary-icon {
+  color: #1a73e8;
+  font-size: 18px;
+}
+
+.ai-summary-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1a73e8;
+}
+
+.ai-summary-date {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-left: auto;
+}
+
+.ai-summary-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--color-text-primary);
 }
 
 .beginner-guide {
@@ -1265,6 +1366,9 @@ watch(
 }
 
 .analysis-warning-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 12px;
   color: var(--color-warning, #b45309);
 }

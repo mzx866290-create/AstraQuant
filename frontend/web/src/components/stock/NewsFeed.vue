@@ -22,8 +22,8 @@
         <el-button size="small" :icon="Refresh" :loading="loading" @click="refreshNews">
           刷新缓存
         </el-button>
-        <el-button size="small" type="primary" :icon="Download" :loading="crawling" @click="crawlCurrentNews">
-          采集最新新闻
+        <el-button size="small" type="primary" :icon="isLoggedIn ? Download : Lock" :loading="crawling" @click="crawlCurrentNews">
+          {{ isLoggedIn ? '采集最新新闻' : '登录后采集' }}
         </el-button>
       </div>
     </div>
@@ -78,7 +78,7 @@
       <div class="empty-title">暂无相关新闻</div>
       <small v-if="emptyReason">{{ emptyReason }}</small>
       <el-button size="small" type="primary" :loading="crawling" @click="crawlCurrentNews">
-        采集最新新闻
+        {{ isLoggedIn ? '采集最新新闻' : '登录后采集新闻' }}
       </el-button>
     </div>
 
@@ -140,10 +140,13 @@
 
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue'
-import { Download, Refresh } from '@element-plus/icons-vue'
+import { Download, Lock, Refresh } from '@element-plus/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { safeOpen } from '@/utils/safeOpen'
 import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
 import { crawlStatusLevel, crawlStatusReason, formatCrawlError, formatCrawlStatus, formatQualityTime, pickDataQuality, type CrawlStatus, type DataQualityItem } from '@/utils/dataQuality'
+import { useUserStore } from '@/stores/user'
 
 type Sentiment = '正面' | '中性' | '负面'
 
@@ -192,7 +195,13 @@ type NewsParams = {
 }
 
 const props = defineProps<{ symbol: string }>()
-const emit = defineEmits<{ crawlComplete: [] }>()
+const emit = defineEmits<{
+  crawlComplete: []
+  dataQualityChange: [quality: DataQualityItem | null, source: string]
+}>()
+const router = useRouter()
+const route = useRoute()
+const userStore = useUserStore()
 
 const newsList = ref<NewsItem[]>([])
 const sentimentSummary = ref<SentimentSummary | null>(null)
@@ -205,6 +214,7 @@ const crawlNotice = ref('')
 const crawlNoticeLevel = ref('info')
 const dataQuality = ref<DataQualityItem | null>(null)
 const emptyReason = computed(() => crawlStatusReason(crawlStatus.value))
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 const dominantSentimentClass = computed(() => sentimentClass(sentimentSummary.value?.dominant))
 const cacheUpdatedText = computed(() => {
   const time = dataQuality.value?.updated_at || crawlStatus.value?.finished_at
@@ -224,11 +234,13 @@ async function fetchNews(options: { preserveNotice?: boolean } = {}) {
     newsList.value = resp.news || []
     sentimentSummary.value = resp.sentiment_summary || null
     dataQuality.value = pickDataQuality(resp.data_quality, 'news')
+    emit('dataQualityChange', dataQuality.value, dataQuality.value?.source || '')
     await loadCrawlStatus()
   } catch (e) {
     console.error('获取新闻失败:', e)
     newsList.value = []
     dataQuality.value = null
+    emit('dataQualityChange', null, '')
     await loadCrawlStatus()
   } finally {
     loading.value = false
@@ -270,6 +282,10 @@ function openUrl(url?: string) {
 }
 
 async function loadCrawlStatus() {
+  if (!isLoggedIn.value) {
+    crawlStatus.value = null
+    return
+  }
   try {
     const { crawlApi } = await import('@/api')
     const resp = await crawlApi.getCrawlStatus<CrawlStatusResponse>(props.symbol)
@@ -280,6 +296,14 @@ async function loadCrawlStatus() {
 }
 
 async function crawlCurrentNews() {
+  if (!isLoggedIn.value) {
+    crawlNotice.value = '登录后可采集最新新闻。'
+    crawlNoticeLevel.value = 'info'
+    crawlError.value = ''
+    ElMessage.warning('请先登录后采集新闻')
+    router.push({ path: '/login', query: { redirect: route.fullPath } })
+    return
+  }
   crawling.value = true
   crawlError.value = ''
   crawlNotice.value = ''

@@ -55,6 +55,22 @@ class WatchlistAddMissingStockTests(unittest.IsolatedAsyncioTestCase):
         finally:
             db.close()
 
+    async def test_add_920_symbol_infers_bj_market(self) -> None:
+        db, user, watchlist = self._session_with_watchlist()
+        try:
+            result = await add_to_watchlist(
+                watchlist.id,
+                AddItemRequest(symbol="920047"),
+                user,
+                db,
+            )
+
+            stock = db.query(Stock).filter(Stock.symbol == "920047").one()
+            self.assertEqual(stock.market, "BJ")
+            self.assertEqual(result["symbol"], "920047.BJ")
+        finally:
+            db.close()
+
     async def test_add_symbol_rejects_invalid_code(self) -> None:
         db, user, watchlist = self._session_with_watchlist()
         try:

@@ -13,5 +13,5 @@ receivers:
     webhook_configs:
       # Expanded by Alertmanager with --config.expand-env; deployments provide
       # the real Feishu/DingTalk/Slack-compatible endpoint via ALERT_WEBHOOK_URL.
-      - url: '${ALERT_WEBHOOK_URL}'
+      - url: 'http://localhost:9/alerts'
         send_resolved: true

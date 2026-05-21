@@ -43,6 +43,8 @@ def _normalize_stock_code(symbol: str | None) -> str:
 
 
 def _infer_market(code: str) -> str:
+    if code.startswith("920"):
+        return "BJ"
     if code.startswith(("6", "9", "5")):
         return "SH"
     if code.startswith(("0", "1", "2", "3")):
@@ -54,7 +56,25 @@ def _infer_market(code: str) -> str:
 
 def _clean_optional_text(value: str | None, max_length: int) -> str | None:
     text = (value or "").strip()
+    if _is_placeholder_text(text):
+        return None
     return text[:max_length] if text else None
+
+
+def _is_placeholder_text(value: str | None) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return True
+    if set(text) <= {"?", "？", "�"}:
+        return True
+    return text.lower() in {"unknown", "null", "none", "nan"}
+
+
+def _stock_display_name(stock: Stock | None) -> str:
+    if not stock:
+        return ""
+    code = stock.symbol[:6]
+    return code if _is_placeholder_text(stock.name) else stock.name
 
 
 def _find_stock_by_code(db: Session, code: str) -> Optional[Stock]:
@@ -71,7 +91,7 @@ def _ensure_stock_for_symbol(db: Session, body: AddItemRequest) -> Stock:
     if stock:
         fallback_name = _clean_optional_text(body.name, 100)
         fallback_sector = _clean_optional_text(body.sector, 100)
-        if fallback_name and stock.name == stock.symbol[:6]:
+        if fallback_name and (stock.name == stock.symbol[:6] or _is_placeholder_text(stock.name)):
             stock.name = fallback_name
         if fallback_sector and not stock.sector:
             stock.sector = fallback_sector
@@ -123,14 +143,17 @@ async def get_watchlists(
             .order_by(WatchlistItem.sort_order, WatchlistItem.id)
             .all()
         )
+        stock_ids = {item.stock_id for item in items}
+        stocks_map = {s.id: s for s in db.query(Stock).filter(Stock.id.in_(stock_ids)).all()} if stock_ids else {}
+
         item_data = []
         for item in items:
-            stock = db.query(Stock).filter(Stock.id == item.stock_id).first()
+            stock = stocks_map.get(item.stock_id)
             item_data.append({
                 "id": item.id,
                 "stock_id": item.stock_id,
                 "symbol": _api_symbol(stock) if stock else "",
-                "name": stock.name if stock else "",
+                "name": _stock_display_name(stock),
                 "market": stock.market if stock else "",
                 "sector": stock.sector if stock else "",
                 "sort_order": item.sort_order,
@@ -218,7 +241,7 @@ async def add_to_watchlist(
         "id": item.id,
         "stock_id": item.stock_id,
         "symbol": _api_symbol(stock),
-        "name": stock.name,
+        "name": _stock_display_name(stock),
         "market": stock.market,
         "sort_order": item.sort_order,
         "added_at": item.added_at.isoformat() if item.added_at else None,

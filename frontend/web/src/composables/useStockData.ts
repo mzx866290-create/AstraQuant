@@ -4,7 +4,7 @@
  */
 import { ref } from 'vue'
 import { stockApi } from '@/api'
-import type { DataQualityItem } from '@/utils/dataQuality'
+import { readableApiError, type DataQualityItem } from '@/utils/dataQuality'
 
 export interface KLineItem {
   date: string
@@ -58,10 +58,6 @@ interface StockSearchResponse {
   results?: StockSearchItem[]
 }
 
-interface ApiErrorLike {
-  message?: string
-}
-
 export function useStockData() {
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -87,7 +83,7 @@ export function useStockData() {
         data_quality: res.data_quality || null,
       }
     } catch (e) {
-      error.value = (e as ApiErrorLike).message || '获取K线数据失败'
+      error.value = readableApiError(e, '获取K线数据失败')
       if (import.meta.env.DEV && import.meta.env.VITE_ALLOW_MOCK_KLINE === 'true') {
         return generateMockKLine()
       }
@@ -116,7 +112,7 @@ export function useStockData() {
       const res = await stockApi.getQuote<QuoteData>(symbol)
       return res
     } catch (e) {
-      error.value = (e as ApiErrorLike).message || '获取行情失败'
+      error.value = readableApiError(e, '获取行情失败')
       return null
     } finally {
       loading.value = false

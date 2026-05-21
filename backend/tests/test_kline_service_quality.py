@@ -4,11 +4,12 @@ import asyncio
 import sys
 import types
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
 
 from backend.services.market_service.app.services import kline_service
 
+FRESH_DATE = (datetime.now().date() - timedelta(days=1)).isoformat()
 
 DAILY_ROWS = [
     {"date": "2026-04-30", "open": 10, "close": 11, "high": 12, "low": 9, "volume": 100, "turnover": 1000, "change_pct": 1.0},
@@ -19,6 +20,7 @@ DAILY_ROWS = [
 
 class FakeSinaTencentSource:
     response: list[dict] = []
+    responses_by_symbol: dict[str, list[dict]] = {}
     error: Exception | None = None
     calls: list[str] = []
     instances: list["FakeSinaTencentSource"] = []
@@ -30,7 +32,7 @@ class FakeSinaTencentSource:
         self.__class__.calls.append(symbol)
         if self.__class__.error:
             raise self.__class__.error
-        return self.__class__.response
+        return self.__class__.responses_by_symbol.get(symbol, self.__class__.response)
 
 
 class FakeEastMoneySource:
@@ -138,6 +140,7 @@ class FakeSession:
 
 def reset_source_fakes() -> None:
     FakeSinaTencentSource.response = []
+    FakeSinaTencentSource.responses_by_symbol = {}
     FakeSinaTencentSource.error = None
     FakeSinaTencentSource.calls = []
     FakeSinaTencentSource.instances = []
@@ -264,6 +267,17 @@ class KlineQualityAndHelperTests(unittest.TestCase):
         self.assertFalse(aggregated_quality["is_fallback"])
         self.assertIn("1M kline aggregated from daily source because native period source was unavailable", aggregated_quality["warnings"])
 
+        stale_quality = kline_service.build_data_quality(
+            "sina-tencent-stale",
+            "1d",
+            [{"date": "2000-01-01", "open": 10, "high": 11, "low": 9, "close": 10.5}],
+        )
+
+        self.assertEqual(stale_quality["status"], "degraded")
+        self.assertEqual(stale_quality["freshness"], "stale")
+        self.assertLess(stale_quality["confidence"], 0.5)
+        self.assertIn("kline_stale", stale_quality["warnings"])
+
     def test_aggregate_kline_rolls_up_rows_and_skips_invalid_dates(self) -> None:
         rows = [
             {"date": "2026-05-01", "open": "10.123", "close": "11.499", "high": "12.49", "low": "9.51", "volume": "100.4", "turnover": "1000.555", "change_pct": "1.234"},
@@ -317,9 +331,9 @@ class KlineFetchSourceTests(unittest.TestCase):
         reset_source_fakes()
 
     def test_fetch_daily_kline_prefers_sina_tencent_over_other_sources(self) -> None:
-        FakeSinaTencentSource.response = [{"date": "2026-05-06", "close": 10}]
-        FakeEastMoneySource.response = [{"date": "2026-05-06", "close": 20}]
-        FakeAKShareSource.response = [{"date": "2026-05-06", "close": 30}]
+        FakeSinaTencentSource.response = [{"date": FRESH_DATE, "close": 10}]
+        FakeEastMoneySource.response = [{"date": FRESH_DATE, "close": 20}]
+        FakeAKShareSource.response = [{"date": FRESH_DATE, "close": 30}]
 
         with source_modules_patch():
             data, source = asyncio.run(kline_service.fetch_daily_kline("600519", "hfq"))
@@ -330,10 +344,55 @@ class KlineFetchSourceTests(unittest.TestCase):
         self.assertEqual(FakeEastMoneySource.instances, [])
         self.assertEqual(FakeAKShareSource.instances, [])
 
+    def test_fetch_daily_kline_skips_stale_sina_before_fallback_sources(self) -> None:
+        FakeSinaTencentSource.response = [{"date": "2000-01-01", "close": 10}]
+        FakeEastMoneySource.response = [{"date": FRESH_DATE, "close": 20}]
+        FakeAKShareSource.response = [{"date": FRESH_DATE, "close": 30}]
+
+        with source_modules_patch():
+            data, source = asyncio.run(kline_service.fetch_daily_kline("430047.BJ", "qfq"))
+
+        self.assertEqual(data, FakeEastMoneySource.response)
+        self.assertEqual(source, "eastmoney")
+        self.assertEqual(FakeSinaTencentSource.calls, ["430047.BJ", "920047.BJ"])
+        self.assertEqual(FakeEastMoneySource.instances[0].calls, [{"symbol": "430047.BJ", "period": "1d", "adjust": "qfq", "limit": 500}])
+        self.assertEqual(FakeAKShareSource.instances, [])
+
+    def test_fetch_daily_kline_uses_bj_920_alias_after_legacy_sina_stale(self) -> None:
+        FakeSinaTencentSource.responses_by_symbol = {
+            "430047.BJ": [{"date": "2025-09-30", "close": 25.24}],
+            "920047.BJ": [{"date": FRESH_DATE, "close": 31.45}],
+        }
+        FakeEastMoneySource.response = []
+        FakeAKShareSource.response = []
+
+        with source_modules_patch():
+            data, source = asyncio.run(kline_service.fetch_daily_kline("430047.BJ", "qfq"))
+
+        self.assertEqual(data, FakeSinaTencentSource.responses_by_symbol["920047.BJ"])
+        self.assertEqual(source, "sina-tencent-bj920-alias")
+        self.assertEqual(FakeSinaTencentSource.calls, ["430047.BJ", "920047.BJ"])
+
+    def test_fetch_daily_kline_returns_stale_sina_when_no_fresh_source_exists(self) -> None:
+        FakeSinaTencentSource.response = [{"date": "2000-01-01", "close": 10}]
+        FakeEastMoneySource.response = []
+        FakeAKShareSource.response = []
+
+        with source_modules_patch():
+            data, source = asyncio.run(kline_service.fetch_daily_kline("430047.BJ", "qfq"))
+
+        self.assertEqual(data, FakeSinaTencentSource.response)
+        self.assertEqual(source, "sina-tencent-stale")
+        self.assertEqual(FakeSinaTencentSource.calls, ["430047.BJ", "920047.BJ"])
+        self.assertEqual(FakeAKShareSource.calls, [
+            {"symbol": "430047.BJ", "adjust": "qfq"},
+            {"symbol": "920047.BJ", "adjust": "qfq"},
+        ])
+
     def test_fetch_daily_kline_uses_eastmoney_before_akshare_after_empty_sina(self) -> None:
         FakeSinaTencentSource.response = []
-        FakeEastMoneySource.response = [{"date": "2026-05-06", "close": 20}]
-        FakeAKShareSource.response = [{"date": "2026-05-06", "close": 30}]
+        FakeEastMoneySource.response = [{"date": FRESH_DATE, "close": 20}]
+        FakeAKShareSource.response = [{"date": FRESH_DATE, "close": 30}]
 
         with source_modules_patch():
             data, source = asyncio.run(kline_service.fetch_daily_kline("600519", "qfq"))
@@ -348,7 +407,7 @@ class KlineFetchSourceTests(unittest.TestCase):
     def test_fetch_daily_kline_uses_akshare_after_sina_error_and_empty_eastmoney(self) -> None:
         FakeSinaTencentSource.error = RuntimeError("sina unavailable")
         FakeEastMoneySource.response = []
-        FakeAKShareSource.response = [{"date": "2026-05-06", "close": 30}]
+        FakeAKShareSource.response = [{"date": FRESH_DATE, "close": 30}]
 
         with source_modules_patch():
             data, source = asyncio.run(kline_service.fetch_daily_kline("600519", "hfq"))
@@ -361,7 +420,7 @@ class KlineFetchSourceTests(unittest.TestCase):
         self.assertEqual(FakeAKShareSource.calls, [{"symbol": "600519", "adjust": "hfq"}])
 
     def test_fetch_eastmoney_period_kline_closes_source_on_success_and_error(self) -> None:
-        FakeEastMoneySource.response = [{"date": "2026-05-06", "close": 20}]
+        FakeEastMoneySource.response = [{"date": FRESH_DATE, "close": 20}]
 
         with source_modules_patch():
             data, source = asyncio.run(kline_service.fetch_eastmoney_period_kline("600519", "1w", "qfq", limit=7))

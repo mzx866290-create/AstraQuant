@@ -39,36 +39,36 @@ class User(Base):
 class Watchlist(Base):
     """自选股分组表"""
     __tablename__ = "watchlists"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(50), nullable=False, default="默认分组")
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
+
     __table_args__ = (UniqueConstraint("user_id", "name", name="uix_user_watchlist"),)
 
 
 class WatchlistItem(Base):
     """自选股项目表"""
     __tablename__ = "watchlist_items"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    watchlist_id = Column(Integer, ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=False)
-    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
+    watchlist_id = Column(Integer, ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=False, index=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
     sort_order = Column(Integer, default=0)
     added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
+
     __table_args__ = (UniqueConstraint("watchlist_id", "stock_id", name="uix_watchlist_stock"),)
 
 
 class PriceAlert(Base):
     """价格预警规则表"""
     __tablename__ = "price_alerts"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
     alert_type = Column(String(20), nullable=False)  # price_above/price_below/change_pct
     threshold = Column(Float, nullable=False)
     is_active = Column(Boolean, default=True)
@@ -86,6 +86,19 @@ class UserActivityLog(Base):
     target = Column(String(100), nullable=True)
     ip_address = Column(String(45), nullable=True)
     user_agent = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class PasswordResetToken(Base):
+    """One-time password reset token. Only the token hash is stored."""
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    used_at = Column(DateTime, nullable=True)
+    requested_ip = Column(String(45), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
@@ -257,6 +270,7 @@ class ResearchObservation(Base):
     debate_json = Column(JSON, nullable=True)
     veto_result_json = Column(JSON, nullable=True)
     close_price = Column(Float, nullable=True)
+    summary_text = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     __table_args__ = (UniqueConstraint("snapshot_date", "symbol", "strategy_id", name="uix_research_observation"),)
@@ -325,6 +339,27 @@ class StrategyWeightPatchProposal(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
 
 
+class FinancialTrend(Base):
+    """基本面趋势（季度更新，用于硬否决和乘法评分）"""
+    __tablename__ = "financial_trends"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stock_code = Column(String(20), nullable=False, index=True)
+    report_date = Column(String(10), nullable=False)
+    revenue = Column(Float, nullable=True)
+    revenue_yoy = Column(Float, nullable=True)
+    net_profit = Column(Float, nullable=True)
+    profit_yoy = Column(Float, nullable=True)
+    operating_cashflow = Column(Float, nullable=True)
+    roe = Column(Float, nullable=True)
+    revenue_decline_quarters = Column(Integer, default=0)
+    profit_decline_quarters = Column(Integer, default=0)
+    cashflow_negative_quarters = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (UniqueConstraint("stock_code", "report_date", name="uix_financial_trend"),)
+
+
 class PipelineRunLog(Base):
     """Pipeline 运行日志表"""
     __tablename__ = "pipeline_run_logs"
@@ -339,9 +374,37 @@ class PipelineRunLog(Base):
     total_scored = Column(Integer, default=0)
     final_pool_size = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
+    industries_collected = Column(Integer, default=0)
+    after_screening = Column(Integer, default=0)
+    after_hard_veto = Column(Integer, default=0)
+    after_scoring = Column(Integer, default=0)
+    vetoed_by_industry = Column(Integer, default=0)
+    vetoed_by_acceleration = Column(Integer, default=0)
+    vetoed_by_peer = Column(Integer, default=0)
+    vetoed_by_fundamental = Column(Integer, default=0)
+    vetoed_by_valuation = Column(Integer, default=0)
+    vetoed_by_risk = Column(Integer, default=0)
+    duration_seconds = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (UniqueConstraint("run_date", name="uix_pipeline_run_date"),)
+
+
+class RejectionLog(Base):
+    """Pipeline淘汰/近选明细"""
+    __tablename__ = "rejection_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    stock_name = Column(String(50), nullable=True)
+    trade_date = Column(String(10), nullable=False, index=True)
+    reject_stage = Column(String(30), nullable=False)
+    reject_reason = Column(Text, nullable=True)
+    reject_detail = Column(JSON, nullable=True)
+    base_score = Column(Float, nullable=True)
+    final_score = Column(Float, nullable=True)
+    almost_qualified = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class DailySnapshot(Base):
@@ -372,6 +435,53 @@ class DailySnapshot(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (UniqueConstraint("trade_date", "symbol", name="uix_daily_snapshot"),)
+
+
+class IndustryDailySnapshot(Base):
+    """行业板块每日行情快照"""
+    __tablename__ = "industry_daily_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    industry_code = Column(String(20), nullable=False, index=True)
+    industry_name = Column(String(50), nullable=False)
+    trade_date = Column(String(10), nullable=False, index=True)
+    close = Column(Float, nullable=True)
+    change_pct = Column(Float, nullable=True)
+    ma5 = Column(Float, nullable=True)
+    ma20 = Column(Float, nullable=True)
+    ma60 = Column(Float, nullable=True)
+    ret_5d = Column(Float, nullable=True)
+    ret_20d = Column(Float, nullable=True)
+    ret_60d = Column(Float, nullable=True)
+    money_flow_1d = Column(Float, nullable=True)
+    money_flow_5d = Column(Float, nullable=True)
+    money_flow_20d = Column(Float, nullable=True)
+    source = Column(String(20), default="akshare")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (UniqueConstraint("industry_code", "trade_date", name="uix_industry_daily_snapshot"),)
+
+
+class IndustryHealthScore(Base):
+    """行业健康评分（每日计算）"""
+    __tablename__ = "industry_health_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    industry_code = Column(String(20), nullable=False, index=True)
+    industry_name = Column(String(50), nullable=False)
+    trade_date = Column(String(10), nullable=False, index=True)
+    health_score = Column(Integer, nullable=True)
+    trend_score = Column(Integer, nullable=True)
+    money_score = Column(Integer, nullable=True)
+    momentum_score = Column(Integer, nullable=True)
+    flags = Column(JSON, nullable=True)
+    is_healthy = Column(Boolean, default=True)
+    score_5d_ago = Column(Integer, nullable=True)
+    score_change_5d = Column(Integer, nullable=True)
+    is_accelerating_down = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (UniqueConstraint("industry_code", "trade_date", name="uix_industry_health_score"),)
 
 
 class StrategyWeightVersion(Base):

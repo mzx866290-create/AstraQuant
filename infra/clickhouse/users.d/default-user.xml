@@ -1,0 +1,11 @@
+<clickhouse>
+  <users>
+    <default>
+      <networks>
+        <ip>::1</ip>
+        <ip>127.0.0.1</ip>
+        <ip>172.16.0.0/12</ip>
+      </networks>
+    </default>
+  </users>
+</clickhouse>

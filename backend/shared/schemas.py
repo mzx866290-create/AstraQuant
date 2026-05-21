@@ -47,6 +47,19 @@ class UserPasswordChange(BaseModel):
     new_password: str = Field(..., min_length=8, max_length=128)
 
 
+class PasswordResetRequest(BaseModel):
+    identifier: str = Field(..., min_length=3, max_length=255)
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(..., min_length=32, max_length=200)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class PasswordResetResponse(BaseModel):
+    message: str
+
+
 class UserResponse(UserBase):
     id: int
     nickname: Optional[str] = None
@@ -177,6 +190,8 @@ class AIModelCreate(BaseModel):
     sort_order: int = 0
     allowed_roles: str = "free,premium,admin"
 
+    model_config = ConfigDict(protected_namespaces=())
+
 
 class AIModelUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -189,6 +204,8 @@ class AIModelUpdate(BaseModel):
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
     allowed_roles: Optional[str] = None
+
+    model_config = ConfigDict(protected_namespaces=())
 
 
 class AIModelResponse(BaseModel):
@@ -204,7 +221,7 @@ class AIModelResponse(BaseModel):
     allowed_roles: str
     created_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
 
 class AIModelPublicResponse(BaseModel):
@@ -233,6 +250,8 @@ class AIAnalysisRequest(BaseModel):
     prompt_style: str = "default"  # default/plain/beginner/professional/risk_control
     force_refresh: bool = False  # bypass same-day AI cache
 
+    model_config = ConfigDict(protected_namespaces=())
+
 
 class AIBatchSummaryRequest(BaseModel):
     symbols: List[str] = Field(..., min_length=1, max_length=30)
@@ -250,6 +269,8 @@ class AIFollowUpRequest(BaseModel):
     report_meta: Optional[dict] = None
     prompt_style: str = "default"
     audience: str = "normal"
+
+    model_config = ConfigDict(protected_namespaces=())
 
 
 class AIAnalysisResponse(BaseModel):
@@ -269,6 +290,8 @@ class AIAnalysisResponse(BaseModel):
     report_meta: Optional[dict] = None
     cache_hit: bool = False
 
+    model_config = ConfigDict(protected_namespaces=())
+
 
 class AIFollowUpResponse(BaseModel):
     symbol: str
@@ -281,6 +304,8 @@ class AIFollowUpResponse(BaseModel):
     actual_model: Optional[str] = None
     fallback_reason: Optional[str] = None
     report_meta: Optional[dict] = None
+
+    model_config = ConfigDict(protected_namespaces=())
 
 
 # ============ AI 璋冪敤鏃ュ織 Schemas ============
@@ -300,7 +325,7 @@ class AIUsageLogResponse(BaseModel):
     response_time_ms: int
     created_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
 
 class UserActivityLogResponse(BaseModel):

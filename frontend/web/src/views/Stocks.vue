@@ -79,8 +79,12 @@
         v-for="(stock, index) in stockList"
         :key="stock.symbol"
         class="stock-card"
+        role="button"
+        tabindex="0"
         :style="{ animationDelay: `${index * 0.04}s` }"
         @click="goDetail(stock)"
+        @keyup.enter="goDetail(stock)"
+        @keyup.space.prevent="goDetail(stock)"
       >
         <div class="card-header">
           <div class="stock-info">
@@ -119,7 +123,7 @@
     </div>
 
     <!-- 空状态 -->
-    <div v-else-if="!loading" class="empty-state">
+    <div v-else-if="!loading && !stockList.length" class="empty-state">
       <el-icon :size="64" class="empty-icon"><Search /></el-icon>
       <h3>未找到相关股票</h3>
       <p>尝试输入完整的股票代码或名称</p>
@@ -133,7 +137,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Search,
@@ -165,7 +169,7 @@ const searchQuery = ref('')
 const stockList = ref<StockListItem[]>([])
 const loading = ref(false)
 const isSearching = ref(false)
-const selectedMarkets = ref<string[]>(['SH', 'SZ'])
+const selectedMarkets = ref<string[]>(['SH', 'SZ', 'BJ'])
 const listNotice = ref('')
 const isSampleList = ref(false)
 const pageSize = 50
@@ -305,13 +309,22 @@ onMounted(() => {
   resetAndLoadStockList()
 })
 
+let marketFilterTimer: ReturnType<typeof setTimeout> | null = null
+
 watch(selectedMarkets, () => {
-  currentLimit.value = pageSize
-  if (searchQuery.value.trim()) {
-    doSearch()
-  } else {
-    loadStockList()
-  }
+  if (marketFilterTimer) clearTimeout(marketFilterTimer)
+  marketFilterTimer = setTimeout(() => {
+    currentLimit.value = pageSize
+    if (searchQuery.value.trim()) {
+      doSearch()
+    } else {
+      loadStockList()
+    }
+  }, 300)
+})
+
+onBeforeUnmount(() => {
+  if (marketFilterTimer) clearTimeout(marketFilterTimer)
 })
 </script>
 
@@ -525,6 +538,11 @@ watch(selectedMarkets, () => {
   opacity: 1;
 }
 
+.stock-card:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 @keyframes card-enter {
   from {
     opacity: 0;
@@ -646,9 +664,24 @@ watch(selectedMarkets, () => {
     justify-content: center;
   }
 
+  .market-filters {
+    width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+
+  .market-filters::-webkit-scrollbar {
+    display: none;
+  }
+
   .stocks-grid,
   .skeleton-grid {
     grid-template-columns: 1fr;
+  }
+
+  .stock-card {
+    padding: var(--space-4);
   }
 }
 </style>

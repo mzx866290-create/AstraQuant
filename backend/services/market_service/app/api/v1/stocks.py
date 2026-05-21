@@ -4,6 +4,7 @@
 import os
 import sys
 from datetime import datetime
+from functools import lru_cache
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional
 
@@ -12,10 +13,51 @@ router = APIRouter(tags=["股票列表"])
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.."))
 sys.path.insert(0, _PROJECT_ROOT)
 
+from backend.services.market_service.app.utils.symbols import bj_legacy_920_symbol
+
+
+def _extract_code(symbol: str) -> str:
+    text = (symbol or "").strip().upper()
+    if "." in text:
+        text = text.split(".", 1)[0]
+    for prefix in ("SH", "SZ", "BJ"):
+        if text.startswith(prefix):
+            text = text[2:]
+            break
+    return "".join(ch for ch in text if ch.isdigit())[:6]
+
+
+def _extract_market(symbol: str) -> Optional[str]:
+    text = (symbol or "").strip().upper()
+    if "." in text:
+        suffix = text.rsplit(".", 1)[1]
+        return "SH" if suffix == "SS" else suffix
+    for prefix in ("SH", "SZ", "BJ"):
+        if text.startswith(prefix):
+            return prefix
+    return None
+
+
+def _infer_market(code: str, market: Optional[str] = None) -> str:
+    normalized = (market or "").strip().upper()
+    if normalized == "SS":
+        normalized = "SH"
+    if normalized in {"SH", "SZ", "BJ"}:
+        return normalized
+    if code.startswith("920"):
+        return "BJ"
+    if code.startswith(("4", "8")):
+        return "BJ"
+    if code.startswith(("6", "9", "5")):
+        return "SH"
+    return "SZ"
+
 
 def _api_symbol(symbol: str, market: str) -> str:
-    code = symbol[:6] if symbol else ""
-    return f"{code}.{market or ('SH' if code.startswith(('6', '9')) else 'SZ')}"
+    code = _extract_code(symbol)
+    if not code:
+        return symbol or ""
+    return f"{code}.{_infer_market(code, market)}"
 
 
 def _safe_float(value):
@@ -87,8 +129,14 @@ def _attach_profile_quality(payload: dict, source: str, is_fallback: bool = Fals
     return payload
 
 
-def _fetch_public_stock_info(code: str) -> dict:
+def _clean_text(value) -> str:
+    return str(value or "").strip()
+
+
+@lru_cache(maxsize=2048)
+def _fetch_public_stock_info(code: str, market: Optional[str] = None) -> dict:
     """Fetch public stock profile from AKShare/EastMoney as a fallback."""
+    market_code = _infer_market(code, market)
     try:
         import akshare as ak
 
@@ -119,7 +167,7 @@ def _fetch_public_stock_info(code: str) -> dict:
     try:
         import requests
 
-        em_code = f"{'SH' if code.startswith(('6', '9')) else 'SZ'}{code}"
+        em_code = f"{market_code}{code}"
         resp = requests.get(
             "https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/PageAjax",
             params={"code": em_code},
@@ -134,25 +182,27 @@ def _fetch_public_stock_info(code: str) -> dict:
         base = (payload.get("jbzl") or [{}])[0]
         issue = (payload.get("fxxg") or [{}])[0]
         list_date = _parse_list_date(issue.get("LISTING_DATE"))
-        company_info = {
-            "name": base.get("SECURITY_NAME_ABBR") or "",
-            "sector": (base.get("EM2016") or "").split("-")[0],
+        candidate = {
+            "name": _clean_text(base.get("SECURITY_NAME_ABBR")),
+            "sector": _clean_text(base.get("EM2016")).split("-")[0],
             "list_date": list_date.isoformat() if list_date else None,
         }
+        company_info = {key: value for key, value in candidate.items() if value}
     except Exception:
         company_info = {}
 
     try:
         import requests
 
-        prefix = "sh" if code.startswith(("6", "9")) else "sz"
+        prefix = market_code.lower()
         resp = requests.get(
             f"https://qt.gtimg.cn/q={prefix}{code}",
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=10,
         )
         resp.raise_for_status()
-        body = resp.text.split('="', 1)[1].rsplit('"', 1)[0]
+        text = resp.content.decode("gbk", errors="ignore")
+        body = text.split('="', 1)[1].rsplit('"', 1)[0]
         parts = body.split("~")
         if len(parts) < 74 or not parts[2]:
             return {}
@@ -206,7 +256,7 @@ async def get_stocks(
             seen_codes = set()
             items = []
             for s in stocks:
-                code = s.symbol[:6]
+                code = _extract_code(s.symbol)
                 if code in seen_codes:
                     continue
                 seen_codes.add(code)
@@ -235,12 +285,14 @@ async def get_stocks(
 @router.get("/{symbol}")
 async def get_stock(symbol: str):
     """获取A股股票基本信息"""
-    if not symbol or len(symbol) < 6:
+    code = _extract_code(symbol)
+    if not code or len(code) < 6:
         raise HTTPException(status_code=400, detail="无效的股票代码")
 
-    code = symbol[:6] if len(symbol) >= 6 else symbol
-    market = "SH" if code.startswith(("6", "9")) else "SZ"
-    public_info = _fetch_public_stock_info(code)
+    market = _infer_market(code, _extract_market(symbol))
+    alias_symbol = bj_legacy_920_symbol(symbol, market)
+    resolved_code = _extract_code(alias_symbol) if alias_symbol else code
+    public_info = _fetch_public_stock_info(resolved_code, market)
 
     try:
         from backend.shared.database import SessionLocal
@@ -248,12 +300,20 @@ async def get_stock(symbol: str):
 
         db = SessionLocal()
         try:
-            stock = db.query(Stock).filter(Stock.symbol.like(f"{code}%")).first()
+            lookup_symbols = [resolved_code, f"{resolved_code}.{market}", f"{market}{resolved_code}"]
+            stock = db.query(Stock).filter(Stock.symbol.in_(lookup_symbols)).first()
+            if not stock and resolved_code != code:
+                stock = db.query(Stock).filter(
+                    Stock.symbol.in_([code, f"{code}.{market}", f"{market}{code}"])
+                ).first()
+            if not stock:
+                stock = db.query(Stock).filter(Stock.symbol.like(f"{code}%")).first()
             if stock:
                 list_date = stock.list_date.isoformat() if stock.list_date else public_info.get("list_date")
                 payload = {
                     "id": stock.id,
-                    "symbol": _api_symbol(stock.symbol, stock.market),
+                    "symbol": f"{code}.{market}",
+                    "resolved_symbol": f"{resolved_code}.{market}" if resolved_code != code else None,
                     "code": code,
                     "name": stock.name or public_info.get("name", ""),
                     "market": stock.market,
@@ -278,6 +338,7 @@ async def get_stock(symbol: str):
 
     payload = {
         "symbol": f"{code}.{market}",
+        "resolved_symbol": f"{resolved_code}.{market}" if resolved_code != code else None,
         "code": code,
         "market": market,
         "name": public_info.get("name", ""),

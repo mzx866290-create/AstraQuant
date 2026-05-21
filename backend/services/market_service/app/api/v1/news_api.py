@@ -8,6 +8,16 @@ from typing import Annotated, Optional
 router = APIRouter(tags=["新闻"])
 
 
+def _dominant_sentiment(positive: int, negative: int, neutral: int) -> str:
+    if positive + negative + neutral == 0:
+        return "暂无"
+    if positive >= negative and positive >= neutral:
+        return "正面"
+    if negative >= positive and negative >= neutral:
+        return "负面"
+    return "中性"
+
+
 def _data_quality(source: str, updated_at: Optional[str] = None, freshness: str = "published",
                   confidence: float = 0.8, is_fallback: bool = False,
                   warnings: Optional[list[str]] = None, status: Optional[str] = None) -> dict:
@@ -97,8 +107,7 @@ async def get_stock_news(
             "count": len(items),
             "sentiment_summary": {
                 "positive": pos, "negative": neg, "neutral": neu,
-                "dominant": "正面" if pos >= neg and pos >= neu
-                           else "负面" if neg >= pos else "中性",
+                "dominant": _dominant_sentiment(pos, neg, neu),
             },
             "news": [
                 {
@@ -126,7 +135,7 @@ async def get_stock_news(
                 confidence=0.8 if items else 0.2,
                 is_fallback=live_loaded,
                 warnings=warnings,
-                status="ok" if items else "unavailable",
+                status="ok" if items else "empty",
             ),
         }
     finally:
@@ -179,7 +188,7 @@ async def get_telegraph(
                 confidence=0.8 if items else 0.2,
                 is_fallback=False,
                 warnings=warnings,
-                status="ok" if items else "unavailable",
+                status="ok" if items else "empty",
             ),
         }
     finally:

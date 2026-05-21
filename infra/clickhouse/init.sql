@@ -189,45 +189,5 @@ CREATE TABLE IF NOT EXISTS sector_performance
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(date)
-ORDER BY (date, change_pct DESC)
+ORDER BY (date, change_pct)
 TTL date + INTERVAL 1 YEAR;
-
-ALTER TABLE IF EXISTS stock_daily
-    ADD COLUMN IF NOT EXISTS record_version UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3)));
-ALTER TABLE IF EXISTS stock_daily
-    ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now();
-ALTER TABLE IF EXISTS stock_daily
-    ADD COLUMN IF NOT EXISTS etl_batch_id String DEFAULT '';
-
-ALTER TABLE IF EXISTS stock_minute
-    ADD COLUMN IF NOT EXISTS record_version UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3)));
-ALTER TABLE IF EXISTS stock_minute
-    ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now();
-ALTER TABLE IF EXISTS stock_minute
-    ADD COLUMN IF NOT EXISTS etl_batch_id String DEFAULT '';
-
-ALTER TABLE IF EXISTS stock_weekly
-    ADD COLUMN IF NOT EXISTS record_version UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3)));
-ALTER TABLE IF EXISTS stock_weekly
-    ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now();
-ALTER TABLE IF EXISTS stock_weekly
-    ADD COLUMN IF NOT EXISTS etl_batch_id String DEFAULT '';
-
-ALTER TABLE IF EXISTS stock_monthly
-    ADD COLUMN IF NOT EXISTS record_version UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3)));
-ALTER TABLE IF EXISTS stock_monthly
-    ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now();
-ALTER TABLE IF EXISTS stock_monthly
-    ADD COLUMN IF NOT EXISTS etl_batch_id String DEFAULT '';
-
-ALTER TABLE IF EXISTS money_flow
-    ADD COLUMN IF NOT EXISTS record_version UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3)));
-ALTER TABLE IF EXISTS money_flow
-    ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now();
-ALTER TABLE IF EXISTS money_flow
-    ADD COLUMN IF NOT EXISTS etl_batch_id String DEFAULT '';
-
-ALTER TABLE IF EXISTS stock_quotes
-    ADD COLUMN IF NOT EXISTS record_version UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3)));
-ALTER TABLE IF EXISTS stock_quotes
-    ADD COLUMN IF NOT EXISTS etl_batch_id String DEFAULT '';

@@ -20,10 +20,62 @@ router = APIRouter(tags=["多股对比"])
 engine = IndicatorEngine()
 
 
+def _extract_code(symbol: str) -> str:
+    text = (symbol or "").strip().upper()
+    if "." in text:
+        text = text.split(".", 1)[0]
+    for prefix in ("SH", "SZ", "BJ"):
+        if text.startswith(prefix):
+            text = text[2:]
+            break
+    return "".join(ch for ch in text if ch.isdigit())[:6]
+
+
+def _extract_market(symbol: str) -> str | None:
+    text = (symbol or "").strip().upper()
+    if "." in text:
+        suffix = text.rsplit(".", 1)[1]
+        return "SH" if suffix == "SS" else suffix
+    for prefix in ("SH", "SZ", "BJ"):
+        if text.startswith(prefix):
+            return prefix
+    return None
+
+
+def _infer_market(code: str, market: str | None = None) -> str:
+    normalized = (market or "").strip().upper()
+    if normalized == "SS":
+        normalized = "SH"
+    if normalized in {"SH", "SZ", "BJ"}:
+        return normalized
+    if code.startswith(("4", "8", "920")):
+        return "BJ"
+    if code.startswith(("6", "9", "5")):
+        return "SH"
+    return "SZ"
+
+
+def _normalize_symbol(symbol: str) -> str:
+    code = _extract_code(symbol)
+    return f"{code}.{_infer_market(code, _extract_market(symbol))}" if code else ""
+
+
+def _normalize_symbol_list(symbols: str) -> list[str]:
+    normalized: list[str] = []
+    seen = set()
+    for item in symbols.split(","):
+        symbol = _normalize_symbol(item)
+        if symbol and symbol not in seen:
+            normalized.append(symbol)
+            seen.add(symbol)
+    return normalized
+
+
 async def _fetch_kline(symbol: str, limit: int = 120) -> list[dict]:
     """获取K线数据，东方财富优先，失败后 fallback 到新浪"""
     from backend.services.data_crawler.sources.eastmoney_source import EastMoneySource
 
+    eastmoney_error: Exception | None = None
     try:
         em = EastMoneySource()
         try:
@@ -33,7 +85,8 @@ async def _fetch_kline(symbol: str, limit: int = 120) -> list[dict]:
         if data:
             return data[-limit:] if len(data) > limit else data
     except Exception as e:
-        logger.warning(f"{symbol} 东方财富K线失败, 尝试新浪: {e}")
+        eastmoney_error = e
+        logger.info("%s 东方财富K线失败，尝试新浪/腾讯兜底: %s", symbol, e)
 
     from backend.services.data_crawler.sources.sina_tencent_source import SinaTencentSource
 
@@ -43,7 +96,7 @@ async def _fetch_kline(symbol: str, limit: int = 120) -> list[dict]:
         if data:
             return data[-limit:] if len(data) > limit else data
     except Exception as e:
-        logger.warning(f"{symbol} 新浪K线也失败: {e}")
+        logger.warning("%s K线数据源均失败，东方财富: %s；新浪/腾讯: %s", symbol, eastmoney_error, e)
 
     return []
 
@@ -62,7 +115,7 @@ async def compare_stocks(
 
     返回每只股票的指标并排数据
     """
-    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    symbol_list = _normalize_symbol_list(symbols)
     if len(symbol_list) > 5:
         raise HTTPException(status_code=400, detail="最多对比5只股票")
     if not symbol_list:
@@ -133,7 +186,7 @@ async def compare_performance(
     """
     多只股票区间涨跌幅对比
     """
-    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    symbol_list = _normalize_symbol_list(symbols)
     period_list = [p.strip() for p in periods.split(",") if p.strip()]
     period_map = {"1d": 1, "5d": 5, "20d": 20, "60d": 60,
                   "120d": 120, "250d": 250}
@@ -175,7 +228,7 @@ async def compare_fundamentals(
 
     对比维度: PE/PB/ROE/毛利率/净利润增速/营收增速
     """
-    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    symbol_list = _normalize_symbol_list(symbols)
     if len(symbol_list) > 5:
         raise HTTPException(status_code=400, detail="最多对比5只股票")
 
@@ -186,7 +239,7 @@ async def compare_fundamentals(
     try:
         fundamental_data = {}
         for sym in symbol_list:
-            code = sym[:6]
+            code = _extract_code(sym)
             latest = (
                 db.query(FinancialReport)
                 .filter(FinancialReport.stock_symbol == code)

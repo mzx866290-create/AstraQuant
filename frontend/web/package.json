@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "serve:public": "node ../../scripts/serve_frontend_static.mjs",
+    "smoke:public": "node ../../scripts/public_smoke.mjs",
     "smoke:frontend": "node ../../scripts/frontend_smoke.mjs",
     "test:api-compat": "node scripts/api-compat.mjs",
     "test:data-quality": "node scripts/data-quality.mjs",

@@ -105,9 +105,18 @@ async def get_data_quality_baseline(
     latest_snapshot_date = db.query(func.max(DailySnapshot.trade_date)).scalar()
     snapshot_count = 0
     snapshot_source = None
+    snapshot_source_breakdown: dict[str, int] = {}
     if latest_snapshot_date:
         snapshot_count = db.query(DailySnapshot).filter(DailySnapshot.trade_date == latest_snapshot_date).count()
         snapshot_source = db.query(DailySnapshot.source).filter(DailySnapshot.trade_date == latest_snapshot_date).group_by(DailySnapshot.source).order_by(func.count(DailySnapshot.id).desc()).limit(1).scalar()
+        snapshot_source_breakdown = {
+            source or "unknown": int(count or 0)
+            for source, count in db.query(DailySnapshot.source, func.count(DailySnapshot.id))
+            .filter(DailySnapshot.trade_date == latest_snapshot_date)
+            .group_by(DailySnapshot.source)
+            .order_by(func.count(DailySnapshot.id).desc())
+            .all()
+        }
 
     latest_observation_at = db.query(func.max(ResearchObservation.created_at)).scalar()
     latest_review_at = db.query(func.max(ObservationReview.created_at)).scalar()
@@ -181,6 +190,9 @@ async def get_data_quality_baseline(
             stale_after_hours=72,
         ),
     ]
+    if items:
+        items[0]["source_breakdown"] = snapshot_source_breakdown
+        items[0]["trade_date"] = str(latest_snapshot_date) if latest_snapshot_date else None
     summary = {
         "total": len(items),
         "ok": sum(1 for item in items if item["status"] == "ok"),
@@ -665,3 +677,14 @@ async def run_review_scheduler_once(
 ):
     """Run pending research reviews once."""
     return await review_scheduler.run_once(review_date=review_date)
+
+
+@router.post("/backfill-tier-action")
+async def backfill_tier_action(
+    dry_run: bool = Query(default=False),
+    limit: int = Query(default=200, ge=1, le=1000),
+    current_user=Depends(require_admin()),
+):
+    """回填历史观察池的 A/B/C 分层、观察动作和触发/失效条件。"""
+    from backend.services.analysis_service.engine.backfill_tier_action import backfill
+    return await backfill(dry_run=dry_run, limit=limit)

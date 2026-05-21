@@ -315,6 +315,10 @@ def decrypt_api_key(encrypted_key: str) -> str:
     except Exception as exc:
         if is_production():
             raise RuntimeError("AI_ENCRYPTION_KEY is required before reading AI API keys in production") from exc
+        if encrypted_key.startswith("gAAAA"):
+            raise RuntimeError(
+                "stored AI API key is encrypted but cannot be decrypted; configure the original AI_ENCRYPTION_KEY or re-save the key"
+            ) from exc
         if _configured_ai_encryption_key():
             raise RuntimeError(
                 "stored AI API key could not be decrypted with the current AI_ENCRYPTION_KEY"

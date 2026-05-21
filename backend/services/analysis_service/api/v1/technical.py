@@ -28,8 +28,16 @@ async def _fetch_kline(symbol: str, limit: int = 200) -> list[dict]:
     em = EastMoneySource()
     try:
         data = await em.fetch_daily_kline(symbol)
+        if data:
+            return data[-limit:] if len(data) > limit else data
+    except Exception:
+        data = []
     finally:
         await em.close()
+
+    from backend.services.market_service.app.services import kline_service
+
+    data, _source = await kline_service.load_kline_data(symbol, "1d", "1", limit)
     return data[-limit:] if len(data) > limit else data
 
 

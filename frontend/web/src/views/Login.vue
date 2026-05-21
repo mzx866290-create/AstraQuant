@@ -54,8 +54,9 @@
               <el-input
                 v-model="form.username"
                 size="large"
-                placeholder="请输入用户名"
+                :placeholder="isLogin ? '请输入用户名或邮箱' : '请输入用户名'"
                 :prefix-icon="User"
+                autocomplete="username"
                 clearable
               />
             </el-form-item>
@@ -64,8 +65,10 @@
               <el-input
                 v-model="form.email"
                 size="large"
+                type="email"
                 placeholder="请输入邮箱"
                 :prefix-icon="Message"
+                autocomplete="email"
                 clearable
               />
             </el-form-item>
@@ -78,6 +81,7 @@
                 show-password
                 placeholder="请输入密码"
                 :prefix-icon="Lock"
+                autocomplete="current-password"
                 @keyup.enter="handleSubmit"
               />
             </el-form-item>
@@ -95,7 +99,11 @@
             </el-form-item>
           </el-form>
 
-          <div class="form-footer">
+          <router-link v-if="isLogin" class="forgot-password-link" to="/forgot-password">
+            忘记密码？
+          </router-link>
+
+          <div v-if="registrationEnabled" class="form-footer">
             <div class="divider">
               <span class="divider-text">或</span>
             </div>
@@ -108,6 +116,9 @@
               {{ isLogin ? '没有账号？立即注册' : '已有账号？立即登录' }}
             </el-button>
           </div>
+          <p v-else class="registration-disabled">
+            如需账号请联系管理员开通。
+          </p>
 
           <p class="form-disclaimer">
             登录即表示您同意我们的服务条款和隐私政策
@@ -120,16 +131,17 @@
 
 <script setup lang="ts">
 import { ref, reactive } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { User, Lock, Message, TrendCharts, Cpu, DataLine } from '@element-plus/icons-vue'
 import { userApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 
-const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 const isLogin = ref(true)
+const registrationFlag = String(import.meta.env.VITE_REGISTRATION_ENABLED ?? 'true').trim().toLowerCase()
+const registrationEnabled = ['1', 'true', 'yes', 'on'].includes(registrationFlag)
 const loading = ref(false)
 const submitError = ref('')
 const formRef = ref()
@@ -141,7 +153,17 @@ const form = reactive({
 })
 
 const rules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  username: [{
+    required: true,
+    validator: (_rule: unknown, value: string, callback: (error?: Error) => void) => {
+      if (value?.trim()) {
+        callback()
+        return
+      }
+      callback(new Error(isLogin.value ? '请输入用户名或邮箱' : '请输入用户名'))
+    },
+    trigger: 'blur',
+  }],
   email: [{ required: true, message: '请输入邮箱', trigger: 'blur' }],
   password: [{ required: true, min: 8, message: '密码至少8位', trigger: 'blur' }],
 }
@@ -163,6 +185,9 @@ function getSafeRedirect() {
 function loginErrorMessage(error: unknown) {
   const response = (error as { response?: { status?: number; data?: { detail?: unknown } }; message?: string }).response
   const detail = response?.data?.detail
+  if (response?.status === 401) return '账号或密码不正确'
+  if (response?.status === 403) return '账号已被禁用，请联系管理员'
+  if (response?.status === 429) return '登录尝试过于频繁，请稍后再试'
   if (Array.isArray(detail)) {
     const validation = detail
       .map((item) => (typeof item === 'object' && item && 'msg' in item ? String(item.msg) : ''))
@@ -171,11 +196,38 @@ function loginErrorMessage(error: unknown) {
     if (validation) return validation
   }
   if (typeof detail === 'string' && detail.trim()) return detail
-  if (response?.status === 401) return '用户名或密码不正确'
-  if (response?.status === 403) return '账号已被禁用，请联系管理员'
-  if (response?.status === 429) return '登录尝试过于频繁，请稍后再试'
   if (!response) return '无法连接用户服务，请检查服务是否已启动'
   return '登录失败，请稍后重试'
+}
+
+function registerErrorMessage(error: unknown) {
+  const err = error as { response?: { status?: number; data?: { detail?: unknown } }; message?: string }
+  const response = err.response
+  const detail = response?.data?.detail
+  if (err.message === 'registration is disabled') return '注册暂未开放，请联系管理员开通账号'
+  if (response?.status === 403) {
+    return detail === 'registration is disabled' ? '注册暂未开放，请联系管理员开通账号' : '当前不能注册，请联系管理员'
+  }
+  if (response?.status === 409) {
+    return typeof detail === 'string' && detail.trim()
+      ? detail
+      : '用户名或邮箱已被注册，请直接登录或更换信息'
+  }
+  if (response?.status === 429) return '注册尝试过于频繁，请稍后再试'
+  if (Array.isArray(detail)) {
+    const validation = detail
+      .map((item) => (typeof item === 'object' && item && 'msg' in item ? String(item.msg) : ''))
+      .filter(Boolean)
+      .join('；')
+    if (validation) return validation
+  }
+  if (typeof detail === 'string' && detail.trim()) {
+    if (detail.includes('已被注册')) return '用户名或邮箱已被注册，请直接登录或更换信息'
+    if (detail === 'registration is disabled') return '注册暂未开放，请联系管理员开通账号'
+    return detail
+  }
+  if (!response) return '无法连接用户服务，请检查服务是否已启动'
+  return '注册失败，请稍后重试'
 }
 
 async function handleSubmit() {
@@ -192,14 +244,18 @@ async function handleSubmit() {
     if (isLogin.value) {
       await userStore.login(form.username, form.password)
       ElMessage.success('登录成功')
-      router.push(getSafeRedirect())
+      window.location.replace(getSafeRedirect())
     } else {
+      if (!registrationEnabled) {
+        throw new Error('registration is disabled')
+      }
       await userApi.register(form.username, form.email, form.password)
-      ElMessage.success('注册成功，请登录')
-      isLogin.value = true
+      await userStore.login(form.username, form.password)
+      ElMessage.success('注册成功，已自动登录')
+      window.location.replace(getSafeRedirect())
     }
   } catch (error) {
-    const msg = isLogin.value ? loginErrorMessage(error) : loginErrorMessage(error).replace('登录', '操作')
+    const msg = isLogin.value ? loginErrorMessage(error) : registerErrorMessage(error)
     submitError.value = msg
     ElMessage.error(msg)
   } finally {
@@ -430,6 +486,22 @@ async function handleSubmit() {
 .toggle-btn {
   font-size: 14px;
   font-weight: 600;
+}
+
+.forgot-password-link {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -8px;
+  color: #2563eb;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.registration-disabled {
+  margin-top: var(--space-6);
+  text-align: center;
+  font-size: 14px;
+  color: var(--color-text-secondary);
 }
 
 .form-disclaimer {

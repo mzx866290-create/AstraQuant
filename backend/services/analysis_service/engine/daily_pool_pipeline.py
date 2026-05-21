@@ -1,12 +1,13 @@
-"""每日观察池全流程编排：采集 → 趋势筛选 → 评分 → 否决 → 证据 → 辩论 → 存DB"""
+"""每日观察池全流程编排 v3：采集 → 粗筛 → 行业过滤 → 硬否决 → 乘法评分 → 精加工 → 存DB"""
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import date, datetime, timezone
 
 from backend.services.analysis_service.engine.daily_snapshot_collector import (
-    cleanup_old_snapshots,
+    cleanup_market_redundancy,
     collect_market_snapshot,
 )
 from backend.services.analysis_service.engine.anomaly_screener import screen_anomalies
@@ -21,13 +22,106 @@ from backend.services.analysis_service.engine.capital_flow_enhancer import (
     build_capital_flow_score_item,
     enhance_candidates_with_capital_flow,
 )
+from backend.services.analysis_service.engine.industry_collector import collect_industry_snapshot
+from backend.services.analysis_service.engine.industry_scorer import score_all_industries
+from backend.services.analysis_service.engine.industry_filter import filter_by_industry
+from backend.services.analysis_service.engine.hard_veto import batch_hard_veto
+from backend.services.analysis_service.engine.multiplier_scorer import apply_multiplier_scoring
+from backend.services.analysis_service.engine.chase_high_penalty import apply_chase_high_penalty
+from backend.services.analysis_service.engine.tier_classifier import classify_tiers
+from backend.services.analysis_service.engine.observation_action_generator import generate_observation_actions
+from backend.services.analysis_service.engine.pool_summary_generator import generate_pool_summary
 from backend.shared.database import SessionLocal
-from backend.shared.models import PipelineRunLog
+from backend.shared.models import PipelineRunLog, RejectionLog
 
 logger = logging.getLogger(__name__)
 
 STRATEGY_ID = "trend_momentum"
-TOP_N = 20
+
+
+def _env_int(name: str, default: int, *, min_value: int = 1, max_value: int = 200) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, min_value), max_value)
+
+
+def _env_float(name: str, default: float, *, min_value: float = 0.0, max_value: float = 100.0) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, min_value), max_value)
+
+
+def _top_n() -> int:
+    return _env_int("DAILY_POOL_TOP_N", 30, min_value=5, max_value=80)
+
+
+def _selection_window_size(total: int) -> int:
+    return _env_int("DAILY_POOL_SELECTION_WINDOW", total * 4, min_value=total, max_value=500)
+
+
+def _bucket_caps(total: int) -> dict[str, int]:
+    if total <= 0:
+        return {}
+    trend_cap = _env_int("DAILY_POOL_TREND_BUCKET_CAP", max(1, int(total * 0.65)), min_value=1, max_value=total)
+    pullback_cap = _env_int("DAILY_POOL_PULLBACK_BUCKET_CAP", max(1, int(total * 0.30)), min_value=1, max_value=total)
+    reversal_cap = _env_int("DAILY_POOL_REVERSAL_BUCKET_CAP", max(1, int(total * 0.20)), min_value=1, max_value=total)
+    return {
+        "trend_strength": trend_cap,
+        "pullback_support": pullback_cap,
+        "oversold_reversal": reversal_cap,
+    }
+
+
+def _rebalance_by_observation_bucket(candidates: list[dict], total: int) -> tuple[list[dict], dict]:
+    if not candidates:
+        return [], {"status": "no_candidates"}
+    caps = _bucket_caps(total)
+    selected: list[dict] = []
+    overflow: list[dict] = []
+    counts: dict[str, int] = {}
+    for item in candidates:
+        bucket = str(item.get("observation_bucket") or "trend_strength")
+        count = counts.get(bucket, 0)
+        if count < caps.get(bucket, total):
+            selected.append(item)
+            counts[bucket] = count + 1
+        else:
+            overflow.append(item)
+    selected.extend(overflow)
+    return selected[:total], {
+        "status": "ok",
+        "caps": caps,
+        "counts": counts,
+        "before": len(candidates),
+        "after": min(len(selected), total),
+    }
+
+
+def _pipeline_candidate_cap() -> int:
+    return _env_int("DAILY_POOL_CANDIDATE_CAP", 800, min_value=50, max_value=5000)
+
+
+def _stage_timeout(name: str, default: int) -> int:
+    return _env_int(f"DAILY_POOL_{name.upper()}_TIMEOUT_SECONDS", default, min_value=5, max_value=600)
+
+
+def _strategy_id() -> str:
+    return os.getenv("DAILY_POOL_STRATEGY_ID", STRATEGY_ID).strip() or STRATEGY_ID
+
+
+def _strategy_name(strategy_id: str) -> str:
+    names = {
+        "trend_momentum": "趋势动量",
+        "growth_momentum": "成长动量",
+        "retail_small": "小而美观察",
+        "value_quality": "价值质量",
+        "reversal_watch": "反转观察",
+    }
+    return names.get(strategy_id, strategy_id)
 
 
 def _build_stock_data_from_snapshot(item: dict) -> dict:
@@ -51,13 +145,54 @@ def _build_stock_data_from_snapshot(item: dict) -> dict:
             "revenue_yoy": None,
         },
         "readiness": {
-            "data_grade": {"grade": "B"},
+            "data_grade": {
+                "grade": "B",
+                "label": "数据部分完整",
+                "analysis_scope": "可以分析行情和技术面；基本面、公告、个股新闻或行业事件只能基于已有数据谨慎判断。",
+            },
         },
         "quote": {
             "turnover_rate": item.get("turnover_rate"),
             "total_mv": item.get("total_mv"),
             "circ_mv": item.get("circ_mv"),
             "volume": item.get("volume"),
+        },
+        "data_quality": {
+            "quote": {
+                "source": "akshare-snapshot",
+                "freshness": "latest_trading_day",
+                "confidence": "medium",
+            },
+            "kline": {
+                "source": "akshare-snapshot",
+                "freshness": "latest_trading_day",
+                "confidence": "medium",
+            },
+            "valuation": {
+                "source": "",
+                "freshness": "missing",
+                "confidence": "low",
+            },
+            "financial": {
+                "source": "",
+                "freshness": "missing",
+                "confidence": "low",
+            },
+            "news": {
+                "source": "",
+                "freshness": "missing",
+                "confidence": "low",
+            },
+            "industry_events": {
+                "source": "",
+                "freshness": "missing",
+                "confidence": "low",
+            },
+            "capital_flow": {
+                "source": "akshare",
+                "freshness": "latest_trading_day",
+                "confidence": "medium",
+            },
         },
     }
 
@@ -135,11 +270,31 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         _finish_run_log(run_log, "failed", str(e))
         return result
 
+    # Step 1.5: 行业数据采集（非阻塞，失败不影响主流程，超时60s）
+    try:
+        industry_result = await asyncio.wait_for(
+            collect_industry_snapshot(trade_date), timeout=60
+        )
+        result["steps"]["industry_collect"] = industry_result
+        logger.info("Step 1.5 done: industry snapshot %s", industry_result)
+        run_log["industries_collected"] = industry_result.get("collected", 0)
+        if industry_result.get("collected", 0) > 0:
+            industry_score_result = score_all_industries(trade_date)
+            result["steps"]["industry_score"] = industry_score_result
+            logger.info("Step 1.5b done: industry health scores %s", industry_score_result)
+    except asyncio.TimeoutError:
+        logger.warning("Industry collection timed out (60s), skipping")
+        result["steps"]["industry_collect"] = {"status": "timeout", "error": "exceeded 60s"}
+    except Exception as e:
+        logger.warning("Industry collection failed (non-blocking): %s", e)
+        result["steps"]["industry_collect"] = {"status": "error_non_blocking", "error": str(e)}
+
     try:
         candidates = screen_anomalies(trade_date)
         result["steps"]["screen"] = {"candidates": len(candidates)}
         logger.info(f"Step 2 done: {len(candidates)} trend candidates")
         run_log["total_screened"] = len(candidates)
+        run_log["after_screening"] = len(candidates)
     except Exception as e:
         logger.error(f"Pipeline failed at screening: {e}")
         result["status"] = "error"
@@ -153,11 +308,67 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         _finish_run_log(run_log, "no_data", None)
         return result
 
+    # Step 2.5: 行业景气度过滤
     try:
-        top_candidates = score_anomalies(candidates, top_n=TOP_N)
-        result["steps"]["score"] = {"top_count": len(top_candidates)}
-        logger.info(f"Step 3 done: top {len(top_candidates)} scored")
-        run_log["total_scored"] = len(top_candidates)
+        cap = _pipeline_candidate_cap()
+        if len(candidates) > cap:
+            pre_scored = score_anomalies(candidates, top_n=len(candidates))
+            candidates = pre_scored[:cap]
+            result["steps"]["candidate_cap"] = {
+                "status": "capped",
+                "before": len(pre_scored),
+                "after": len(candidates),
+                "cap": cap,
+            }
+            logger.info("Step 2.2 done: capped candidates %d -> %d", len(pre_scored), len(candidates))
+        else:
+            result["steps"]["candidate_cap"] = {
+                "status": "skipped",
+                "before": len(candidates),
+                "after": len(candidates),
+                "cap": cap,
+            }
+
+        candidates, industry_filter_summary = await _run_sync_stage(
+            "industry_filter",
+            lambda: filter_by_industry(candidates, trade_date),
+            timeout_seconds=_stage_timeout("industry_filter", 90),
+        )
+        result["steps"]["industry_filter"] = industry_filter_summary
+        logger.info("Step 2.5 done: industry filter %s", industry_filter_summary)
+    except asyncio.TimeoutError:
+        logger.warning("Industry filter timed out, continuing without this filter")
+        result["steps"]["industry_filter"] = {"status": "timeout_non_blocking"}
+    except Exception as e:
+        logger.warning("Industry filter failed (non-blocking): %s", e)
+        result["steps"]["industry_filter"] = {"status": "error_non_blocking", "error": str(e)}
+
+    # Step 3: 硬否决层（财务恶化 + 龙头联动）
+    try:
+        candidates, hard_rejected, hard_veto_stats = await _run_sync_stage(
+            "hard_veto",
+            lambda: batch_hard_veto(candidates, trade_date),
+            timeout_seconds=_stage_timeout("hard_veto", 90),
+        )
+        result["steps"]["hard_veto"] = hard_veto_stats
+        run_log["after_hard_veto"] = hard_veto_stats.get("passed", len(candidates))
+        for k, v in hard_veto_stats.get("rejected_by", {}).items():
+            run_log[f"vetoed_by_{k}"] = v
+        logger.info("Step 3 done: hard veto %s", hard_veto_stats)
+    except asyncio.TimeoutError:
+        logger.warning("Hard veto timed out, continuing with current candidates")
+        result["steps"]["hard_veto"] = {"status": "timeout_non_blocking", "passed": len(candidates)}
+        run_log["after_hard_veto"] = len(candidates)
+    except Exception as e:
+        logger.warning("Hard veto failed (non-blocking): %s", e)
+        result["steps"]["hard_veto"] = {"status": "error_non_blocking", "error": str(e)}
+
+    # Step 3.5: 趋势评分（base_score，100分制加法）
+    try:
+        scored_candidates = score_anomalies(candidates, top_n=len(candidates))
+        result["steps"]["base_score"] = {"scored": len(scored_candidates)}
+        logger.info(f"Step 3.5 done: {len(scored_candidates)} base-scored")
+        run_log["total_scored"] = len(scored_candidates)
     except Exception as e:
         logger.error(f"Pipeline failed at scoring: {e}")
         result["status"] = "error"
@@ -165,10 +376,59 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         _finish_run_log(run_log, "failed", str(e))
         return result
 
+    # Step 4: 乘法评分（base × industry × fundamental × momentum）
     try:
-        top_candidates, capital_flow_summary = await enhance_candidates_with_capital_flow(top_candidates, trade_date)
+        selection_window = _selection_window_size(_top_n())
+        top_candidates, almost_candidates, mul_summary = await _run_sync_stage(
+            "multiplier_score",
+            lambda: apply_multiplier_scoring(
+                scored_candidates,
+                trade_date,
+                top_n=selection_window,
+                almost_band=_env_float("DAILY_POOL_ALMOST_SCORE_BAND", 8.0, min_value=0, max_value=30),
+                almost_min=_env_int("DAILY_POOL_ALMOST_MIN", 10, min_value=0, max_value=200),
+                industry_cap=_env_int("DAILY_POOL_MAX_PER_INDUSTRY", 4, min_value=0, max_value=20),
+            ),
+            timeout_seconds=_stage_timeout("multiplier_score", 90),
+        )
+        result["steps"]["multiplier_score"] = mul_summary
+        run_log["after_scoring"] = len(top_candidates)
+        logger.info("Step 4 done: multiplier scoring %s", mul_summary)
+
+        rebalance_candidates = top_candidates + [
+            item for item in almost_candidates
+            if item.get("symbol") not in {top_item.get("symbol") for top_item in top_candidates}
+        ]
+        top_candidates, bucket_summary = _rebalance_by_observation_bucket(rebalance_candidates, _top_n())
+        bucket_summary["selection_window"] = selection_window
+        result["steps"]["bucket_rebalance"] = bucket_summary
+        logger.info("Step 4.1 done: observation bucket rebalance %s", bucket_summary)
+
+        # 记录近选名单
+        _save_almost_list(almost_candidates, trade_date)
+    except asyncio.TimeoutError:
+        logger.warning("Multiplier scoring timed out, falling back to base score")
+        result["steps"]["multiplier_score"] = {"status": "timeout_fallback"}
+        scored_candidates.sort(key=lambda x: x.get("anomaly_score", 0), reverse=True)
+        top_candidates, bucket_summary = _rebalance_by_observation_bucket(scored_candidates, _top_n())
+        result["steps"]["bucket_rebalance"] = bucket_summary
+    except Exception as e:
+        logger.warning("Multiplier scoring failed, falling back to base score: %s", e)
+        result["steps"]["multiplier_score"] = {"status": "error_fallback", "error": str(e)}
+        scored_candidates.sort(key=lambda x: x.get("anomaly_score", 0), reverse=True)
+        top_candidates, bucket_summary = _rebalance_by_observation_bucket(scored_candidates, _top_n())
+        result["steps"]["bucket_rebalance"] = bucket_summary
+
+    try:
+        top_candidates, capital_flow_summary = await asyncio.wait_for(
+            enhance_candidates_with_capital_flow(top_candidates, trade_date),
+            timeout=_stage_timeout("capital_flow", 75),
+        )
         result["steps"]["capital_flow"] = capital_flow_summary
         logger.info("Step 3.5 done: capital flow validation %s", capital_flow_summary)
+    except asyncio.TimeoutError:
+        logger.warning("Capital flow enhancement timed out non-blocking")
+        result["steps"]["capital_flow"] = {"status": "timeout_non_blocking"}
     except Exception as e:
         logger.warning("Capital flow enhancement failed non-blocking: %s", e)
         result["steps"]["capital_flow"] = {"status": "error_non_blocking", "error": str(e)}
@@ -178,10 +438,24 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
     except Exception:
         market_regime = {"regime": "unknown"}
 
+    # Step 3.6: 追高惩罚 — 对涨幅 >6% 降权，>9% 移出主池
+    try:
+        top_candidates, high_risk_bucket = apply_chase_high_penalty(top_candidates)
+        result["steps"]["chase_high_penalty"] = {
+            "main_pool": len(top_candidates),
+            "high_risk_bucket": len(high_risk_bucket),
+        }
+        logger.info("Step 3.6 done: chase-high penalty, main=%d high_risk=%d", len(top_candidates), len(high_risk_bucket))
+    except Exception as e:
+        logger.warning("Chase-high penalty failed (non-blocking): %s", e)
+        result["steps"]["chase_high_penalty"] = {"status": "error_non_blocking", "error": str(e)}
+        high_risk_bucket = []
+
+    active_strategy_id = _strategy_id()
     regime_label = str(market_regime.get("regime") or "unknown")
     strategy_payload = {
-        "id": STRATEGY_ID,
-        "name": "趋势动量",
+        "id": active_strategy_id,
+        "name": _strategy_name(active_strategy_id),
         "selection_mode": "trend_screening",
         "selection_reason": "基于线性趋势确认 + 量价质量评分 + 过热过滤",
     }
@@ -191,12 +465,10 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         try:
             stock_data = _build_stock_data_from_snapshot(item)
             stock_data["capital_flow_features"] = item.get("capital_flow_features")
-            stock_data["data_quality"] = {
-                "capital_flow": {
-                    "source": "akshare",
-                    "freshness": "latest" if item.get("capital_flow_status") in {"confirming", "contradicting", "neutral"} else "missing",
-                    "confidence": "medium" if item.get("capital_flow_status") in {"confirming", "contradicting"} else "low",
-                }
+            stock_data["data_quality"]["capital_flow"] = {
+                "source": "akshare",
+                "freshness": "latest" if item.get("capital_flow_status") in {"confirming", "contradicting", "neutral"} else "missing",
+                "confidence": "medium" if item.get("capital_flow_status") in {"confirming", "contradicting"} else "low",
             }
             risk_lights = _build_risk_lights_from_snapshot(item)
             apply_capital_flow_risk_light(item, risk_lights)
@@ -216,8 +488,13 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
                 "market": item.get("market", ""),
                 "price": item.get("close"),
                 "change_pct": item.get("change_pct"),
-                "score": item.get("anomaly_score", 0),
-                "strategy_id": STRATEGY_ID,
+                "score": item.get("final_score") or item.get("anomaly_score", 0),
+                "base_score": item.get("base_score") or item.get("anomaly_score", 0),
+                "final_score": item.get("final_score") or item.get("anomaly_score", 0),
+                "industry_mul": item.get("industry_mul", 1.0),
+                "fundamental_mul": item.get("fundamental_mul", 1.0),
+                "momentum_mul": item.get("momentum_mul", 1.0),
+                "strategy_id": active_strategy_id,
                 "anomaly_reasons": item.get("anomaly_reasons", []),
                 "score_breakdown": score_breakdown,
                 "evidence_chain": evidence_chain,
@@ -231,6 +508,10 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
                 "total_mv": item.get("total_mv"),
                 "capital_flow_features": item.get("capital_flow_features"),
                 "capital_flow_status": item.get("capital_flow_status"),
+                "observation_bucket": item.get("observation_bucket"),
+                "observation_bucket_label": item.get("observation_bucket_label"),
+                "industry_filter": item.get("industry_filter"),
+                "multiplier_detail": item.get("multiplier_detail"),
             }
             recommendations.append(rec)
         except Exception as e:
@@ -239,6 +520,40 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
 
     result["steps"]["enrich"] = {"passed_veto": len(recommendations)}
     logger.info(f"Step 4 done: {len(recommendations)} passed risk veto")
+
+    # Step 4.8: A/B/C 分层
+    try:
+        recommendations = classify_tiers(recommendations)
+        tier_counts = {"A": 0, "B": 0, "C": 0}
+        for r in recommendations:
+            t = r.get("tier", "C")
+            tier_counts[t] = tier_counts.get(t, 0) + 1
+        result["steps"]["tier_classify"] = tier_counts
+        logger.info("Step 4.8 done: tier classification %s", tier_counts)
+    except Exception as e:
+        logger.warning("Tier classification failed (non-blocking): %s", e)
+        result["steps"]["tier_classify"] = {"status": "error_non_blocking", "error": str(e)}
+
+    # Step 4.9: 观察动作 + 触发/失效条件
+    try:
+        recommendations = await asyncio.wait_for(
+            generate_observation_actions(recommendations),
+            timeout=_stage_timeout("observation_actions", 90),
+        )
+        result["steps"]["observation_actions"] = {"generated": len(recommendations)}
+        logger.info("Step 4.9 done: observation actions generated for %d stocks", len(recommendations))
+    except asyncio.TimeoutError:
+        logger.warning("Observation action generation timed out")
+        result["steps"]["observation_actions"] = {"status": "timeout_non_blocking"}
+        try:
+            recommendations = await generate_observation_actions(recommendations, use_ai=False)
+            result["steps"]["observation_actions"]["fallback_generated"] = len(recommendations)
+        except Exception as fallback_exc:
+            logger.warning("Rule-based observation action fallback failed: %s", fallback_exc)
+            result["steps"]["observation_actions"]["fallback_error"] = str(fallback_exc)
+    except Exception as e:
+        logger.warning("Observation action generation failed (non-blocking): %s", e)
+        result["steps"]["observation_actions"] = {"status": "error_non_blocking", "error": str(e)}
 
     try:
         saved = save_observation_snapshots(
@@ -253,21 +568,60 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         result["steps"]["save"] = {"error": str(e)}
 
     try:
-        cleanup_old_snapshots(keep_days=30)
-        result["steps"]["cleanup"] = {"status": "ok"}
+        from backend.services.analysis_service.engine.summary_generator import generate_summaries
+        summary_result = await asyncio.wait_for(
+            generate_summaries(recommendations, trade_date),
+            timeout=_stage_timeout("summarize", 120),
+        )
+        result["steps"]["summarize"] = summary_result
+        logger.info(f"Step 5.5 done: {summary_result.get('generated', 0)} summaries generated")
+    except asyncio.TimeoutError:
+        logger.warning("Summary generation timed out")
+        result["steps"]["summarize"] = {"status": "timeout_non_blocking"}
+    except Exception as e:
+        logger.warning(f"Summary generation failed: {e}")
+        result["steps"]["summarize"] = {"error": str(e)}
+
+    try:
+        result["steps"]["cleanup"] = cleanup_market_redundancy()
     except Exception as e:
         logger.warning(f"Cleanup failed: {e}")
 
+    # 盘前摘要生成（纯规则，无 AI 调用）
+    pool_summary: dict = {}
+    try:
+        pool_summary = generate_pool_summary(recommendations, market_regime)
+        result["steps"]["pool_summary"] = {"generated": True, "tier_counts": pool_summary.get("tier_counts")}
+        logger.info("Pool summary generated: %s", pool_summary.get("pool_style", ""))
+        # 单独缓存 pool_summary，使用固定 key，避免请求参数不同导致取不到
+        try:
+            from backend.shared.cache import get_cache_manager
+            _cache = await get_cache_manager()
+            await _cache.set("pool_summary", "latest", value=pool_summary)
+        except Exception as _ce:
+            logger.warning("Failed to cache pool_summary separately: %s", _ce)
+    except Exception as e:
+        logger.warning("Pool summary generation failed (non-blocking): %s", e)
+
     result["recommendations_count"] = len(recommendations)
     result["market_regime"] = market_regime
+    result["pool_summary"] = pool_summary
     logger.info(f"=== Pipeline complete: {len(recommendations)} recommendations ===")
 
     run_log["final_pool_size"] = len(recommendations)
     _finish_run_log(run_log, "success", None)
 
-    await _warm_recommend_cache(recommendations, market_regime, regime_label, trade_date)
+    await _warm_recommend_cache(recommendations, market_regime, regime_label, trade_date, pool_summary=pool_summary)
 
     return result
+
+
+async def _run_sync_stage(name: str, func, *, timeout_seconds: int):
+    logger.info("Pipeline stage %s started (timeout=%ss)", name, timeout_seconds)
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(func), timeout=timeout_seconds)
+    finally:
+        logger.info("Pipeline stage %s finished or released", name)
 
 
 def _create_run_log(trade_date: str) -> dict:
@@ -280,6 +634,10 @@ def _create_run_log(trade_date: str) -> dict:
         "total_screened": 0,
         "total_scored": 0,
         "final_pool_size": 0,
+        "industries_collected": 0,
+        "after_screening": 0,
+        "after_hard_veto": 0,
+        "after_scoring": 0,
     }
     db = SessionLocal()
     try:
@@ -316,6 +674,21 @@ def _finish_run_log(log: dict, status: str, error: str | None) -> None:
             record.total_screened = log.get("total_screened", 0)
             record.total_scored = log.get("total_scored", 0)
             record.final_pool_size = log.get("final_pool_size", 0)
+            record.industries_collected = log.get("industries_collected", 0)
+            record.after_screening = log.get("after_screening", 0)
+            record.after_hard_veto = log.get("after_hard_veto", 0)
+            record.after_scoring = log.get("after_scoring", 0)
+            record.vetoed_by_industry = log.get("vetoed_by_industry", 0)
+            record.vetoed_by_acceleration = log.get("vetoed_by_acceleration", 0)
+            record.vetoed_by_peer = log.get("vetoed_by_peer", 0)
+            record.vetoed_by_fundamental = log.get("vetoed_by_fundamental", 0)
+            record.vetoed_by_risk = log.get("vetoed_by_risk", 0)
+            if record.start_time:
+                start_time = record.start_time
+                if start_time.tzinfo is None:
+                    start_time = start_time.replace(tzinfo=timezone.utc)
+                elapsed = (record.end_time - start_time).total_seconds()
+                record.duration_seconds = int(elapsed)
             record.error_message = error[:500] if error else None
             db.commit()
     except Exception as e:
@@ -332,12 +705,32 @@ def has_run_today(trade_date: str | None = None) -> bool:
     db = SessionLocal()
     try:
         record = db.query(PipelineRunLog).filter_by(run_date=trade_date).first()
-        return bool(record and record.status in ("success", "no_data"))
+        if not record:
+            return False
+        if record.status in ("success", "no_data"):
+            return True
+        # 卡在 running 超过5分钟，自动恢复为 failed
+        if record.status == "running" and record.start_time:
+            elapsed = (datetime.now(timezone.utc) - record.start_time).total_seconds()
+            if elapsed > 300:
+                record.status = "failed"
+                record.error_message = "auto-recovered: stuck in running > 5min"
+                record.end_time = datetime.now(timezone.utc)
+                db.commit()
+                logger.warning("Auto-recovered stuck pipeline run for %s", trade_date)
+                return False
+        return False
     finally:
         db.close()
 
 
-async def _warm_recommend_cache(recommendations: list[dict], market_regime: dict, regime_label: str, trade_date: str) -> None:
+async def _warm_recommend_cache(
+    recommendations: list[dict],
+    market_regime: dict,
+    regime_label: str,
+    trade_date: str,
+    pool_summary: dict | None = None,
+) -> None:
     """Pipeline 完成后预热 /batch/recommend 接口的缓存，避免用户请求触发实时计算"""
     try:
         from backend.shared.cache import get_cache_manager
@@ -350,15 +743,18 @@ async def _warm_recommend_cache(recommendations: list[dict], market_regime: dict
             "market": "ALL",
             "status": "ok",
             "pipeline_status": "ok",
+            "data_date": trade_date,
+            "data_date_note": "current_trading_day",
+            "pool_summary": pool_summary or {},
             "method": {
-                "name": "anomaly_driven_v1",
-                "description": "基于全市场量价异动筛选，定时采集+本地评分，秒级响应。",
+                "name": "anomaly_driven_v3",
+                "description": "全市场量价异动筛选 + 行业硬否决 + 乘法评分，秒级响应。",
             },
             "active_strategy": {
                 "id": "anomaly_driven",
                 "name": "量价异动驱动",
                 "selection_mode": "anomaly_screening",
-                "selection_reason": "全市场量价异动筛选 + 风险否决 + 证据链",
+                "selection_reason": "全市场量价异动筛选 + 硬否决 + 乘法评分 + 风险否决 + 证据链",
             },
             "updated_at": datetime.now().isoformat(),
             "disclaimer": "每日观察池仅用于筛选值得继续研究的标的，不是买入建议；需结合个人风险承受能力和完整信息独立判断。",
@@ -369,3 +765,36 @@ async def _warm_recommend_cache(recommendations: list[dict], market_regime: dict
         logger.info("Cache warmed for default recommend key")
     except Exception as e:
         logger.warning(f"Failed to warm recommend cache: {e}")
+
+
+def _save_almost_list(almost_candidates: list[dict], trade_date: str) -> None:
+    """保存近选名单到 rejection_log"""
+    if not almost_candidates:
+        return
+    db = SessionLocal()
+    try:
+        for item in almost_candidates:
+            record = RejectionLog(
+                symbol=item.get("symbol", ""),
+                stock_name=item.get("name", ""),
+                trade_date=trade_date,
+                reject_stage="scoring",
+                reject_reason=f"排名Top20之外，终分{item.get('final_score', 0):.1f}",
+                reject_detail={
+                    "base_score": item.get("base_score"),
+                    "industry_mul": item.get("industry_mul"),
+                    "fundamental_mul": item.get("fundamental_mul"),
+                    "momentum_mul": item.get("momentum_mul"),
+                },
+                base_score=item.get("base_score"),
+                final_score=item.get("final_score"),
+                almost_qualified=True,
+            )
+            db.add(record)
+        db.commit()
+        logger.info("Saved %d almost-qualified stocks", len(almost_candidates))
+    except Exception as e:
+        logger.warning("Failed to save almost list: %s", e)
+        db.rollback()
+    finally:
+        db.close()

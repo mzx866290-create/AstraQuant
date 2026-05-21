@@ -49,7 +49,7 @@
 
     <!-- 数据来源 -->
     <div class="chart-footer">
-      <span class="data-source">数据来源: {{ dataSource || '等待加载...' }}</span>
+      <span class="data-source">数据来源: {{ formatQualitySource(dataSource) || '等待加载...' }}</span>
       <span class="disclaimer">仅供参考，不构成投资建议</span>
     </div>
   </div>
@@ -62,7 +62,7 @@ import type { ECharts, EChartsCoreOption } from 'echarts/core'
 import { useStockData, type KLineItem } from '@/composables/useStockData'
 import { CHART_COLORS, axisTooltip, calculateMovingAverage, createLimitLine, createResizeObserver } from '@/utils/charts'
 import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
-import type { DataQualityItem } from '@/utils/dataQuality'
+import { formatQualitySource, qualityWarnings, type DataQualityItem } from '@/utils/dataQuality'
 
 async function loadECharts() {
   const { loadKLineECharts } = await import('./echartsLoader')
@@ -76,6 +76,9 @@ interface VolumeParams {
 type RadioValue = string | number | boolean | undefined
 
 const props = defineProps<{ symbol: string }>()
+const emit = defineEmits<{
+  dataQualityChange: [quality: DataQualityItem | null, source: string]
+}>()
 
 const chartRef = ref<HTMLElement>()
 const chart = shallowRef<ECharts | null>(null)
@@ -94,9 +97,13 @@ async function loadData() {
   const res = await fetchKLine(props.symbol, currentPeriod.value, activeIndicators.value)
   dataSource.value = res.source
   dataQuality.value = res.data_quality
-  chartMessage.value = res.data_quality?.is_fallback
-    ? '当前K线为降级或模拟数据，请不要作为真实市场走势使用'
-    : ''
+  emit('dataQualityChange', dataQuality.value, dataSource.value)
+  const warnings = qualityWarnings(res.data_quality)
+  chartMessage.value = warnings.includes('kline_stale')
+    ? '当前K线数据明显滞后，请以最新行情价为准'
+    : res.data_quality?.is_fallback
+      ? '当前K线为降级或模拟数据，请不要作为真实市场走势使用'
+      : ''
   renderChart(res.data, res.indicators)
 }
 

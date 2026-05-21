@@ -6,9 +6,39 @@ from backend.services.analysis_service.engine.strategy_scoring import (
     apply_strategy_weighted_score,
     strategy_factor_key,
 )
+from backend.services.analysis_service.engine.multiplier_scorer import apply_multiplier_scoring
 
 
 class StrategyScoringTests(unittest.TestCase):
+    def test_multiplier_scoring_keeps_observation_pool_diverse_and_almost_list_wide(self) -> None:
+        candidates = []
+        for index in range(8):
+            candidates.append({
+                "symbol": f"00000{index}.SZ",
+                "anomaly_score": 90 - index,
+                "industry_name": "AI",
+            })
+        candidates.extend([
+            {"symbol": "600001.SH", "anomaly_score": 82, "industry_name": "Banks"},
+            {"symbol": "600002.SH", "anomaly_score": 81, "industry_name": "Banks"},
+            {"symbol": "300001.SZ", "anomaly_score": 80, "industry_name": "Medicine"},
+        ])
+
+        top, almost, summary = apply_multiplier_scoring(
+            candidates,
+            "2026-05-15",
+            top_n=5,
+            almost_band=3,
+            almost_min=4,
+            industry_cap=2,
+        )
+
+        industries = [item["industry_name"] for item in top]
+        self.assertLessEqual(industries.count("AI"), 2)
+        self.assertGreaterEqual(len(almost), 4)
+        self.assertEqual(summary["max_per_industry"], 2)
+        self.assertEqual(summary["almost_score_band"], 3)
+
     def test_factor_aliases_map_breakdown_items_to_strategy_dimensions(self) -> None:
         weights = {"financial_quality": 0.4, "sentiment": 0.2, "industry_theme": 0.2, "risk": 0.2}
 

@@ -18,4 +18,13 @@ export const userApi = {
       current_password: currentPassword,
       new_password: newPassword,
     }),
+
+  requestPasswordReset: <T = { message: string }>(identifier: string) =>
+    api.post<T>('/api/v1/auth/password/forgot', { identifier }),
+
+  resetPassword: <T = { message: string }>(token: string, newPassword: string) =>
+    api.post<T>('/api/v1/auth/password/reset', {
+      token,
+      new_password: newPassword,
+    }),
 }

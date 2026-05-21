@@ -111,10 +111,14 @@ async def check_active_alerts(db, user_id: int | None = None, max_alerts: int = 
         query = query.filter(PriceAlert.user_id == user_id)
 
     alerts = query.order_by(PriceAlert.created_at.desc()).limit(max_alerts).all()
+
+    stock_ids = {a.stock_id for a in alerts}
+    stocks_map = {s.id: s for s in db.query(Stock).filter(Stock.id.in_(stock_ids)).all()} if stock_ids else {}
+
     items = []
     now = datetime.now()
     for alert in alerts:
-        stock = db.query(Stock).filter(Stock.id == alert.stock_id).first()
+        stock = stocks_map.get(alert.stock_id)
         item = await _check_one_alert(alert, stock)
         item["user_id"] = alert.user_id
         if item.get("triggered"):
@@ -155,9 +159,12 @@ async def get_alerts(
         PriceAlert.user_id == current_user.id
     ).order_by(PriceAlert.created_at.desc()).all()
 
+    stock_ids = {a.stock_id for a in alerts}
+    stocks_map = {s.id: s for s in db.query(Stock).filter(Stock.id.in_(stock_ids)).all()} if stock_ids else {}
+
     result = []
     for alert in alerts:
-        stock = db.query(Stock).filter(Stock.id == alert.stock_id).first()
+        stock = stocks_map.get(alert.stock_id)
         result.append(PriceAlertResponse(
             id=alert.id,
             user_id=alert.user_id,

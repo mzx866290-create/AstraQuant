@@ -946,13 +946,7 @@ async function runSmoke() {
   await waitForPreview()
 
   const browser = await launchBrowser()
-  const page = await browser.newPage({
-    viewport: { width: 1280, height: 800 },
-    baseURL: baseUrl,
-  })
-
-  page.setDefaultTimeout(10000)
-  await installApiMocks(page)
+  const page = await newSmokePage(browser)
 
   try {
     await page.goto('/login')
@@ -1023,19 +1017,16 @@ async function runSmoke() {
     console.log('ok non-admin user is blocked from /admin')
 
     await page.goto('/')
-    await expect(page.getByTestId('recommendations-loading')).toBeVisible()
-    await expect(page.getByText('首次会先展示一批观察股，通常需要 10-30 秒；随后后台扩展到 50 只，可能还需要 1-3 分钟，请不要重复刷新页面。')).toBeVisible()
-    await expect(page.getByRole('heading', { name: '每日观察池' }).first()).toBeVisible()
-    await expect(page.getByText('可信状态：调试数据')).toBeVisible()
+    await expect(page.locator('.signed-home')).toBeVisible()
+    await expect(page.locator('.market-summary-card')).toBeVisible()
     await expect(page.getByText('Smoke SH Bank')).toBeVisible()
-    await expect(page.getByRole('button', { name: '加自选' }).first()).toBeDisabled()
     console.log('ok signed-in home renders protected daily observation pool')
 
     await page.goto('/recommendations')
     await expect(page.getByRole('heading', { name: '每日观察池' })).toBeVisible()
     await expect(page.getByText('可信状态：调试数据')).toBeVisible()
     await expect(page.getByText('Smoke SH Bank')).toBeVisible()
-    await expect(page.getByRole('button', { name: '加自选' }).first()).toBeDisabled()
+    await expect(page.locator('.card-actions .el-button', { hasText: '加自选' }).first()).toHaveClass(/is-disabled/)
     console.log('ok recommendations page blocks fallback candidate action')
 
     await page.goto('/stocks')
@@ -1118,10 +1109,41 @@ async function runSmoke() {
     await page.locator('.admin-logs .tab-button').nth(1).click()
     await expect(page.getByText('login')).toBeVisible()
     console.log('ok /admin/logs renders usage and activity tabs')
+
+    await page.close().catch(() => {})
+    const mobilePage = await newSmokePage(browser, { width: 390, height: 844 })
+    try {
+      await mobilePage.goto('/login')
+      await mobilePage.evaluate(() => {
+        localStorage.setItem('access_token', 'smoke-token')
+      })
+      for (const route of ['/', '/recommendations', '/watchlist', '/stocks', `/stocks/${smokeDetailSymbol}`, '/alerts']) {
+        await mobilePage.goto(route)
+        await expect(mobilePage.locator('body')).toBeVisible()
+        const metrics = await mobilePage.evaluate(() => ({
+          scrollWidth: document.documentElement.scrollWidth,
+          clientWidth: document.documentElement.clientWidth,
+        }))
+        expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 2)
+      }
+      console.log('ok mobile viewport has no horizontal overflow on core pages')
+    } finally {
+      await mobilePage.close().catch(() => {})
+    }
   } finally {
     await page.close().catch(() => {})
     await browser.close().catch(() => {})
   }
+}
+
+async function newSmokePage(browser, viewport = { width: 1280, height: 800 }) {
+  const page = await browser.newPage({
+    viewport,
+    baseURL: baseUrl,
+  })
+  page.setDefaultTimeout(10000)
+  await installApiMocks(page)
+  return page
 }
 
 async function launchBrowser() {

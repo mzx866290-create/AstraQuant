@@ -27,6 +27,14 @@ class ProxyConfigAlignmentTests(unittest.TestCase):
         self.assertIn("location /api/v1/ {", nginx)
         self.assertNotIn("location /api/ {", nginx)
 
+    def test_vite_dev_server_does_not_default_to_public_host(self) -> None:
+        vite = (self.ROOT / "frontend/web/vite.config.ts").read_text(encoding="utf-8")
+
+        self.assertIn("host: process.env.VITE_DEV_HOST || '127.0.0.1'", vite)
+        self.assertIn("strictPort: true", vite)
+        self.assertNotIn("host: '0.0.0.0'", vite)
+        self.assertNotIn("'yhang.cc.cd'", vite)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,15 +60,16 @@ function latestFlow(data: MoneyFlowItem[]) {
   ))
 }
 
-function isMoneyFlowUnavailable(quality: DataQualityItem | null) {
-  if (!quality) return false
+function moneyFlowEmptyMessage(quality: DataQualityItem | null) {
+  if (!quality) return '暂无资金流向数据'
   const warnings = [
     quality.warning,
     ...(Array.isArray(quality.warnings) ? quality.warnings : []),
   ]
-  return quality.status === 'unavailable' ||
-    quality.freshness === 'missing' ||
-    warnings.includes('money_flow_empty')
+  if (quality.status === 'unavailable' && quality.freshness !== 'empty' && !warnings.includes('money_flow_empty')) {
+    return '资金流数据源暂不可用'
+  }
+  return '暂无资金流向数据'
 }
 
 async function loadData() {
@@ -80,9 +81,7 @@ async function loadData() {
     flowQuality.value = resp.data_quality || null
     const item = latestFlow(resp.data || [])
     if (!item) {
-      error.value = isMoneyFlowUnavailable(flowQuality.value)
-        ? '资金流数据源暂不可用/无可用资金流'
-        : '暂无资金流向数据'
+      error.value = moneyFlowEmptyMessage(flowQuality.value)
       chart.value?.dispose()
       chart.value = undefined
       return

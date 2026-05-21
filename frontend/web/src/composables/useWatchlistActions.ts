@@ -48,6 +48,9 @@ export function useWatchlistActions() {
         const created = await watchlistApi.createWatchlist<WatchlistResponse>('默认自选')
         watchlistId = created.id || created.data?.id
       }
+      if (!watchlistId) {
+        throw new Error('自选分组创建失败，请稍后重试')
+      }
       await watchlistApi.addToWatchlist(watchlistId, {
         symbol: row.symbol,
         name: row.name,
@@ -56,6 +59,10 @@ export function useWatchlistActions() {
       })
       ElMessage.success(`${row.name || row.symbol} 已加入自选股`)
     } catch (error) {
+      if (error instanceof Error && error.message === '自选分组创建失败，请稍后重试') {
+        ElMessage.error(error.message)
+        return
+      }
       const detail = (error as { response?: { data?: { detail?: string | ApiValidationError[] } } })?.response?.data?.detail
       const message = Array.isArray(detail) ? detail.map((item) => item.msg).filter(Boolean).join('; ') : detail
       ElMessage.error(message || '添加自选股失败')

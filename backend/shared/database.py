@@ -29,8 +29,8 @@ def _should_use_sqlite() -> bool:
         import socket
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            result = s.connect_ex(("localhost", 5432))
+            s.settimeout(2)
+            result = s.connect_ex((db_host, int(os.getenv("DB_PORT", "5432"))))
             s.close()
             if result != 0:
                 logger.info("PostgreSQL 不可用，切换到 SQLite 模式")
@@ -112,7 +112,60 @@ def init_db():
     import os
     from .models import Base
     Base.metadata.create_all(bind=engine)
+    if USE_SQLITE:
+        _apply_sqlite_compat_migrations()
     _bootstrap_admin()
+
+
+def _apply_sqlite_compat_migrations() -> None:
+    """Keep local SQLite databases compatible with the current ORM model.
+
+    PostgreSQL deployments should use Alembic. This is only a local fallback so
+    older demo databases do not fail at runtime when code reads newer columns.
+    """
+    migrations = {
+        "research_observations": [
+            ("summary_text", "summary_text TEXT"),
+        ],
+        "pipeline_run_logs": [
+            ("industries_collected", "industries_collected INTEGER DEFAULT 0"),
+            ("after_screening", "after_screening INTEGER DEFAULT 0"),
+            ("after_hard_veto", "after_hard_veto INTEGER DEFAULT 0"),
+            ("after_scoring", "after_scoring INTEGER DEFAULT 0"),
+            ("vetoed_by_industry", "vetoed_by_industry INTEGER DEFAULT 0"),
+            ("vetoed_by_acceleration", "vetoed_by_acceleration INTEGER DEFAULT 0"),
+            ("vetoed_by_peer", "vetoed_by_peer INTEGER DEFAULT 0"),
+            ("vetoed_by_fundamental", "vetoed_by_fundamental INTEGER DEFAULT 0"),
+            ("vetoed_by_valuation", "vetoed_by_valuation INTEGER DEFAULT 0"),
+            ("vetoed_by_risk", "vetoed_by_risk INTEGER DEFAULT 0"),
+            ("duration_seconds", "duration_seconds INTEGER"),
+        ],
+        "industry_health_scores": [
+            ("score_5d_ago", "score_5d_ago INTEGER"),
+            ("score_change_5d", "score_change_5d INTEGER"),
+            ("is_accelerating_down", "is_accelerating_down BOOLEAN DEFAULT 0"),
+        ],
+    }
+    try:
+        with engine.begin() as conn:
+            table_names = {
+                row[0]
+                for row in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            for table, columns in migrations.items():
+                if table not in table_names:
+                    continue
+                existing = {
+                    row[1]
+                    for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+                }
+                for column, ddl in columns:
+                    if column in existing:
+                        continue
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+                    logger.info("sqlite compat migration: added %s.%s", table, column)
+    except Exception as exc:
+        logger.warning("sqlite compat migration skipped: %s", exc)
 
 
 def _bootstrap_admin() -> None:
