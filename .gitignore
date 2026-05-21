@@ -62,3 +62,7 @@ tmp/
 PLAN.md
 PLAN_AI_MODEL.md
 PROJECT_ISSUES.md
+
+.codex-artifacts/
+temp_main.py
+
