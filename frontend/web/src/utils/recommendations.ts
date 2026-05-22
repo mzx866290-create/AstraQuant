@@ -214,12 +214,98 @@ export interface RecommendationItem {
   trigger_condition?: string | null
   invalidation_condition?: string | null
   risk_warning?: string | null
+  industry_name?: string | null
+  news_freshness_score?: number | null
+  diversification_penalty?: number | null
+  review_feedback?: {
+    reviews?: number
+    return_samples?: number
+    win_rate?: number
+    avg_return_pct?: number
+    worst_return_pct?: number
+    max_drawdown_pct?: number | null
+    falsification_count?: number
+  } | null
+  pool_optimizer?: {
+    version?: string
+    mode?: string
+    regime?: string
+    regime_confidence?: string
+    tier_before?: string
+    tier_after?: string | null
+    priority_before?: number
+    priority_after?: number
+    priority_delta?: number
+    industry_key?: string
+    news?: {
+      has_news?: boolean
+      direction?: string
+      freshness_score?: number
+      age_hours?: number | null
+      freshness_label?: string
+      strength?: number
+      relevance?: string
+      confidence?: string
+      summary?: string
+      strong_negative?: boolean
+    }
+    adjustments?: string[]
+  } | null
+  optimizer_adjustments?: string[]
   chase_high_penalty?: {
     original_score?: number
     penalized_score?: number
     multiplier?: number
     reason?: string
   } | null
+  intraday_confirmation?: IntradayConfirmationItem
+}
+
+export interface IntradayConfirmationItem {
+  symbol?: string
+  name?: string
+  status?: 'actionable' | 'wait_pullback' | 'watch_only' | 'invalidated' | 'quote_degraded' | 'quote_error' | string
+  label?: string
+  risk_level?: 'low' | 'medium' | 'high' | string
+  next_action?: string
+  reasons?: string[]
+  checked_at?: string
+  window?: string
+  quote?: {
+    price?: number | null
+    change_pct?: number | null
+    open?: number | null
+    high?: number | null
+    low?: number | null
+    open_gap_pct?: number | null
+    intraday_from_open_pct?: number | null
+    quality?: {
+      source?: string
+      freshness?: string
+      status?: string
+      is_fallback?: boolean
+      warnings?: string[]
+    }
+  }
+}
+
+export interface IntradayConfirmationResponse {
+  status?: string
+  checked_at?: string
+  window?: string
+  next_window_at?: string
+  market?: string
+  count?: number
+  data_date?: string | null
+  target_date?: string | null
+  pool_phase?: string
+  pool_phase_label?: string
+  summary?: {
+    pool_state?: string
+    message?: string
+    counts?: Record<string, number>
+  }
+  items?: IntradayConfirmationItem[]
 }
 
 export interface RecommendationsResponse {
@@ -294,6 +380,35 @@ export interface RecommendationsResponse {
     tier_counts?: { A?: number; B?: number; C?: number }
     action_counts?: Record<string, number>
     highlight_symbols?: Array<{ symbol: string; name: string; action: string }>
+    optimizer?: {
+      status?: string
+      version?: string
+      mode?: string
+      regime?: string
+      regime_confidence?: string
+      processed?: number
+      adjusted?: number
+      tier_changes?: number
+      priority_changes?: number
+      news_quality?: {
+        with_news?: number
+        positive?: number
+        negative?: number
+        neutral?: number
+        fresh?: number
+        stale?: number
+      }
+      review_feedback?: {
+        covered?: number
+      }
+      diversification?: {
+        industry_cap?: number
+        industries?: number
+        max_industry_count?: number
+        penalties_applied?: number
+        concentrated_industries?: Record<string, number>
+      }
+    }
   }
 }
 

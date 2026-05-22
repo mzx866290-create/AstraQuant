@@ -65,6 +65,55 @@ def generate_pool_summary(recommendations: list[dict], market_regime: dict | Non
         "tier_counts": tier_counts,
         "action_counts": dict(action_counts),
         "highlight_symbols": highlight_symbols,
+        "optimizer": _derive_optimizer_summary(recommendations, market_regime),
+    }
+
+
+def _derive_optimizer_summary(recommendations: list[dict], market_regime: dict | None = None) -> dict:
+    optimizer_rows = [
+        rec.get("pool_optimizer")
+        for rec in recommendations
+        if isinstance(rec.get("pool_optimizer"), dict)
+    ]
+    if not optimizer_rows:
+        return {
+            "status": "not_applied",
+            "regime": (market_regime or {}).get("regime", "unknown"),
+            "adjusted": 0,
+        }
+
+    news_rows = [row.get("news") or {} for row in optimizer_rows if isinstance(row.get("news"), dict)]
+    with_news = sum(1 for item in news_rows if item.get("has_news"))
+    fresh = sum(1 for item in news_rows if float(item.get("freshness_score") or 0) >= 0.65)
+    stale = sum(1 for item in news_rows if item.get("has_news") and float(item.get("freshness_score") or 0) < 0.65)
+    adjusted = sum(1 for row in optimizer_rows if row.get("adjustments"))
+    tier_changes = sum(1 for row in optimizer_rows if row.get("tier_before") != row.get("tier_after"))
+    priority_changes = sum(1 for row in optimizer_rows if row.get("priority_before") != row.get("priority_after"))
+    return {
+        "status": "ok",
+        "version": optimizer_rows[0].get("version"),
+        "mode": optimizer_rows[0].get("mode"),
+        "regime": optimizer_rows[0].get("regime") or (market_regime or {}).get("regime", "unknown"),
+        "regime_confidence": optimizer_rows[0].get("regime_confidence"),
+        "processed": len(optimizer_rows),
+        "adjusted": adjusted,
+        "tier_changes": tier_changes,
+        "priority_changes": priority_changes,
+        "news_quality": {
+            "with_news": with_news,
+            "fresh": fresh,
+            "stale": stale,
+        },
+        "diversification": {
+            "penalties_applied": sum(1 for rec in recommendations if rec.get("diversification_penalty")),
+            "max_industry_count": max(
+                Counter(
+                    rec.get("industry_name") or rec.get("sector") or "UNKNOWN"
+                    for rec in recommendations
+                ).values(),
+                default=0,
+            ),
+        },
     }
 
 

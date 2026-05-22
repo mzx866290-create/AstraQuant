@@ -1,4 +1,4 @@
-import type { RecommendationsResponse } from '@/utils/recommendations'
+import type { IntradayConfirmationResponse, RecommendationsResponse } from '@/utils/recommendations'
 import api from './client'
 
 const AI_ANALYSIS_TIMEOUT_MS = 300000
@@ -43,6 +43,17 @@ export const analysisApi = {
         initial_full_scan,
       },
       timeout: 180000,
+    }),
+
+  getIntradayConfirmation: (
+    market: string = 'ALL',
+    limit: number = 20,
+    strategy: string = 'auto',
+    concurrency: number = 8,
+  ) =>
+    api.get<IntradayConfirmationResponse>('/api/v1/analysis/score/batch/intraday-confirmation', {
+      params: { market, limit, strategy, concurrency },
+      timeout: 120000,
     }),
 
   getRecentReviews: <T = unknown>(

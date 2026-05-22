@@ -10,6 +10,11 @@ from backend.services.analysis_service.engine.daily_pool_pipeline import (
     has_run_today,
     run_daily_pool_pipeline,
 )
+from backend.services.analysis_service.engine.intraday_confirmation import (
+    build_intraday_confirmation,
+    confirmation_window_label,
+    next_confirmation_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +46,9 @@ class DailyPoolScheduler:
         self._last_news_enrich_at: str | None = None
         self._last_news_enrich_result: dict | None = None
         self._last_news_enrich_error: str | None = None
+        self._last_intraday_confirmation_at: str | None = None
+        self._last_intraday_confirmation_result: dict | None = None
+        self._last_intraday_confirmation_error: str | None = None
 
     def enabled(self) -> bool:
         return os.getenv("DAILY_POOL_SCHEDULER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
@@ -72,6 +80,10 @@ class DailyPoolScheduler:
             "last_news_enrich_at": self._last_news_enrich_at,
             "last_news_enrich_error": self._last_news_enrich_error,
             "last_news_enrich_result": self._last_news_enrich_result,
+            "intraday_confirmation_windows": ["09:35", "09:45", "10:00"],
+            "last_intraday_confirmation_at": self._last_intraday_confirmation_at,
+            "last_intraday_confirmation_error": self._last_intraday_confirmation_error,
+            "last_intraday_confirmation_result": self._last_intraday_confirmation_result,
         }
 
     def start(self) -> None:
@@ -107,6 +119,7 @@ class DailyPoolScheduler:
                 now = datetime.now()
                 await self._run_due_base_pool(now)
                 await self._run_due_news_enrich(now)
+                await self._run_due_intraday_confirmation(now)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -119,6 +132,7 @@ class DailyPoolScheduler:
         target = min(
             _next_daily_pool_target(now, self.target_hour(), self.target_minute()),
             _next_news_enrich_target(now),
+            next_confirmation_target(now),
         )
         wait_seconds = (target - now).total_seconds()
         try:
@@ -145,6 +159,17 @@ class DailyPoolScheduler:
         if self._last_news_enrich_at and self._last_news_enrich_at[:10] == now.date().isoformat():
             return
         await self._execute_news_enrich()
+
+    async def _run_due_intraday_confirmation(self, now: datetime) -> None:
+        if self._is_weekend():
+            return
+        label = confirmation_window_label(now)
+        if label == "preopen":
+            return
+        marker = f"{now.date().isoformat()}T{label}"
+        if self._last_intraday_confirmation_at == marker:
+            return
+        await self._execute_intraday_confirmation(marker)
 
     async def _execute_news_enrich(self, trade_date: str | None = None) -> dict:
         logger.info("Running nightly news enrichment for %s", trade_date or "latest observation pool")
@@ -177,6 +202,7 @@ class DailyPoolScheduler:
                 await self._execute()
 
         await self._catch_up_news_enrich(now)
+        await self._run_due_intraday_confirmation(now)
 
     async def _catch_up_news_enrich(self, now: datetime) -> None:
         """启动时如果已经过夜间窗口，则围绕最新观察池补一次资讯增强。"""
@@ -200,6 +226,39 @@ class DailyPoolScheduler:
             self._last_error = str(e)
             logger.error(f"Pipeline execution failed: {e}")
             return {"status": "error", "error": str(e), "trade_date": trade_date}
+
+    async def _execute_intraday_confirmation(self, marker: str | None = None) -> dict:
+        self._last_intraday_confirmation_error = None
+        marker = marker or f"{datetime.now().date().isoformat()}T{confirmation_window_label()}"
+        self._last_intraday_confirmation_at = marker
+        try:
+            from backend.services.analysis_service.api.v1.scoring import get_recommendations
+
+            pool = await get_recommendations(
+                request=None,
+                market="ALL",
+                limit=20,
+                max_candidates=200,
+                force_refresh=False,
+                strategy="auto",
+                include_evidence=True,
+                include_debate=False,
+                concurrency=8,
+                initial_full_scan=False,
+            )
+            result = await build_intraday_confirmation(pool.get("recommendations") or [], concurrency=8)
+            self._last_intraday_confirmation_result = {
+                "status": result.get("status"),
+                "window": result.get("window"),
+                "checked_at": result.get("checked_at"),
+                "summary": result.get("summary"),
+            }
+            logger.info("Intraday confirmation result: %s", self._last_intraday_confirmation_result)
+            return result
+        except Exception as e:
+            self._last_intraday_confirmation_error = str(e)
+            logger.error("Intraday confirmation failed: %s", e)
+            return {"status": "error", "error": str(e)}
 
     def _is_weekend(self) -> bool:
         return datetime.now().weekday() >= 5

@@ -539,12 +539,19 @@ def _build_factor_snapshot_with_tier(item: dict) -> dict:
         "resonance_count": item.get("resonance_count"),
         "priority_score": item.get("priority_score"),
         "observation_action": item.get("observation_action"),
+        "sector": item.get("sector"),
+        "industry_name": item.get("industry_name"),
         "observation_bucket": item.get("observation_bucket"),
         "observation_bucket_label": item.get("observation_bucket_label"),
         "trigger_condition": item.get("trigger_condition"),
         "invalidation_condition": item.get("invalidation_condition"),
         "risk_warning": item.get("risk_warning"),
         "chase_high_penalty": item.get("chase_high_penalty"),
+        "news_freshness_score": item.get("news_freshness_score"),
+        "diversification_penalty": item.get("diversification_penalty"),
+        "review_feedback": item.get("review_feedback"),
+        "pool_optimizer": item.get("pool_optimizer"),
+        "optimizer_adjustments": item.get("optimizer_adjustments"),
     }
 
 

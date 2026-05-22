@@ -19,6 +19,10 @@ from backend.services.analysis_service.engine.news_signal_aggregator import (
     build_enriched_news_context,
 )
 from backend.services.analysis_service.engine.observation_action_generator import generate_observation_actions
+from backend.services.analysis_service.engine.observation_pool_optimizer import (
+    fetch_review_feedback_for_symbols,
+    optimize_observation_pool,
+)
 from backend.services.analysis_service.engine.tier_classifier import classify_tiers
 
 logger = logging.getLogger(__name__)
@@ -489,6 +493,13 @@ async def _refresh_tier_and_action(trade_date: str) -> None:
                     "bull_case": (row.debate_json or {}).get("bull_case", []) if isinstance(row.debate_json, dict) else [],
                     "bear_case": (row.debate_json or {}).get("bear_case", []) if isinstance(row.debate_json, dict) else [],
                     "falsification": (row.debate_json or {}).get("falsification", []) if isinstance(row.debate_json, dict) else [],
+                    "sector": factor_snapshot.get("sector"),
+                    "industry_name": factor_snapshot.get("industry_name"),
+                    "observation_bucket": factor_snapshot.get("observation_bucket"),
+                    "observation_bucket_label": factor_snapshot.get("observation_bucket_label"),
+                    "trigger_condition": factor_snapshot.get("trigger_condition"),
+                    "invalidation_condition": factor_snapshot.get("invalidation_condition"),
+                    "risk_warning": factor_snapshot.get("risk_warning"),
                     "capital_flow_status": factor_snapshot.get("capital_flow_status"),
                     "chase_high_penalty": factor_snapshot.get("chase_high_penalty"),
                 }
@@ -496,6 +507,13 @@ async def _refresh_tier_and_action(trade_date: str) -> None:
 
         recs = classify_tiers(recs)
         recs = await generate_observation_actions(recs, use_ai=False)
+        review_feedback = fetch_review_feedback_for_symbols([str(rec.get("symbol") or "") for rec in recs])
+        recs, optimizer_summary = optimize_observation_pool(
+            recs,
+            {"regime": rows[0].regime if rows and rows[0].regime else "range_bound"},
+            mode="preopen",
+            review_feedback=review_feedback,
+        )
         by_id = {rec["_row_id"]: rec for rec in recs}
 
         for row in rows:
@@ -515,14 +533,33 @@ async def _refresh_tier_and_action(trade_date: str) -> None:
                     "resonance_count": rec.get("resonance_count"),
                     "priority_score": rec.get("priority_score"),
                     "observation_action": rec.get("observation_action"),
+                    "sector": rec.get("sector"),
+                    "industry_name": rec.get("industry_name"),
+                    "observation_bucket": rec.get("observation_bucket"),
+                    "observation_bucket_label": rec.get("observation_bucket_label"),
                     "trigger_condition": rec.get("trigger_condition"),
                     "invalidation_condition": rec.get("invalidation_condition"),
                     "risk_warning": rec.get("risk_warning"),
                     "chase_high_penalty": rec.get("chase_high_penalty"),
+                    "news_freshness_score": rec.get("news_freshness_score"),
+                    "diversification_penalty": rec.get("diversification_penalty"),
+                    "review_feedback": rec.get("review_feedback"),
+                    "pool_optimizer": rec.get("pool_optimizer"),
+                    "optimizer_adjustments": rec.get("optimizer_adjustments"),
                 }
             )
             row.factor_snapshot_json = factor_snapshot
         db.commit()
+        try:
+            from backend.services.analysis_service.engine.pool_summary_generator import generate_pool_summary
+            from backend.shared.cache import get_cache_manager
+
+            pool_summary = generate_pool_summary(list(by_id.values()), {"regime": rows[0].regime if rows else "range_bound"})
+            pool_summary["optimizer"] = optimizer_summary
+            cache = await get_cache_manager()
+            await cache.set("pool_summary", "latest", value=pool_summary)
+        except Exception as cache_exc:
+            logger.debug("Failed to refresh pool summary after news enrichment: %s", cache_exc)
     except Exception as exc:
         db.rollback()
         logger.warning("Failed to refresh tier/action after news enrichment: %s", exc)
@@ -536,6 +573,7 @@ async def _invalidate_recommendation_cache() -> None:
 
         cache = await get_cache_manager()
         await cache.invalidate_pattern("stock:daily_recommendations:*")
+        await cache.invalidate("pool_summary", "latest")
     except Exception as exc:
         logger.debug("Failed to invalidate recommendation cache after news enrichment: %s", exc)
 
@@ -678,8 +716,8 @@ async def enrich_with_news(trade_date: Optional[str] = None) -> dict:
         await asyncio.sleep(1)  # 避免速率限制
 
     if enriched:
-        await _invalidate_recommendation_cache()
         await _refresh_tier_and_action(trade_date)
+        await _invalidate_recommendation_cache()
 
     logger.info(
         "News enrichment done: trade_date=%s enriched=%d skipped=%d errors=%d fallbacks=%d model_usage=%s",

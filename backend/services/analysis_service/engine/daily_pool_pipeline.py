@@ -30,6 +30,10 @@ from backend.services.analysis_service.engine.multiplier_scorer import apply_mul
 from backend.services.analysis_service.engine.chase_high_penalty import apply_chase_high_penalty
 from backend.services.analysis_service.engine.tier_classifier import classify_tiers
 from backend.services.analysis_service.engine.observation_action_generator import generate_observation_actions
+from backend.services.analysis_service.engine.observation_pool_optimizer import (
+    fetch_review_feedback_for_symbols,
+    optimize_observation_pool,
+)
 from backend.services.analysis_service.engine.pool_summary_generator import generate_pool_summary
 from backend.shared.database import SessionLocal
 from backend.shared.models import PipelineRunLog, RejectionLog
@@ -506,6 +510,8 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
                 "turnover_rate": item.get("turnover_rate"),
                 "vol_ratio_5d": item.get("vol_ratio_5d"),
                 "total_mv": item.get("total_mv"),
+                "sector": item.get("sector"),
+                "industry_name": item.get("industry_name"),
                 "capital_flow_features": item.get("capital_flow_features"),
                 "capital_flow_status": item.get("capital_flow_status"),
                 "observation_bucket": item.get("observation_bucket"),
@@ -555,6 +561,23 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         logger.warning("Observation action generation failed (non-blocking): %s", e)
         result["steps"]["observation_actions"] = {"status": "error_non_blocking", "error": str(e)}
 
+    # Step 4.95: 二次优化层（市场环境、资讯时效、行业分散、历史复盘反馈）
+    optimizer_summary: dict = {}
+    try:
+        symbols = [str(item.get("symbol") or "") for item in recommendations]
+        review_feedback = await asyncio.to_thread(fetch_review_feedback_for_symbols, symbols)
+        recommendations, optimizer_summary = optimize_observation_pool(
+            recommendations,
+            market_regime,
+            mode="base",
+            review_feedback=review_feedback,
+        )
+        result["steps"]["pool_optimizer"] = optimizer_summary
+        logger.info("Step 4.95 done: pool optimizer %s", optimizer_summary)
+    except Exception as e:
+        logger.warning("Observation pool optimizer failed (non-blocking): %s", e)
+        result["steps"]["pool_optimizer"] = {"status": "error_non_blocking", "error": str(e)}
+
     try:
         saved = save_observation_snapshots(
             snapshot_date=date.fromisoformat(trade_date),
@@ -591,6 +614,8 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
     pool_summary: dict = {}
     try:
         pool_summary = generate_pool_summary(recommendations, market_regime)
+        if optimizer_summary:
+            pool_summary["optimizer"] = optimizer_summary
         result["steps"]["pool_summary"] = {"generated": True, "tier_counts": pool_summary.get("tier_counts")}
         logger.info("Pool summary generated: %s", pool_summary.get("pool_style", ""))
         # 单独缓存 pool_summary，使用固定 key，避免请求参数不同导致取不到
@@ -736,6 +761,7 @@ async def _warm_recommend_cache(
         from backend.shared.cache import get_cache_manager
 
         cache = await get_cache_manager()
+        await cache.invalidate_pattern("stock:daily_recommendations:*")
 
         cache_result = {
             "recommendations": recommendations,

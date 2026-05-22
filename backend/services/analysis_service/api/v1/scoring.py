@@ -4,6 +4,8 @@ A股综合评分 API — 多维度股票评分模型
 所有维度优先使用真实数据，数据不足时明确返回不足原因，不生成随机数据
 """
 from datetime import date, datetime, timedelta
+import asyncio
+import logging
 import os
 
 from fastapi import APIRouter, Query, HTTPException, Request
@@ -28,6 +30,11 @@ from backend.services.analysis_service.engine.risk_veto import evaluate_risk_vet
 from backend.services.analysis_service.engine.strategy_config import list_strategy_ids, resolve_strategy
 from backend.services.analysis_service.engine.strategy_scoring import apply_strategy_weighted_score
 from backend.services.analysis_service.engine.theme_validation import build_theme_validation
+from backend.services.analysis_service.engine.observation_pool_optimizer import (
+    fetch_review_feedback_for_symbols,
+    optimize_observation_pool,
+)
+from backend.services.analysis_service.engine.intraday_confirmation import build_intraday_confirmation
 from backend.services.analysis_service.engine.research_pipeline import run_research_pipeline as _engine_run_research_pipeline
 from backend.services.analysis_service.engine.scoring_calculations import (
     compute_momentum as _compute_momentum,
@@ -53,6 +60,7 @@ from backend.services.analysis_service.engine.scoring_data import (
 )
 
 router = APIRouter(tags=["综合评分"])
+logger = logging.getLogger(__name__)
 
 
 # ── API ──
@@ -121,6 +129,25 @@ def _observation_bucket_from_factor_snapshot(factor_snapshot) -> str:
     return str(factor_snapshot.get("observation_bucket") or "trend_strength")
 
 
+def _priority_from_factor_snapshot(factor_snapshot) -> int:
+    if isinstance(factor_snapshot, list):
+        return 0
+    if not isinstance(factor_snapshot, dict):
+        return 0
+    try:
+        return int(float(factor_snapshot.get("priority_score") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _tier_rank_from_factor_snapshot(factor_snapshot) -> int:
+    if isinstance(factor_snapshot, list):
+        return 2
+    if not isinstance(factor_snapshot, dict):
+        return 2
+    return {"A": 0, "B": 1, "C": 2}.get(str(factor_snapshot.get("tier") or "C"), 2)
+
+
 def _rebalance_rows_by_observation_bucket(rows: list, limit: int) -> list:
     if not rows:
         return []
@@ -140,7 +167,48 @@ def _rebalance_rows_by_observation_bucket(rows: list, limit: int) -> list:
             counts[bucket] = count + 1
         else:
             overflow.append(row)
-    return (selected + overflow)[:limit]
+    rebalanced = (selected + overflow)[:limit]
+    return sorted(
+        rebalanced,
+        key=lambda row: (
+            _tier_rank_from_factor_snapshot(row.factor_snapshot_json),
+            -_priority_from_factor_snapshot(row.factor_snapshot_json),
+            -float(row.score or 0),
+        ),
+    )
+
+
+async def _ensure_observation_pool_optimizer(result: dict) -> dict:
+    recommendations = result.get("recommendations") or []
+    if not recommendations:
+        return result
+    if any(isinstance(rec.get("pool_optimizer"), dict) for rec in recommendations):
+        return result
+
+    market_regime = result.get("market_regime") or {}
+    try:
+        symbols = [str(rec.get("symbol") or "") for rec in recommendations]
+        review_feedback = await asyncio.to_thread(fetch_review_feedback_for_symbols, symbols)
+        optimized, optimizer_summary = optimize_observation_pool(
+            recommendations,
+            market_regime,
+            mode="response",
+            review_feedback=review_feedback,
+        )
+        result["recommendations"] = optimized
+        result["count"] = len(optimized)
+        pool_summary = result.get("pool_summary") or {}
+        try:
+            from backend.services.analysis_service.engine.pool_summary_generator import generate_pool_summary
+
+            pool_summary = generate_pool_summary(optimized, market_regime)
+        except Exception as exc:
+            logger.debug("pool summary regeneration failed in response optimizer: %s", exc)
+        pool_summary["optimizer"] = optimizer_summary
+        result["pool_summary"] = pool_summary
+    except Exception as exc:
+        logger.debug("observation pool optimizer response enrichment failed: %s", exc)
+    return result
 
 
 def _pool_phase_metadata(
@@ -540,7 +608,7 @@ async def get_recommendations(
     initial_full_scan = bool(_query_default(initial_full_scan, False))
 
     public_force_refresh_allowed = _bool_env("ALLOW_PUBLIC_RECOMMEND_FORCE_REFRESH", False)
-    if force_refresh and not public_force_refresh_allowed:
+    if request is not None and force_refresh and not public_force_refresh_allowed:
         force_refresh = False
 
     if request is not None:
@@ -585,7 +653,7 @@ async def get_recommendations(
     if not force_refresh:
         cached = await cache.get("daily_recommendations", cache_key)
         if cached is not None:
-            return cached
+            return await _ensure_observation_pool_optimizer(cached)
 
     if force_refresh:
         result = await run_research_pipeline(
@@ -603,6 +671,7 @@ async def get_recommendations(
             "used": run_initial_full_scan,
             "status": initial_full_scan_status,
         }
+        result = await _ensure_observation_pool_optimizer(result)
         await cache.set("daily_recommendations", cache_key, value=result)
         return result
 
@@ -621,8 +690,16 @@ async def get_recommendations(
             query = query.filter(ResearchObservation.symbol.like(f"%.{market}"))
 
         query = _prefer_formal_pool(query, ResearchObservation)
-        query = query.order_by(ResearchObservation.score.desc()).limit(limit * 3)
+        query = query.order_by(ResearchObservation.score.desc()).limit(limit * 5)
         rows = query.all()
+        rows = sorted(
+            rows,
+            key=lambda row: (
+                _tier_rank_from_factor_snapshot(row.factor_snapshot_json),
+                -_priority_from_factor_snapshot(row.factor_snapshot_json),
+                -float(row.score or 0),
+            ),
+        )
         rows = _rebalance_rows_by_observation_bucket(rows, limit)
 
         pipeline_status = "ok"
@@ -638,8 +715,16 @@ async def get_recommendations(
                 if market != "ALL":
                     query = query.filter(ResearchObservation.symbol.like(f"%.{market}"))
                 query = _prefer_formal_pool(query, ResearchObservation)
-                query = query.order_by(ResearchObservation.score.desc()).limit(limit * 3)
+                query = query.order_by(ResearchObservation.score.desc()).limit(limit * 5)
                 rows = query.all()
+                rows = sorted(
+                    rows,
+                    key=lambda row: (
+                        _tier_rank_from_factor_snapshot(row.factor_snapshot_json),
+                        -_priority_from_factor_snapshot(row.factor_snapshot_json),
+                        -float(row.score or 0),
+                    ),
+                )
                 rows = _rebalance_rows_by_observation_bucket(rows, limit)
             pipeline_status = "stale" if rows else "empty"
 
@@ -705,12 +790,19 @@ async def get_recommendations(
                 "tier_reason": factor_snapshot.get("tier_reason"),
                 "priority_score": factor_snapshot.get("priority_score"),
                 "observation_action": factor_snapshot.get("observation_action"),
+                "sector": factor_snapshot.get("sector") or factor_snapshot.get("industry_name"),
+                "industry_name": factor_snapshot.get("industry_name"),
                 "observation_bucket": factor_snapshot.get("observation_bucket"),
                 "observation_bucket_label": factor_snapshot.get("observation_bucket_label"),
                 "trigger_condition": factor_snapshot.get("trigger_condition"),
                 "invalidation_condition": factor_snapshot.get("invalidation_condition"),
                 "risk_warning": factor_snapshot.get("risk_warning"),
                 "chase_high_penalty": factor_snapshot.get("chase_high_penalty"),
+                "news_freshness_score": factor_snapshot.get("news_freshness_score"),
+                "diversification_penalty": factor_snapshot.get("diversification_penalty"),
+                "review_feedback": factor_snapshot.get("review_feedback"),
+                "pool_optimizer": factor_snapshot.get("pool_optimizer"),
+                "optimizer_adjustments": factor_snapshot.get("optimizer_adjustments"),
             }
             recommendations.append(rec)
 
@@ -757,8 +849,56 @@ async def get_recommendations(
             "updated_at": datetime.now().isoformat(),
             "disclaimer": "每日观察池仅用于筛选值得继续研究的标的，不是买入建议；需结合个人风险承受能力和完整信息独立判断。",
         }
+        result = await _ensure_observation_pool_optimizer(result)
         if recommendations:
             await cache.set("daily_recommendations", cache_key, value=result)
         return result
     finally:
         db.close()
+
+
+@router.get("/batch/intraday-confirmation")
+async def get_intraday_confirmation(
+    request: Request = None,
+    market: str = Query("ALL", description="市场: ALL/SH/SZ"),
+    limit: int = Query(20, ge=5, le=50, description="确认数量"),
+    strategy: str = Query("auto", description="策略"),
+    concurrency: int = Query(8, ge=1, le=20, description="行情确认并发数"),
+):
+    """Return realtime confirmation states for the current observation pool."""
+    market = str(_query_default(market, "ALL")).upper()
+    limit = int(_query_default(limit, 20))
+    requested_strategy = str(_query_default(strategy, "auto")).strip().lower()
+    concurrency = int(_query_default(concurrency, 8))
+    if request is not None:
+        ip = client_ip(request)
+        await enforce_rate_limit(
+            scope="score:intraday-confirmation:ip",
+            identity=ip,
+            limit=20,
+            window_seconds=60,
+            fail_closed=False,
+        )
+    pool = await get_recommendations(
+        request=None,
+        market=market,
+        limit=limit,
+        max_candidates=200,
+        force_refresh=False,
+        strategy=requested_strategy,
+        include_evidence=True,
+        include_debate=False,
+        concurrency=concurrency,
+        initial_full_scan=False,
+    )
+    rows = pool.get("recommendations") or []
+    confirmation = await build_intraday_confirmation(rows, concurrency=concurrency)
+    return {
+        **confirmation,
+        "market": market,
+        "count": len(rows),
+        "data_date": pool.get("data_date"),
+        "target_date": pool.get("target_date"),
+        "pool_phase": pool.get("pool_phase"),
+        "pool_phase_label": pool.get("pool_phase_label"),
+    }

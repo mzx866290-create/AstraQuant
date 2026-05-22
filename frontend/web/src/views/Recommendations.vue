@@ -53,6 +53,24 @@
       <span v-for="reason in trustState.reasons" :key="reason">{{ reason }}</span>
     </section>
 
+    <section v-if="optimizerStatusItems.length" class="optimizer-strip">
+      <span v-for="item in optimizerStatusItems" :key="item.label" class="optimizer-status-item">
+        <small>{{ item.label }}</small>
+        <strong>{{ item.value }}</strong>
+      </span>
+    </section>
+
+    <section v-if="intradaySummaryItems.length" class="intraday-strip">
+      <div class="intraday-strip-head">
+        <strong>盘中确认</strong>
+        <span>{{ intradayStatusText }}</span>
+      </div>
+      <span v-for="item in intradaySummaryItems" :key="item.label" class="intraday-status-item" :class="item.level">
+        <small>{{ item.label }}</small>
+        <strong>{{ item.value }}</strong>
+      </span>
+    </section>
+
     <!-- 盘前摘要 Banner -->
     <section v-if="poolSummary?.pool_style" class="pool-summary-banner">
       <div class="pool-summary-header">
@@ -211,10 +229,23 @@
               <el-tag size="small" effect="plain" class="bucket-tag">
                 {{ row.observation_bucket_label || section.label }}
               </el-tag>
+              <el-tag
+                v-if="row.intraday_confirmation"
+                size="small"
+                :type="intradayTagType(row.intraday_confirmation.status)"
+                effect="dark"
+                class="intraday-tag"
+              >
+                {{ row.intraday_confirmation.label || '盘中确认' }}
+              </el-tag>
               <span v-if="row.sector" class="card-sector">{{ row.sector }}</span>
             </div>
 
             <div class="retail-summary">
+              <div v-if="row.intraday_confirmation" class="summary-line intraday-line" :class="row.intraday_confirmation.status">
+                <span class="summary-label intraday-label">盘中</span>
+                <span>{{ intradayLineText(row) }}</span>
+              </div>
               <div v-if="row.summary_text" class="summary-line ai-summary-line">
                 <span class="summary-label ai-label">AI解读</span>
                 <span>{{ row.summary_text }}</span>
@@ -236,6 +267,10 @@
               <div v-if="row.risk_warning" class="summary-line risk-warning-line">
                 <span class="summary-label risk-label">风险</span>
                 <span>{{ row.risk_warning }}</span>
+              </div>
+              <div v-if="optimizerAdjustmentText(row)" class="summary-line optimizer-line">
+                <span class="summary-label optimizer-label">优化</span>
+                <span>{{ optimizerAdjustmentText(row) }}</span>
               </div>
               <template v-if="!row.trigger_condition">
                 <div class="summary-line risk-line" :class="recommendationRiskHint(row).level">
@@ -322,6 +357,7 @@ import {
   riskHintTagType,
   scoreReferenceText,
   scoreTagType,
+  type IntradayConfirmationResponse,
   type RecentReviewsResponse,
   type RecommendationItem,
   type RecommendationsResponse,
@@ -335,6 +371,7 @@ const expanding = ref(false)
 const market = ref('ALL')
 const items = ref<RecommendationItem[]>([])
 const meta = ref<RecommendationsResponse | null>(null)
+const intradayMeta = ref<IntradayConfirmationResponse | null>(null)
 const loadError = ref('')
 const expansionMessage = ref('')
 const selectedTier = ref('')
@@ -345,6 +382,37 @@ const loadingBars = [92, 74, 86, 58]
 let requestSeq = 0
 
 const poolSummary = computed(() => meta.value?.pool_summary)
+const optimizerSummary = computed(() => poolSummary.value?.optimizer)
+
+const intradaySummaryItems = computed(() => {
+  const counts = intradayMeta.value?.summary?.counts
+  if (!counts) return []
+  return [
+    { label: '可关注', value: `${counts.actionable || 0} 只`, level: 'good' },
+    { label: '等回踩', value: `${counts.wait_pullback || 0} 只`, level: 'wait' },
+    { label: '仅观察', value: `${counts.watch_only || 0} 只`, level: 'watch' },
+    { label: '已失效', value: `${counts.invalidated || 0} 只`, level: 'bad' },
+  ]
+})
+
+const intradayStatusText = computed(() => {
+  if (!intradayMeta.value) return '等待盘中确认'
+  const window = intradayMeta.value.window || '--'
+  return `${window} 复核：${intradayMeta.value.summary?.message || '已完成'}`
+})
+
+const optimizerStatusItems = computed(() => {
+  const optimizer = optimizerSummary.value
+  if (!optimizer || optimizer.status === 'not_applied') return []
+  const news = optimizer.news_quality || {}
+  const diversification = optimizer.diversification || {}
+  return [
+    { label: '市场模式', value: regimePlainLabel(optimizer.regime) },
+    { label: '二次校准', value: `${optimizer.adjusted ?? 0}/${optimizer.processed ?? items.value.length} 只` },
+    { label: '资讯时效', value: `${news.fresh ?? 0} 新 / ${news.stale ?? 0} 旧` },
+    { label: '分散度', value: `${diversification.penalties_applied ?? 0} 只降权` },
+  ].filter((item) => item.value)
+})
 
 const filteredItems = computed(() => {
   if (!selectedTier.value) return items.value
@@ -437,6 +505,21 @@ function actionTagType(action?: string | null): 'success' | 'primary' | 'warning
   return 'info'
 }
 
+function intradayTagType(status?: string | null): 'success' | 'primary' | 'warning' | 'info' | 'danger' | undefined {
+  if (status === 'actionable') return 'success'
+  if (status === 'wait_pullback') return 'warning'
+  if (status === 'invalidated' || status === 'quote_error') return 'danger'
+  if (status === 'quote_degraded') return 'info'
+  return 'info'
+}
+
+function regimePlainLabel(regime?: string) {
+  if (regime === 'strong_trend') return '强趋势'
+  if (regime === 'weak_market') return '弱市'
+  if (regime === 'range_bound') return '震荡'
+  return regime || '未知'
+}
+
 const marketOptions = [
   { label: '沪深', value: 'ALL' },
   { label: '沪市', value: 'SH' },
@@ -515,6 +598,7 @@ async function loadRecommendations() {
     if (requestId !== requestSeq || currentMarket !== market.value) return
     items.value = res.recommendations || []
     meta.value = res
+    void loadIntradayConfirmation(requestId, currentMarket)
     if (res.pool_phase_message) {
       expansionMessage.value = res.pool_phase_message
     } else if (res.pipeline_status === 'stale') {
@@ -533,8 +617,26 @@ async function loadRecommendations() {
     ElMessage.error(loadError.value)
     items.value = []
     meta.value = null
+    intradayMeta.value = null
   } finally {
     loading.value = false
+  }
+}
+
+async function loadIntradayConfirmation(requestId = requestSeq, currentMarket = market.value) {
+  if (!items.value.length) return
+  try {
+    const response = await analysisApi.getIntradayConfirmation(currentMarket, Math.min(FULL_LIMIT, 20))
+    if (requestId !== requestSeq || currentMarket !== market.value) return
+    intradayMeta.value = response
+    const confirmations = new Map((response.items || []).map((item) => [item.symbol, item]))
+    items.value = items.value.map((item) => ({
+      ...item,
+      intraday_confirmation: confirmations.get(item.symbol) || item.intraday_confirmation,
+    }))
+  } catch (error) {
+    if (requestId !== requestSeq) return
+    console.warn('盘中确认加载失败:', error)
   }
 }
 
@@ -574,6 +676,11 @@ function actionBlockedReason(row: RecommendationItem) {
   return recommendationActionBlockedReason(row, meta.value)
 }
 
+function optimizerAdjustmentText(row: RecommendationItem) {
+  const reasons = row.optimizer_adjustments || row.pool_optimizer?.adjustments || []
+  return reasons.slice(0, 2).join('；')
+}
+
 function changeClass(value?: number | string) {
   const number = Number(value)
   if (!Number.isFinite(number)) return ''
@@ -597,6 +704,16 @@ function firstFalsification(row: RecommendationItem) {
 function capitalFlowUnavailable(row: RecommendationItem) {
   const signal = row.capital_flow_status || row.capital_flow_features?.signal || row.capital_flow_features?.status
   return signal === 'unavailable'
+}
+
+function intradayLineText(row: RecommendationItem) {
+  const confirmation = row.intraday_confirmation
+  if (!confirmation) return ''
+  const quote = confirmation.quote || {}
+  const price = quote.price != null ? `现价 ${formatPrice(quote.price)}` : ''
+  const change = quote.change_pct != null ? `涨跌 ${formatPct(quote.change_pct)}` : ''
+  const action = confirmation.next_action || ''
+  return [price, change, action].filter(Boolean).join('，')
 }
 
 onMounted(() => loadRecommendations())
@@ -670,6 +787,118 @@ onMounted(() => loadRecommendations())
 .trust-strip.blocked {
   border-color: #ffa39e;
   background: #fff1f0;
+}
+
+.optimizer-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.optimizer-status-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.optimizer-status-item small {
+  color: #606266;
+  font-size: 12px;
+}
+
+.optimizer-status-item strong {
+  color: #303133;
+  font-size: 13px;
+  text-align: right;
+}
+
+.intraday-strip {
+  display: grid;
+  grid-template-columns: 1.6fr repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.intraday-strip-head,
+.intraday-status-item {
+  min-height: 44px;
+  padding: 9px 10px;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.intraday-strip-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.intraday-strip-head strong {
+  color: #303133;
+  font-size: 13px;
+}
+
+.intraday-strip-head span {
+  color: #606266;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.intraday-status-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.intraday-status-item small {
+  color: #606266;
+  font-size: 12px;
+}
+
+.intraday-status-item strong {
+  font-size: 13px;
+}
+
+.intraday-status-item.good {
+  border-color: #b7eb8f;
+  background: #f2fbf6;
+}
+
+.intraday-status-item.wait {
+  border-color: #f2d48b;
+  background: #fff8e6;
+}
+
+.intraday-status-item.bad {
+  border-color: #ffa39e;
+  background: #fff1f0;
+}
+
+.intraday-line {
+  color: #606266;
+}
+
+.intraday-line.actionable {
+  color: #166534;
+}
+
+.intraday-line.invalidated,
+.intraday-line.quote_error {
+  color: #b91c1c;
+}
+
+.intraday-label {
+  color: #303133 !important;
+  font-weight: 600 !important;
 }
 
 .bucket-overview {
@@ -1296,6 +1525,12 @@ onMounted(() => loadRecommendations())
 
   .actions .el-button {
     flex: 1 1 120px;
+  }
+
+  .optimizer-strip,
+  .intraday-strip,
+  .bucket-overview-grid {
+    grid-template-columns: 1fr;
   }
 
   .card-grid {
