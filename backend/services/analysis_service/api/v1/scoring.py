@@ -182,11 +182,24 @@ async def _ensure_observation_pool_optimizer(result: dict) -> dict:
     recommendations = result.get("recommendations") or []
     if not recommendations:
         return result
-    if any(isinstance(rec.get("pool_optimizer"), dict) for rec in recommendations):
-        return result
 
     market_regime = result.get("market_regime") or {}
     try:
+        already_optimized = any(isinstance(rec.get("pool_optimizer"), dict) for rec in recommendations)
+        stale_optimizer = any(
+            _recommendation_has_news_impact(rec)
+            and not (((rec.get("pool_optimizer") or {}).get("news") or {}).get("has_news"))
+            for rec in recommendations
+        )
+        if already_optimized and not stale_optimizer:
+            try:
+                from backend.services.analysis_service.engine.pool_summary_generator import generate_pool_summary
+
+                result["pool_summary"] = generate_pool_summary(recommendations, market_regime)
+            except Exception as exc:
+                logger.debug("pool summary regeneration failed for existing optimizer: %s", exc)
+            return result
+
         symbols = [str(rec.get("symbol") or "") for rec in recommendations]
         review_feedback = await asyncio.to_thread(fetch_review_feedback_for_symbols, symbols)
         optimized, optimizer_summary = optimize_observation_pool(
@@ -209,6 +222,13 @@ async def _ensure_observation_pool_optimizer(result: dict) -> dict:
     except Exception as exc:
         logger.debug("observation pool optimizer response enrichment failed: %s", exc)
     return result
+
+
+def _recommendation_has_news_impact(rec: dict) -> bool:
+    chain = rec.get("evidence_chain") or []
+    if not isinstance(chain, list):
+        return False
+    return any(isinstance(item, dict) and item.get("factor") == "news_impact_agent" for item in chain)
 
 
 def _pool_phase_metadata(
