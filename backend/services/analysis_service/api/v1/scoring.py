@@ -61,6 +61,7 @@ from backend.services.analysis_service.engine.scoring_data import (
 
 router = APIRouter(tags=["综合评分"])
 logger = logging.getLogger(__name__)
+RECOMMENDATION_CACHE_VERSION = "v4"
 
 
 # ── API ──
@@ -106,10 +107,14 @@ def _observation_target_date(data_date: str | None) -> str | None:
 
 
 def _has_news_impact(row) -> bool:
+    return bool(_news_impact_items(row))
+
+
+def _news_impact_items(row) -> list[dict]:
     chain = row.evidence_chain_json or []
     if not isinstance(chain, list):
-        return False
-    return any(isinstance(item, dict) and item.get("factor") == "news_impact_agent" for item in chain)
+        return []
+    return [item for item in chain if isinstance(item, dict) and item.get("factor") == "news_impact_agent"]
 
 
 def _is_recovery_pool(rows: list) -> bool:
@@ -179,6 +184,7 @@ def _rebalance_rows_by_observation_bucket(rows: list, limit: int) -> list:
 
 
 async def _ensure_observation_pool_optimizer(result: dict) -> dict:
+    result = _prepare_internal_optimizer_fields(result)
     recommendations = result.get("recommendations") or []
     if not recommendations:
         return result
@@ -198,7 +204,7 @@ async def _ensure_observation_pool_optimizer(result: dict) -> dict:
                 result["pool_summary"] = generate_pool_summary(recommendations, market_regime)
             except Exception as exc:
                 logger.debug("pool summary regeneration failed for existing optimizer: %s", exc)
-            return result
+            return _strip_internal_response_fields(result)
 
         symbols = [str(rec.get("symbol") or "") for rec in recommendations]
         review_feedback = await asyncio.to_thread(fetch_review_feedback_for_symbols, symbols)
@@ -221,14 +227,36 @@ async def _ensure_observation_pool_optimizer(result: dict) -> dict:
         result["pool_summary"] = pool_summary
     except Exception as exc:
         logger.debug("observation pool optimizer response enrichment failed: %s", exc)
-    return result
+    return _strip_internal_response_fields(result)
 
 
 def _recommendation_has_news_impact(rec: dict) -> bool:
+    if rec.get("_news_impact_items"):
+        return True
     chain = rec.get("evidence_chain") or []
     if not isinstance(chain, list):
         return False
     return any(isinstance(item, dict) and item.get("factor") == "news_impact_agent" for item in chain)
+
+
+def _prepare_internal_optimizer_fields(result: dict) -> dict:
+    for rec in result.get("recommendations") or []:
+        if not isinstance(rec, dict):
+            continue
+        internal_news = rec.get("_news_impact_items") or []
+        if internal_news and not rec.get("evidence_chain"):
+            rec["evidence_chain"] = internal_news
+            rec["_internal_evidence_chain_added"] = True
+    return result
+
+
+def _strip_internal_response_fields(result: dict) -> dict:
+    for rec in result.get("recommendations") or []:
+        if isinstance(rec, dict):
+            if rec.pop("_internal_evidence_chain_added", False):
+                rec["evidence_chain"] = []
+            rec.pop("_news_impact_items", None)
+    return result
 
 
 def _pool_phase_metadata(
@@ -664,7 +692,7 @@ async def get_recommendations(
                 max_candidates = _int_env("DAILY_RECOMMENDATIONS_INITIAL_FULL_SCAN_MAX", max_candidates, minimum=max_candidates, maximum=10000)
 
     cache_key = (
-        f"market-{market}:limit-{limit}:max-{max_candidates}:strategy-{requested_strategy}:"
+        f"{RECOMMENDATION_CACHE_VERSION}:market-{market}:limit-{limit}:max-{max_candidates}:strategy-{requested_strategy}:"
         f"evidence-{int(include_evidence)}:debate-{int(include_debate)}:full-{int(run_initial_full_scan)}"
     )
     from backend.shared.cache import get_cache_manager
@@ -797,6 +825,7 @@ async def get_recommendations(
                 "capital_flow_features": _extract_capital_flow_features(row.score_breakdown_json or []),
                 "capital_flow_status": _extract_capital_flow_status(row.score_breakdown_json or []),
                 "evidence_chain": row.evidence_chain_json or [] if include_evidence else [],
+                "_news_impact_items": _news_impact_items(row),
                 "veto_result": row.veto_result_json or {},
                 "bull_case": debate_json.get("bull_case", []) if include_debate else [],
                 "bear_case": debate_json.get("bear_case", []) if include_debate else [],

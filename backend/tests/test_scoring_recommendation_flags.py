@@ -100,6 +100,50 @@ class ScoringRecommendationFlagTests(unittest.TestCase):
         self.assertIn("evidence-1:debate-1", keys[1])
         self.assertNotEqual(keys[0], keys[1])
 
+    def test_lightweight_optimizer_can_use_internal_news_without_leaking_it(self) -> None:
+        from backend.services.analysis_service.api.v1 import scoring
+
+        result = {
+            "recommendations": [
+                {
+                    "symbol": "000001.SZ",
+                    "score": 80,
+                    "tier": "A",
+                    "priority_score": 60,
+                    "observation_action": "放量突破",
+                    "evidence_chain": [],
+                    "_news_impact_items": [
+                        {
+                            "factor": "news_impact_agent",
+                            "direction": "positive",
+                            "impact": 5,
+                            "generated_at": "2026-05-22T08:00:00+00:00",
+                            "value": {
+                                "direction": "positive",
+                                "relevance": "high",
+                                "confidence": "high",
+                                "summary": "unit news",
+                            },
+                        }
+                    ],
+                }
+            ],
+            "market_regime": {"regime": "range_bound"},
+        }
+
+        with patch(
+            "backend.services.analysis_service.api.v1.scoring.fetch_review_feedback_for_symbols",
+            return_value={},
+        ):
+            optimized = asyncio.run(scoring._ensure_observation_pool_optimizer(result))
+
+        rec = optimized["recommendations"][0]
+        self.assertEqual(optimized["pool_summary"]["optimizer"]["news_quality"]["with_news"], 1)
+        self.assertEqual(rec["pool_optimizer"]["news"]["has_news"], True)
+        self.assertEqual(rec["evidence_chain"], [])
+        self.assertNotIn("_news_impact_items", rec)
+        self.assertNotIn("_internal_evidence_chain_added", rec)
+
 
 if __name__ == "__main__":
     unittest.main()
