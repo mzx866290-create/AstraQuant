@@ -724,16 +724,36 @@ async def get_recommendations(
         return result
 
     from backend.shared.database import SessionLocal
-    from backend.shared.models import DailySnapshot, ResearchObservation
+    from backend.shared.models import DailySnapshot, PipelineExecution, ResearchObservation
 
     db = SessionLocal()
     try:
         today_str = date.today().isoformat()
         today_dt = datetime.combine(date.today(), datetime.min.time())
 
+        from backend.services.analysis_service.engine.strategy_config import _ALIASES
+
+        db_strategy: str | None = requested_strategy.strip().lower() if requested_strategy else None
+        if db_strategy:
+            db_strategy = _ALIASES.get(db_strategy, db_strategy)
+        if not db_strategy or db_strategy == "auto":
+            # Resolve from latest successful pipeline execution for today
+            try:
+                latest_exec = db.query(PipelineExecution).filter(
+                    PipelineExecution.execution_date == today_str,
+                    PipelineExecution.status.in_(["completed", "partial"]),
+                    PipelineExecution.strategy_id.isnot(None),
+                ).order_by(PipelineExecution.started_at.desc()).first()
+                db_strategy = latest_exec.strategy_id if latest_exec and latest_exec.strategy_id else None
+            except Exception:
+                db.rollback()
+                db_strategy = None
+
         query = db.query(ResearchObservation).filter(
             ResearchObservation.snapshot_date == today_dt,
         )
+        if db_strategy:
+            query = query.filter(ResearchObservation.strategy_id == db_strategy)
         if market != "ALL":
             query = query.filter(ResearchObservation.symbol.like(f"%.{market}"))
 
@@ -752,29 +772,51 @@ async def get_recommendations(
 
         pipeline_status = "ok"
         if not rows:
-            latest_snapshot_date = db.query(ResearchObservation.snapshot_date)
-            if market != "ALL":
-                latest_snapshot_date = latest_snapshot_date.filter(ResearchObservation.symbol.like(f"%.{market}"))
-            latest_snapshot_date = latest_snapshot_date.order_by(ResearchObservation.snapshot_date.desc()).limit(1).scalar()
-            if latest_snapshot_date is not None:
-                query = db.query(ResearchObservation).filter(
-                    ResearchObservation.snapshot_date == latest_snapshot_date,
+            # Check if today's pipeline ran with 0 output (completed/partial/no_data) —
+            # if so, "empty" is intentional and we should NOT fall back to an older pool.
+            today_ran_empty = False
+            try:
+                exec_query = db.query(PipelineExecution).filter(
+                    PipelineExecution.execution_date == today_str,
+                    PipelineExecution.status.in_(["completed", "partial", "no_data"]),
                 )
+                if db_strategy:
+                    exec_query = exec_query.filter(PipelineExecution.strategy_id == db_strategy)
+                today_exec = exec_query.order_by(PipelineExecution.started_at.desc()).first()
+                today_ran_empty = today_exec is not None and (today_exec.total_output or 0) == 0
+            except Exception:
+                db.rollback()
+
+            if today_ran_empty:
+                pipeline_status = "empty"
+            else:
+                latest_query = db.query(ResearchObservation.snapshot_date)
                 if market != "ALL":
-                    query = query.filter(ResearchObservation.symbol.like(f"%.{market}"))
-                query = _prefer_formal_pool(query, ResearchObservation)
-                query = query.order_by(ResearchObservation.score.desc()).limit(limit * 5)
-                rows = query.all()
-                rows = sorted(
-                    rows,
-                    key=lambda row: (
-                        _tier_rank_from_factor_snapshot(row.factor_snapshot_json),
-                        -_priority_from_factor_snapshot(row.factor_snapshot_json),
-                        -float(row.score or 0),
-                    ),
-                )
-                rows = _rebalance_rows_by_observation_bucket(rows, limit)
-            pipeline_status = "stale" if rows else "empty"
+                    latest_query = latest_query.filter(ResearchObservation.symbol.like(f"%.{market}"))
+                if db_strategy:
+                    latest_query = latest_query.filter(ResearchObservation.strategy_id == db_strategy)
+                latest_snapshot_date = latest_query.order_by(ResearchObservation.snapshot_date.desc()).limit(1).scalar()
+                if latest_snapshot_date is not None:
+                    query = db.query(ResearchObservation).filter(
+                        ResearchObservation.snapshot_date == latest_snapshot_date,
+                    )
+                    if db_strategy:
+                        query = query.filter(ResearchObservation.strategy_id == db_strategy)
+                    if market != "ALL":
+                        query = query.filter(ResearchObservation.symbol.like(f"%.{market}"))
+                    query = _prefer_formal_pool(query, ResearchObservation)
+                    query = query.order_by(ResearchObservation.score.desc()).limit(limit * 5)
+                    rows = query.all()
+                    rows = sorted(
+                        rows,
+                        key=lambda row: (
+                            _tier_rank_from_factor_snapshot(row.factor_snapshot_json),
+                            -_priority_from_factor_snapshot(row.factor_snapshot_json),
+                            -float(row.score or 0),
+                        ),
+                    )
+                    rows = _rebalance_rows_by_observation_bucket(rows, limit)
+                pipeline_status = "stale" if rows else "empty"
 
         symbols = [row.symbol for row in rows]
         name_map: dict[str, str] = {}
@@ -855,10 +897,15 @@ async def get_recommendations(
             }
             recommendations.append(rec)
 
-        # pool_summary: 优先从 Redis 读取（pipeline 写入），fallback 实时计算
+        # pool_summary: 优先从 Redis 读取 scoped key，fallback latest，再 fallback 实时计算
         cached_pool_summary = {}
         try:
-            cached_pool_summary = await cache.get("pool_summary", "latest") or {}
+            if data_date and db_strategy:
+                cached_pool_summary = await cache.get("pool_summary", f"{data_date}:{db_strategy}:{market}") or {}
+            if not cached_pool_summary:
+                cached_pool_summary = await cache.get("pool_summary", f"latest:{market}") or {}
+            if not cached_pool_summary:
+                cached_pool_summary = await cache.get("pool_summary", "latest:ALL") or {}
         except Exception:
             pass
         if not cached_pool_summary and recommendations:
@@ -867,6 +914,24 @@ async def get_recommendations(
                 cached_pool_summary = generate_pool_summary(recommendations, {})
             except Exception:
                 pass
+
+        # Derive active_strategy from actual data, not hardcoded
+        actual_strategy_id = db_strategy
+        if not actual_strategy_id and rows:
+            actual_strategy_id = rows[0].strategy_id
+        _active_strategy: dict = {"id": actual_strategy_id or "unknown", "selection_mode": "database_recovery"}
+        try:
+            if actual_strategy_id:
+                from backend.services.analysis_service.engine.strategy_config import load_strategy
+                _strat = load_strategy(actual_strategy_id)
+                _active_strategy = {
+                    "id": _strat["id"],
+                    "name": _strat.get("name", actual_strategy_id),
+                    "selection_mode": "database_recovery",
+                    "engine_strategy": _strat.get("engine_strategy"),
+                }
+        except Exception:
+            pass
 
         result = {
             "recommendations": recommendations,
@@ -889,18 +954,12 @@ async def get_recommendations(
                 "name": "anomaly_driven_v1",
                 "description": "基于全市场量价异动筛选，定时采集+本地评分，秒级响应。",
             },
-            "active_strategy": {
-                "id": "anomaly_driven",
-                "name": "量价异动驱动",
-                "selection_mode": "anomaly_screening",
-                "selection_reason": "全市场量价异动筛选 + 风险否决 + 证据链",
-            },
+            "active_strategy": _active_strategy,
             "updated_at": datetime.now().isoformat(),
             "disclaimer": "每日观察池仅用于筛选值得继续研究的标的，不是买入建议；需结合个人风险承受能力和完整信息独立判断。",
         }
         result = await _ensure_observation_pool_optimizer(result)
-        if recommendations:
-            await cache.set("daily_recommendations", cache_key, value=result)
+        await cache.set("daily_recommendations", cache_key, value=result)
         return result
     finally:
         db.close()

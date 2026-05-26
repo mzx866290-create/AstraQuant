@@ -172,8 +172,10 @@ class ReviewTrackerTests(unittest.TestCase):
         self.assertEqual(row.strategy_id, "retail_small")
         self.assertEqual(row.regime, "range_bound")
         self.assertEqual(row.evidence_chain_json, [{"factor": "valuation", "impact": 1}])
-        self.assertEqual(row.factor_snapshot_json[0]["factor"], "valuation")
-        self.assertEqual(row.factor_snapshot_json[0]["weighted_delta"], 1.5)
+        self.assertIsInstance(row.factor_snapshot_json, dict)
+        factors = row.factor_snapshot_json["factors"]
+        self.assertEqual(factors[0]["factor"], "valuation")
+        self.assertEqual(factors[0]["weighted_delta"], 1.5)
 
     def test_run_pending_reviews_creates_review_rows_from_pending_observations(self) -> None:
         session = _FakeSession()

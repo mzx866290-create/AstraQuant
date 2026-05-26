@@ -18,6 +18,9 @@ export const watchlistApi = {
   addToWatchlist: (watchlist_id: number, payload: WatchlistAddPayload) =>
     api.post(`/api/v1/watchlists/${watchlist_id}/items`, payload),
 
+  batchAddToWatchlist: <T = unknown>(watchlist_id: number, symbols: string[]) =>
+    api.post<T>(`/api/v1/watchlists/${watchlist_id}/items/batch`, { symbols }),
+
   reorderWatchlistItems: <T = unknown>(watchlist_id: number, stock_ids: number[]) =>
     api.put<T>(`/api/v1/watchlists/${watchlist_id}/items/reorder`, { stock_ids }),
 

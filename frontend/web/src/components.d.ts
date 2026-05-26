@@ -51,6 +51,7 @@ declare module 'vue' {
     KLineChart: typeof import('./components/charts/KLineChart.vue')['default']
     MoneyFlowChart: typeof import('./components/charts/MoneyFlowChart.vue')['default']
     NewsFeed: typeof import('./components/stock/NewsFeed.vue')['default']
+    ObservationCard: typeof import('./components/recommendations/ObservationCard.vue')['default']
     QuotePanel: typeof import('./components/stock/QuotePanel.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

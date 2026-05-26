@@ -407,6 +407,49 @@ class RejectionLog(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class PipelineExecution(Base):
+    """管道执行记录 — 每次跑管道记一条，比 PipelineRunLog 更结构化"""
+    __tablename__ = "pipeline_executions"
+
+    id = Column(String(36), primary_key=True)
+    execution_date = Column(String(10), nullable=False, index=True)
+    trigger_type = Column(String(20), nullable=False, default="scheduled")  # scheduled / force_refresh / manual
+    strategy_id = Column(String(50), nullable=True)
+    market = Column(String(10), nullable=True)
+    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    finished_at = Column(DateTime, nullable=True)
+    status = Column(String(20), nullable=False, default="running")  # running / completed / failed / partial
+
+    total_input = Column(Integer, default=0)
+    total_output = Column(Integer, default=0)
+    step_summary = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (UniqueConstraint("execution_date", "trigger_type", "started_at", name="uix_pipeline_execution"),)
+
+
+class PipelineTrace(Base):
+    """管道追踪 — 每个标的在每步的状态"""
+    __tablename__ = "pipeline_traces"
+
+    id = Column(Integer, primary_key=True, index=True)
+    execution_id = Column(String(36), ForeignKey("pipeline_executions.id"), nullable=False, index=True)
+    stock_code = Column(String(20), nullable=False, index=True)
+    stock_name = Column(String(50), nullable=True)
+
+    step_name = Column(String(50), nullable=False)
+    step_order = Column(Integer, nullable=False)
+    action = Column(String(20), nullable=False)  # passed / filtered / scored / promoted / demoted
+
+    score_before = Column(Float, nullable=True)
+    score_after = Column(Float, nullable=True)
+    reason = Column(String(500), nullable=True)
+    detail = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class DailySnapshot(Base):
     """全市场每日行情快照（定时采集，用于异动筛选）"""
     __tablename__ = "daily_snapshots"

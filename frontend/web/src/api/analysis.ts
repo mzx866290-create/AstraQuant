@@ -5,6 +5,30 @@ const AI_ANALYSIS_TIMEOUT_MS = 300000
 const AI_FOLLOW_UP_TIMEOUT_MS = 120000
 const AI_BATCH_SUMMARY_TIMEOUT_MS = 120000
 
+const LOCAL_CACHE_PREFIX = 'pool_fallback:'
+const LOCAL_CACHE_TTL_MS = 86400_000
+
+function getLocalCache<T>(key: string): (T & { _fallback_ts?: number }) | null {
+  try {
+    const raw = localStorage.getItem(`${LOCAL_CACHE_PREFIX}${key}`)
+    if (!raw) return null
+    const { data, ts } = JSON.parse(raw)
+    if (Date.now() - ts > LOCAL_CACHE_TTL_MS) {
+      localStorage.removeItem(`${LOCAL_CACHE_PREFIX}${key}`)
+      return null
+    }
+    return { ...data, _fallback_ts: ts }
+  } catch {
+    return null
+  }
+}
+
+function setLocalCache(key: string, data: unknown) {
+  try {
+    localStorage.setItem(`${LOCAL_CACHE_PREFIX}${key}`, JSON.stringify({ data, ts: Date.now() }))
+  } catch { /* quota exceeded — ignore */ }
+}
+
 export const analysisApi = {
   getTechnical: (symbol: string, indicators: string = 'ma5,ma20,macd,boll,kdj,rsi') =>
     api.get(`/api/v1/analysis/technical/${symbol}`, { params: { indicators } }),
@@ -21,7 +45,7 @@ export const analysisApi = {
   getStockDebate: <T = unknown>(symbol: string, strategy: string = 'auto', include_evidence: boolean = true) =>
     api.get<T>(`/api/v1/analysis/score/${symbol}/debate`, { params: { strategy, include_evidence } }),
 
-  getRecommendations: (
+  getRecommendations: async (
     market: string = 'ALL',
     limit: number = 10,
     force_refresh: boolean = false,
@@ -30,41 +54,72 @@ export const analysisApi = {
     include_evidence: boolean = true,
     include_debate: boolean = true,
     initial_full_scan: boolean = false,
-  ) =>
-    api.get<RecommendationsResponse>('/api/v1/analysis/score/batch/recommend', {
-      params: {
-        market,
-        limit,
-        force_refresh,
-        strategy,
-        max_candidates,
-        include_evidence,
-        include_debate,
-        initial_full_scan,
-      },
-      timeout: 180000,
-    }),
+  ): Promise<RecommendationsResponse> => {
+    try {
+      const cacheKey = `recommendations:${market}:${limit}:${strategy}:${max_candidates}:e${+include_evidence}:d${+include_debate}:f${+initial_full_scan}`
+      const result = await api.get<RecommendationsResponse>('/api/v1/analysis/score/batch/recommend', {
+        params: {
+          market,
+          limit,
+          force_refresh,
+          strategy,
+          max_candidates,
+          include_evidence,
+          include_debate,
+          initial_full_scan,
+        },
+        timeout: 180000,
+      })
+      setLocalCache(cacheKey, result)
+      return result
+    } catch (error) {
+      const cacheKey = `recommendations:${market}:${limit}:${strategy}:${max_candidates}:e${+include_evidence}:d${+include_debate}:f${+initial_full_scan}`
+      const cached = getLocalCache<RecommendationsResponse>(cacheKey)
+      if (cached) {
+        ;(cached as any).source = 'local_cache'
+        ;(cached as any).stale = true
+        return cached as RecommendationsResponse
+      }
+      throw error
+    }
+  },
 
-  getIntradayConfirmation: (
+  getIntradayConfirmation: async (
     market: string = 'ALL',
     limit: number = 20,
     strategy: string = 'auto',
     concurrency: number = 8,
-  ) =>
-    api.get<IntradayConfirmationResponse>('/api/v1/analysis/score/batch/intraday-confirmation', {
-      params: { market, limit, strategy, concurrency },
-      timeout: 120000,
-    }),
+  ): Promise<IntradayConfirmationResponse> => {
+    try {
+      return await api.get<IntradayConfirmationResponse>('/api/v1/analysis/score/batch/intraday-confirmation', {
+        params: { market, limit, strategy, concurrency },
+        timeout: 120000,
+      })
+    } catch (error) {
+      console.warn('Intraday confirmation unavailable:', error)
+      return {
+        code: 200,
+        data: { actionable: [], wait_pullback: [], watch_only: [], invalidated: [] },
+        meta: { unavailable: true, unavailable_reason: String(error) },
+      } as unknown as IntradayConfirmationResponse
+    }
+  },
 
-  getRecentReviews: <T = unknown>(
+  getRecentReviews: async <T = unknown>(
     symbols: string[],
     strategy: string = 'auto',
     offsets: string = 'T+1,T+5,T+20',
     limit_per_symbol: number = 1,
-  ) =>
-    api.get<T>('/api/v1/analysis/reviews/recent', {
-      params: { symbols: symbols.join(','), strategy, offsets, limit_per_symbol },
-    }),
+  ): Promise<T> => {
+    try {
+      return await api.get<T>('/api/v1/analysis/reviews/recent', {
+        params: { symbols: symbols.join(','), strategy, offsets, limit_per_symbol },
+      })
+    } catch (error) {
+      console.warn('Reviews unavailable:', error)
+      return { code: 200, data: [], meta: { unavailable: true } } as unknown as T
+    }
+  },
 
   getObservationSummary: (symbol: string) =>
     api.get<{ symbol: string; summary_text: string | null; score?: number; snapshot_date?: string | null }>(

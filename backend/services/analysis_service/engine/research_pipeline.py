@@ -265,5 +265,5 @@ async def run_research_pipeline(
         "updated_at": datetime.now().isoformat(),
         "phase": "phase1_research_orchestration",
     }
-    save_observation_snapshots(date.today(), str(market_regime.get("regime") or "unknown"), recommendations)
+    save_observation_snapshots(date.today(), str(market_regime.get("regime") or "unknown"), recommendations, strategy_id=strategy["id"])
     return result

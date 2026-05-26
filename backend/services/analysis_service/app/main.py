@@ -57,6 +57,7 @@ from api.v1.admin_users import router as admin_users_router
 from api.v1.admin_stats import router as admin_stats_router
 from api.v1.admin_logs import router as admin_logs_router
 from api.v1.ai_analysis import router as ai_analysis_router
+from api.v1.pipeline_trace import router as pipeline_trace_router
 from backend.shared.auth import get_current_user, get_token_from_auth, require_admin
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -219,6 +220,9 @@ app.include_router(admin_models_router, prefix="/api/v1/admin", tags=["管理员
 app.include_router(admin_users_router,  prefix="/api/v1/admin", tags=["管理员-用户管理"])
 app.include_router(admin_stats_router,  prefix="/api/v1/admin", tags=["管理员-统计"])
 app.include_router(admin_logs_router,   prefix="/api/v1/admin", tags=["管理员-日志"])
+
+# 管道可观测性
+app.include_router(pipeline_trace_router, prefix="/api/v1/analysis", tags=["管道追踪"])
 
 
 @app.get("/health")

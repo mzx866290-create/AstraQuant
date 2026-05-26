@@ -1,5 +1,7 @@
 param(
-  [int]$DockerWaitSeconds = 180
+  [int]$DockerWaitSeconds = 180,
+  [int]$DevFrontendPort = 5173,
+  [switch]$SkipDevFrontend
 )
 
 $ErrorActionPreference = "Continue"
@@ -15,8 +17,61 @@ function Write-Log {
   Write-Host $line
 }
 
+function Test-PortListening {
+  param([int]$Port)
+  try {
+    $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    return $null -ne $connection
+  } catch {
+    return $false
+  }
+}
+
+function Start-DevFrontend {
+  param([int]$Port)
+
+  $frontendDir = Join-Path $Root "frontend\web"
+  if (-not (Test-Path (Join-Path $frontendDir "package.json"))) {
+    Write-Log "WARN frontend package.json not found; skipping dev frontend."
+    return $false
+  }
+
+  if (Test-PortListening -Port $Port) {
+    Write-Log "Dev frontend port $Port is already listening; skipping start."
+    return $true
+  }
+
+  if (-not (Test-Path (Join-Path $frontendDir "node_modules"))) {
+    Write-Log "WARN frontend node_modules not found; skipping dev frontend. Run npm install in frontend\web first."
+    return $false
+  }
+
+  $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if (-not $npm) {
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+  }
+  if (-not $npm) {
+    Write-Log "WARN npm executable not found; skipping dev frontend."
+    return $false
+  }
+
+  $stdout = Join-Path $LogDir "frontend_vite_autostart.log"
+  $stderr = Join-Path $LogDir "frontend_vite_autostart_err.log"
+  $arguments = @("run", "dev", "--", "--host", "127.0.0.1", "--port", "$Port", "--strictPort")
+
+  try {
+    Write-Log "Starting dev frontend on http://127.0.0.1:$Port."
+    $process = Start-Process -FilePath $npm.Source -ArgumentList $arguments -WorkingDirectory $frontendDir -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+    Write-Log "Dev frontend start requested. PID=$($process.Id) Logs=$stdout $stderr"
+    return $true
+  } catch {
+    Write-Log "WARN dev frontend failed to start: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 Set-Location $Root
-Write-Log "Stock platform Docker autostart begin. Root=$Root"
+Write-Log "Stock platform Docker autostart begin. Root=$Root DevFrontendPort=$DevFrontendPort SkipDevFrontend=$SkipDevFrontend"
 
 $docker = Get-Command docker -ErrorAction SilentlyContinue
 if (-not $docker) {
@@ -66,12 +121,23 @@ if ($LASTEXITCODE -ne 0) {
 Write-Log "Docker compose ps:"
 docker compose ps *>> $LogFile
 
+$devFrontendExpected = $false
+if ($SkipDevFrontend) {
+  Write-Log "Skipping dev frontend because -SkipDevFrontend was set."
+} else {
+  $devFrontendExpected = Start-DevFrontend -Port $DevFrontendPort
+}
+
 $healthUrls = @(
   "http://localhost:8001/health",
   "http://localhost:8002/health",
   "http://localhost:8003/health",
   "http://localhost:5175/"
 )
+
+if ($devFrontendExpected) {
+  $healthUrls += "http://127.0.0.1:$DevFrontendPort/"
+}
 
 foreach ($url in $healthUrls) {
   $ok = $false

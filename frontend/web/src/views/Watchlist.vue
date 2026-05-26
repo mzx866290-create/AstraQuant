@@ -82,6 +82,9 @@
         @dragover.prevent
         @drop="handleDrop(index)"
         @dragend="handleDragEnd"
+        @touchstart="handleTouchStart(index, $event)"
+        @touchmove="handleTouchMove"
+        @touchend="handleTouchEnd"
       >
         <!-- 卡片头部 -->
         <div class="card-header" @click="goDetail(item)">
@@ -130,6 +133,16 @@
             >
               分析异常
             </el-tag>
+            <el-button
+              v-if="summaryMap[item.symbol]?.model_status === 'error'"
+              size="small"
+              type="primary"
+              link
+              :loading="retryingSymbol === item.symbol"
+              @click.stop="retrySingleSummary(item.symbol)"
+            >
+              重试
+            </el-button>
             <DataQualityPanel
               v-if="summaryMap[item.symbol]?.data_quality"
               class="summary-quality"
@@ -184,22 +197,37 @@
         <el-input
           v-model="addSymbol"
           size="large"
-          placeholder="输入6位股票代码，如 600519"
-          maxlength="6"
+          placeholder="输入股票代码或名称，如 600519 或 贵州茅台"
+          maxlength="20"
           @input="onInput"
           @keyup.enter="confirmAdd"
         >
           <template #prefix>
             <el-icon><Search /></el-icon>
           </template>
+          <template #suffix>
+            <el-icon v-if="searching" class="loading-icon"><Loading /></el-icon>
+          </template>
         </el-input>
-        <p class="add-tip">输入代码后按回车或点击「添加」</p>
+        <div v-if="searchResults.length" class="search-results">
+          <div
+            v-for="result in searchResults"
+            :key="result.symbol"
+            class="search-result-item"
+            @click="selectSearchResult(result)"
+          >
+            <span class="result-name">{{ result.name }}</span>
+            <span class="result-symbol">{{ result.symbol }}</span>
+            <el-tag size="small" effect="light">{{ result.market }}</el-tag>
+          </div>
+        </div>
+        <p class="add-tip">输入代码直接回车添加，或输入名称搜索后点击选择</p>
       </div>
       <template #footer>
         <el-button @click="showAddDialog = false">取消</el-button>
         <el-button
           type="primary"
-          :disabled="addSymbol.trim().length < 6"
+          :disabled="addSymbol.trim().length < 2"
           @click="confirmAdd"
         >
           添加
@@ -247,8 +275,8 @@ import {
   Download,
   Upload,
 } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { analysisApi, watchlistApi } from '@/api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { analysisApi, watchlistApi, stockApi } from '@/api'
 import Disclaimer from '@/components/common/Disclaimer.vue'
 import DataQualityPanel from '@/components/common/DataQualityPanel.vue'
 import type { DataQualityItem } from '@/utils/dataQuality'
@@ -293,13 +321,55 @@ const summaryLoading = ref(false)
 const loading = ref(false)
 const importing = ref(false)
 const draggedStockId = ref<number | null>(null)
+const touchDragIndex = ref<number | null>(null)
+const touchStartY = ref(0)
+
+const retryingSymbol = ref('')
+const searchResults = ref<{ symbol: string; name: string; market: string }[]>([])
+const searching = ref(false)
+let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 function onInput(val: string) {
-  addSymbol.value = val.replace(/[^0-9]/g, '').slice(0, 6)
+  addSymbol.value = val.replace(/[^0-9a-zA-Z一-龥]/g, '').slice(0, 20)
+  if (searchTimer) clearTimeout(searchTimer)
+  const query = addSymbol.value.trim()
+  if (query.length < 2) {
+    searchResults.value = []
+    return
+  }
+  searchTimer = setTimeout(() => doSearch(query), 300)
+}
+
+async function doSearch(query: string) {
+  searching.value = true
+  try {
+    const res = await stockApi.searchStocks<{ items?: { symbol: string; name: string; market: string }[] }>(query, undefined, 8)
+    searchResults.value = res.items || []
+  } catch {
+    searchResults.value = []
+  } finally {
+    searching.value = false
+  }
+}
+
+async function selectSearchResult(item: { symbol: string; name: string; market: string }) {
+  if (!watchlistId.value) return
+  try {
+    await watchlistApi.addToWatchlist(watchlistId.value, { symbol: item.symbol, name: item.name, market: item.market })
+    showAddDialog.value = false
+    addSymbol.value = ''
+    searchResults.value = []
+    ElMessage.success('添加成功')
+    await loadWatchlist()
+  } catch (error) {
+    const msg = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '添加失败'
+    ElMessage.error(msg)
+  }
 }
 
 function openAddDialog() {
   addSymbol.value = ''
+  searchResults.value = []
   showAddDialog.value = true
 }
 
@@ -359,6 +429,22 @@ async function loadBatchSummary(forceRefresh = false) {
   }
 }
 
+async function retrySingleSummary(symbol: string) {
+  retryingSymbol.value = symbol
+  try {
+    const resp = await analysisApi.getBatchSummary<{ items?: BatchSummaryItem[] }>(
+      [symbol], 'summary', 'beginner', true, true,
+    )
+    for (const item of resp.items || []) {
+      summaryMap.value = { ...summaryMap.value, [item.symbol]: item }
+    }
+  } catch {
+    ElMessage.error(`重试「${symbol}」摘要失败`)
+  } finally {
+    retryingSymbol.value = ''
+  }
+}
+
 function riskList(risks?: Record<string, Omit<RiskLight, 'key'>>) {
   if (!risks) return []
   return Object.entries(risks).map(([key, value]) => ({ key, ...value }))
@@ -382,11 +468,17 @@ function stockAvatarText(item: WatchlistItem) {
 
 async function confirmAdd() {
   const code = addSymbol.value.trim()
-  if (code.length < 6 || !watchlistId.value) return
+  if (code.length < 2 || !watchlistId.value) return
+  const sixDigit = code.replace(/[^0-9]/g, '')
+  if (sixDigit.length !== 6) {
+    ElMessage.warning('请输入6位数字代码，或从搜索结果中选择')
+    return
+  }
   try {
-    await watchlistApi.addToWatchlist(watchlistId.value, { symbol: code })
+    await watchlistApi.addToWatchlist(watchlistId.value, { symbol: sixDigit })
     showAddDialog.value = false
     addSymbol.value = ''
+    searchResults.value = []
     ElMessage.success('添加成功')
     await loadWatchlist()
   } catch (error) {
@@ -405,19 +497,13 @@ async function confirmImport() {
   }
 
   importing.value = true
-  let success = 0
   try {
-    for (const code of codes) {
-      try {
-        await watchlistApi.addToWatchlist(watchlistId.value, { symbol: code })
-        success += 1
-      } catch (error) {
-        console.warn('导入自选股失败:', code, error)
-      }
-    }
+    const res = await watchlistApi.batchAddToWatchlist<{ added: number; skipped: number }>(watchlistId.value, codes)
     showImportDialog.value = false
-    ElMessage.success(`导入完成，新增 ${success} 只`)
+    ElMessage.success(`导入完成，新增 ${res.added} 只${res.skipped ? `，跳过 ${res.skipped} 只` : ''}`)
     await loadWatchlist()
+  } catch {
+    ElMessage.error('导入失败')
   } finally {
     importing.value = false
   }
@@ -444,6 +530,40 @@ function handleDragEnd() {
   draggedStockId.value = null
 }
 
+function handleTouchStart(index: number, event: TouchEvent) {
+  touchDragIndex.value = index
+  touchStartY.value = event.touches[0].clientY
+}
+
+function handleTouchMove(event: TouchEvent) {
+  if (touchDragIndex.value == null) return
+  const touch = event.touches[0]
+  const elements = document.querySelectorAll('.watch-card')
+  for (let i = 0; i < elements.length; i++) {
+    const rect = elements[i].getBoundingClientRect()
+    if (touch.clientY >= rect.top && touch.clientY <= rect.bottom && i !== touchDragIndex.value) {
+      const next = [...watchlistItems.value]
+      const [moved] = next.splice(touchDragIndex.value, 1)
+      next.splice(i, 0, moved)
+      watchlistItems.value = next
+      touchDragIndex.value = i
+      break
+    }
+  }
+  event.preventDefault()
+}
+
+async function handleTouchEnd() {
+  if (touchDragIndex.value == null) return
+  touchDragIndex.value = null
+  if (!watchlistId.value) return
+  try {
+    await watchlistApi.reorderWatchlistItems(watchlistId.value, watchlistItems.value.map((item) => item.stock_id))
+  } catch {
+    await loadWatchlist()
+  }
+}
+
 async function handleDrop(targetIndex: number) {
   if (!watchlistId.value || draggedStockId.value == null) return
   const fromIndex = watchlistItems.value.findIndex((item) => item.stock_id === draggedStockId.value)
@@ -464,6 +584,15 @@ async function handleDrop(targetIndex: number) {
 
 async function removeStock(row: WatchlistItem) {
   if (!watchlistId.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确定要移除「${stockDisplayName(row)}」吗？`,
+      '移除确认',
+      { confirmButtonText: '移除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
   try {
     await watchlistApi.removeFromWatchlist(watchlistId.value, row.stock_id)
     ElMessage.success('已移除')
@@ -905,6 +1034,41 @@ onMounted(() => {
 
 .add-tip {
   margin: 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.search-results {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.search-result-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.search-result-item:hover {
+  background: var(--color-surface-muted);
+}
+
+.search-result-item + .search-result-item {
+  border-top: 1px solid var(--color-border);
+}
+
+.result-name {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.result-symbol {
+  font-family: var(--font-number);
   font-size: 13px;
   color: var(--color-text-muted);
 }

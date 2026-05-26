@@ -52,16 +52,44 @@ def save_observation_snapshots(
     snapshot_date: date,
     regime: str,
     recommendations: list[dict],
+    strategy_id: str = "",
 ) -> int:
-    if not recommendations:
-        return 0
     if not _has_table("research_observations"):
-        return 0
+        raise RuntimeError("research_observations table does not exist — run migrations")
 
     db = SessionLocal()
     saved = 0
     try:
         snapshot_dt = datetime.combine(snapshot_date, datetime.min.time(), tzinfo=timezone.utc)
+
+        # Determine the strategy scope for this save.
+        # Use explicit parameter if given, otherwise infer from the recommendations.
+        pool_strategy = strategy_id.strip() if strategy_id else ""
+        if not pool_strategy and recommendations:
+            pool_strategy = str(recommendations[0].get("strategy_id") or "").strip()
+
+        if not pool_strategy:
+            raise ValueError("strategy_id is required (explicitly or via recommendations) to scope observation saves")
+
+        # Delete stale records for this date+strategy that are not in the new pool.
+        current_symbols = {str(item.get("symbol") or "").strip() for item in recommendations} - {""}
+        stale_query = db.query(ResearchObservation).filter(
+            ResearchObservation.snapshot_date == snapshot_dt,
+            ResearchObservation.strategy_id == pool_strategy,
+        )
+        stale = stale_query.all()
+        deleted = 0
+        for row in stale:
+            if row.symbol not in current_symbols:
+                db.delete(row)
+                deleted += 1
+        if deleted:
+            logger.info("Removed %d stale observations for %s/%s", deleted, snapshot_date, pool_strategy or "all")
+
+        if not recommendations:
+            db.commit()
+            return 0
+
         for item in recommendations:
             symbol = str(item.get("symbol") or "").strip()
             strategy_id = str(item.get("strategy_id") or "").strip()
@@ -106,8 +134,8 @@ def save_observation_snapshots(
         return saved
     except Exception as exc:
         db.rollback()
-        logger.warning("save observation snapshots failed: %s", exc)
-        return 0
+        logger.error("save observation snapshots failed: %s", exc)
+        raise
     finally:
         db.close()
 
@@ -629,6 +657,8 @@ def build_factor_snapshot(item: dict) -> list[dict]:
 
 def _observation_factor_items(observation: ResearchObservation) -> list[dict]:
     snapshot = getattr(observation, "factor_snapshot_json", None) or []
+    if isinstance(snapshot, dict):
+        snapshot = snapshot.get("factors", [])
     if isinstance(snapshot, list) and snapshot:
         return [item for item in snapshot if isinstance(item, dict)]
 

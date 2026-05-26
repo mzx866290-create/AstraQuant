@@ -1,4 +1,5 @@
 # Register Windows task: start the Docker Compose stack after login.
+# The startup script also restores the local Vite dev frontend on 127.0.0.1:5173.
 # Run as administrator: powershell -ExecutionPolicy Bypass -File scripts\autostart_setup.ps1
 
 $TaskName = "StockPlatformAutoStart"
@@ -17,8 +18,8 @@ Write-Host ""
 # Remove existing task
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-# Create action. This starts the Docker stack only; it does not start the
-# local SQLite development services.
+# Create action. This starts the Docker stack and the local frontend dev server.
+# It does not start the local SQLite development backend services.
 $Action = New-ScheduledTaskAction `
     -Execute $PowerShellExe `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`"" `

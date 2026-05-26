@@ -37,8 +37,49 @@ from backend.services.analysis_service.engine.observation_pool_optimizer import 
 from backend.services.analysis_service.engine.pool_summary_generator import generate_pool_summary
 from backend.shared.database import SessionLocal
 from backend.shared.models import PipelineRunLog, RejectionLog
+from backend.services.analysis_service.engine.pipeline_tracker import PipelineContext, StepResult
+from backend.services.analysis_service.engine.pipeline_persistence import (
+    create_execution_record,
+    complete_execution_record,
+    save_traces,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _track_step(ctx: PipelineContext, step_name: str,
+                before: list, after: list, duration_ms: int = 0,
+                *, rejected: list | None = None, reason_fn=None):
+    """Record step stats and per-stock traces into PipelineContext.
+
+    When ``rejected`` is provided (e.g. hard_veto), only traces from the
+    rejected list are written — the before/after diff is skipped to avoid
+    duplicate entries for the same stock.
+    """
+    ctx.add_step_stats(step_name, len(before), len(after), duration_ms)
+    if rejected is not None:
+        for item in rejected:
+            veto = item.get("hard_veto") or {}
+            ctx.add_trace(step_name, StepResult(
+                stock_code=item.get("symbol", ""),
+                stock_name=item.get("name", ""),
+                action="filtered",
+                reason=veto.get("reason", "hard_veto")[:500],
+                detail={"vetoed_by": veto.get("vetoed_by")},
+            ))
+    else:
+        after_symbols = {item.get("symbol") for item in after}
+        for item in before:
+            sym = item.get("symbol", "")
+            if sym in after_symbols:
+                continue
+            reason = reason_fn(item) if reason_fn else "filtered"
+            ctx.add_trace(step_name, StepResult(
+                stock_code=sym,
+                stock_name=item.get("name", ""),
+                action="filtered",
+                reason=reason[:500] if reason else "",
+            ))
 
 STRATEGY_ID = "trend_momentum"
 
@@ -262,8 +303,23 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
 
     run_log = _create_run_log(trade_date)
 
+    # 创建管道追踪上下文
+    active_strategy_id = _strategy_id()
+    ctx = PipelineContext(
+        execution_date=trade_date,
+        trigger_type="scheduled",
+        strategy_id=active_strategy_id,
+        market="ALL",
+    )
+    create_execution_record(ctx)
+
+    import time as _time
+
     try:
+        _t0 = _time.monotonic()
         collect_result = await collect_market_snapshot(trade_date)
+        ctx.add_step_stats("collect", 0, collect_result.get("collected", 0),
+                           int((_time.monotonic() - _t0) * 1000))
         result["steps"]["collect"] = collect_result
         logger.info(f"Step 1 done: collected {collect_result['collected']} snapshots")
         run_log["total_collected"] = collect_result.get("collected", 0)
@@ -272,6 +328,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         result["status"] = "error"
         result["error"] = f"采集失败: {e}"
         _finish_run_log(run_log, "failed", str(e))
+        complete_execution_record(ctx, status="failed", error=str(e))
         return result
 
     # Step 1.5: 行业数据采集（非阻塞，失败不影响主流程，超时60s）
@@ -294,7 +351,18 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         result["steps"]["industry_collect"] = {"status": "error_non_blocking", "error": str(e)}
 
     try:
+        _t0 = _time.monotonic()
         candidates = screen_anomalies(trade_date)
+        _screen_ms = int((_time.monotonic() - _t0) * 1000)
+        ctx.add_step_stats("screen_anomalies", run_log.get("total_collected", 0),
+                           len(candidates), _screen_ms)
+        for c in candidates:
+            ctx.add_trace("screen_anomalies", StepResult(
+                stock_code=c.get("symbol", ""),
+                stock_name=c.get("name", ""),
+                action="passed",
+                reason=c.get("anomaly_type", "trend_candidate"),
+            ))
         result["steps"]["screen"] = {"candidates": len(candidates)}
         logger.info(f"Step 2 done: {len(candidates)} trend candidates")
         run_log["total_screened"] = len(candidates)
@@ -304,12 +372,51 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         result["status"] = "error"
         result["error"] = f"筛选失败: {e}"
         _finish_run_log(run_log, "failed", str(e))
+        complete_execution_record(ctx, status="failed", error=str(e),
+                                  total_input=run_log.get("total_collected", 0))
         return result
 
     if not candidates:
         result["status"] = "no_data"
         result["steps"]["screen"]["note"] = "无趋势候选股（可能非交易日或数据不足）"
         _finish_run_log(run_log, "no_data", None)
+        complete_execution_record(ctx, status="no_data", total_output=0,
+                                  total_input=run_log.get("total_collected", 0))
+        # Clear same-day same-strategy DB observations so stale rows don't resurface
+        try:
+            save_observation_snapshots(
+                snapshot_date=date.fromisoformat(trade_date),
+                regime="unknown",
+                recommendations=[],
+                strategy_id=active_strategy_id,
+            )
+        except Exception as _db_e:
+            logger.warning("Failed to clear DB observations on no_data: %s", _db_e)
+        # Clear stale cache so users see "empty" instead of yesterday's pool
+        try:
+            from backend.shared.cache import get_cache_manager
+            _cache = await get_cache_manager()
+            await _cache.invalidate_pattern("stock:daily_recommendations:*")
+            empty_cache_result = {
+                "recommendations": [],
+                "count": 0,
+                "market": "ALL",
+                "status": "ok",
+                "pipeline_status": "empty",
+                "data_date": trade_date,
+                "data_date_note": "current_trading_day",
+                "pool_summary": {},
+                "active_strategy": {
+                    "id": active_strategy_id,
+                    "name": _strategy_name(active_strategy_id),
+                    "selection_mode": "trend_screening",
+                },
+                "updated_at": datetime.now().isoformat(),
+            }
+            default_key = "v4:market-ALL:limit-50:max-200:strategy-auto:evidence-1:debate-1:full-0"
+            await _cache.set("daily_recommendations", default_key, value=empty_cache_result)
+        except Exception as _ce:
+            logger.warning("Failed to cache empty pool result: %s", _ce)
         return result
 
     # Step 2.5: 行业景气度过滤
@@ -333,11 +440,18 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
                 "cap": cap,
             }
 
+        _before_industry = list(candidates)
+        _t0 = _time.monotonic()
         candidates, industry_filter_summary = await _run_sync_stage(
             "industry_filter",
             lambda: filter_by_industry(candidates, trade_date),
             timeout_seconds=_stage_timeout("industry_filter", 90),
         )
+        _track_step(ctx, "industry_filter", _before_industry, candidates,
+                    int((_time.monotonic() - _t0) * 1000),
+                    reason_fn=lambda item: (item.get("industry_filter") or {}).get("reasons", ["行业过滤"])[0]
+                    if isinstance((item.get("industry_filter") or {}).get("reasons"), list)
+                    else "行业景气度不达标")
         result["steps"]["industry_filter"] = industry_filter_summary
         logger.info("Step 2.5 done: industry filter %s", industry_filter_summary)
     except asyncio.TimeoutError:
@@ -349,11 +463,15 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
 
     # Step 3: 硬否决层（财务恶化 + 龙头联动）
     try:
+        _before_veto = list(candidates)
+        _t0 = _time.monotonic()
         candidates, hard_rejected, hard_veto_stats = await _run_sync_stage(
             "hard_veto",
             lambda: batch_hard_veto(candidates, trade_date),
             timeout_seconds=_stage_timeout("hard_veto", 90),
         )
+        _track_step(ctx, "hard_veto", _before_veto, candidates,
+                    int((_time.monotonic() - _t0) * 1000), rejected=hard_rejected)
         result["steps"]["hard_veto"] = hard_veto_stats
         run_log["after_hard_veto"] = hard_veto_stats.get("passed", len(candidates))
         for k, v in hard_veto_stats.get("rejected_by", {}).items():
@@ -369,7 +487,10 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
 
     # Step 3.5: 趋势评分（base_score，100分制加法）
     try:
+        _t0 = _time.monotonic()
         scored_candidates = score_anomalies(candidates, top_n=len(candidates))
+        ctx.add_step_stats("base_score", len(candidates), len(scored_candidates),
+                           int((_time.monotonic() - _t0) * 1000))
         result["steps"]["base_score"] = {"scored": len(scored_candidates)}
         logger.info(f"Step 3.5 done: {len(scored_candidates)} base-scored")
         run_log["total_scored"] = len(scored_candidates)
@@ -378,11 +499,14 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         result["status"] = "error"
         result["error"] = f"评分失败: {e}"
         _finish_run_log(run_log, "failed", str(e))
+        complete_execution_record(ctx, status="failed", error=str(e),
+                                  total_input=run_log.get("total_collected", 0))
         return result
 
     # Step 4: 乘法评分（base × industry × fundamental × momentum）
     try:
         selection_window = _selection_window_size(_top_n())
+        _t0 = _time.monotonic()
         top_candidates, almost_candidates, mul_summary = await _run_sync_stage(
             "multiplier_score",
             lambda: apply_multiplier_scoring(
@@ -395,6 +519,17 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
             ),
             timeout_seconds=_stage_timeout("multiplier_score", 90),
         )
+        ctx.add_step_stats("multiplier_score", len(scored_candidates), len(top_candidates),
+                           int((_time.monotonic() - _t0) * 1000))
+        for item in top_candidates:
+            ctx.add_trace("multiplier_score", StepResult(
+                stock_code=item.get("symbol", ""),
+                stock_name=item.get("name", ""),
+                action="passed",
+                score_before=item.get("base_score"),
+                score_after=item.get("final_score"),
+                reason=f"industry={item.get('industry_mul', 1.0):.2f} fund={item.get('fundamental_mul', 1.0):.2f} mom={item.get('momentum_mul', 1.0):.2f}",
+            ))
         result["steps"]["multiplier_score"] = mul_summary
         run_log["after_scoring"] = len(top_candidates)
         logger.info("Step 4 done: multiplier scoring %s", mul_summary)
@@ -444,7 +579,27 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
 
     # Step 3.6: 追高惩罚 — 对涨幅 >6% 降权，>9% 移出主池
     try:
+        _before_chase = list(top_candidates)
         top_candidates, high_risk_bucket = apply_chase_high_penalty(top_candidates)
+        ctx.add_step_stats("chase_high_penalty", len(_before_chase), len(top_candidates), 0)
+        for item in high_risk_bucket:
+            ctx.add_trace("chase_high_penalty", StepResult(
+                stock_code=item.get("symbol", ""),
+                stock_name=item.get("name", ""),
+                action="filtered",
+                reason=item.get("high_risk_reason", "涨幅过高"),
+            ))
+        for item in top_candidates:
+            penalty = item.get("chase_high_penalty")
+            if penalty:
+                ctx.add_trace("chase_high_penalty", StepResult(
+                    stock_code=item.get("symbol", ""),
+                    stock_name=item.get("name", ""),
+                    action="demoted",
+                    score_before=penalty.get("original_score"),
+                    score_after=penalty.get("penalized_score"),
+                    reason=penalty.get("reason", "追高降权"),
+                ))
         result["steps"]["chase_high_penalty"] = {
             "main_pool": len(top_candidates),
             "high_risk_bucket": len(high_risk_bucket),
@@ -455,7 +610,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         result["steps"]["chase_high_penalty"] = {"status": "error_non_blocking", "error": str(e)}
         high_risk_bucket = []
 
-    active_strategy_id = _strategy_id()
+    active_strategy_id = ctx.strategy_id
     regime_label = str(market_regime.get("regime") or "unknown")
     strategy_payload = {
         "id": active_strategy_id,
@@ -481,7 +636,21 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
 
             veto_result = evaluate_risk_veto(stock_data, risk_lights, strategy_payload)
             if not veto_result.get("passed", True):
+                ctx.add_trace("risk_veto", StepResult(
+                    stock_code=item.get("symbol", ""),
+                    stock_name=item.get("name", ""),
+                    action="filtered",
+                    score_after=item.get("final_score"),
+                    reason="; ".join(veto_result.get("reasons", ["risk_veto"])),
+                ))
                 continue
+
+            ctx.add_trace("risk_veto", StepResult(
+                stock_code=item.get("symbol", ""),
+                stock_name=item.get("name", ""),
+                action="passed",
+                score_after=item.get("final_score"),
+            ))
 
             evidence_chain = build_evidence_chain(stock_data, risk_lights, strategy_payload, score_breakdown=score_breakdown)
             debate_view = build_debate_view(stock_data, evidence_chain, veto_result, strategy_payload)
@@ -525,6 +694,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
             continue
 
     result["steps"]["enrich"] = {"passed_veto": len(recommendations)}
+    ctx.add_step_stats("risk_veto", len(top_candidates), len(recommendations), 0)
     logger.info(f"Step 4 done: {len(recommendations)} passed risk veto")
 
     # Step 4.8: A/B/C 分层
@@ -534,6 +704,14 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         for r in recommendations:
             t = r.get("tier", "C")
             tier_counts[t] = tier_counts.get(t, 0) + 1
+            ctx.add_trace("tier_classify", StepResult(
+                stock_code=r.get("symbol", ""),
+                stock_name=r.get("name", ""),
+                action="scored",
+                score_after=r.get("score"),
+                reason=f"tier={t} resonance={r.get('resonance_count', 0)} priority={r.get('priority_score', 0)}",
+            ))
+        ctx.add_step_stats("tier_classify", len(recommendations), len(recommendations), 0)
         result["steps"]["tier_classify"] = tier_counts
         logger.info("Step 4.8 done: tier classification %s", tier_counts)
     except Exception as e:
@@ -572,22 +750,40 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
             mode="base",
             review_feedback=review_feedback,
         )
+        for r in recommendations:
+            adj = r.get("optimizer_adjustments") or []
+            if adj:
+                ctx.add_trace("pool_optimizer", StepResult(
+                    stock_code=r.get("symbol", ""),
+                    stock_name=r.get("name", ""),
+                    action="scored",
+                    reason="; ".join(adj[:3]),
+                    detail={"tier_before": (r.get("pool_optimizer") or {}).get("tier_before"),
+                            "tier_after": (r.get("pool_optimizer") or {}).get("tier_after"),
+                            "priority_delta": (r.get("pool_optimizer") or {}).get("priority_delta")},
+                ))
+        ctx.add_step_stats("pool_optimizer", len(recommendations), len(recommendations), 0)
         result["steps"]["pool_optimizer"] = optimizer_summary
         logger.info("Step 4.95 done: pool optimizer %s", optimizer_summary)
     except Exception as e:
         logger.warning("Observation pool optimizer failed (non-blocking): %s", e)
         result["steps"]["pool_optimizer"] = {"status": "error_non_blocking", "error": str(e)}
 
+    pg_save_ok = True
     try:
         saved = save_observation_snapshots(
             snapshot_date=date.fromisoformat(trade_date),
             regime=regime_label,
             recommendations=recommendations,
+            strategy_id=active_strategy_id,
         )
-        result["steps"]["save"] = {"saved": saved}
-        logger.info(f"Step 5 done: saved {saved} observations")
+        if recommendations and saved < len(recommendations):
+            pg_save_ok = False
+            logger.error("PG save partial: %d/%d saved", saved, len(recommendations))
+        result["steps"]["save"] = {"saved": saved, "expected": len(recommendations)}
     except Exception as e:
-        logger.warning(f"Failed to save observations: {e}")
+        pg_save_ok = False
+        logger.error(f"CRITICAL: Failed to save observations to PG: {e}")
         result["steps"]["save"] = {"error": str(e)}
 
     try:
@@ -622,7 +818,9 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         try:
             from backend.shared.cache import get_cache_manager
             _cache = await get_cache_manager()
-            await _cache.set("pool_summary", "latest", value=pool_summary)
+            _summary_key = f"{trade_date}:{active_strategy_id}:ALL"
+            await _cache.set("pool_summary", _summary_key, value=pool_summary)
+            await _cache.set("pool_summary", "latest:ALL", value=pool_summary)
         except Exception as _ce:
             logger.warning("Failed to cache pool_summary separately: %s", _ce)
     except Exception as e:
@@ -631,12 +829,45 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
     result["recommendations_count"] = len(recommendations)
     result["market_regime"] = market_regime
     result["pool_summary"] = pool_summary
-    logger.info(f"=== Pipeline complete: {len(recommendations)} recommendations ===")
+
+    # Determine final status
+    _degraded = [k for k, v in result["steps"].items()
+                 if isinstance(v, dict) and v.get("status", "").endswith("_non_blocking")]
+    _error_detail: str | None = None
+    if not pg_save_ok:
+        final_status = "partial"
+        result["status"] = "partial"
+        save_info = result["steps"].get("save", {})
+        _error_detail = save_info.get("error") or f"saved {save_info.get('saved', 0)}/{save_info.get('expected', '?')}"
+        result["degraded_reason"] = f"PG save issue: {_error_detail}"
+    elif _degraded:
+        final_status = "partial"
+        result["status"] = "partial"
+        result["degraded_steps"] = _degraded
+        _error_detail = f"degraded steps: {', '.join(_degraded)}"
+    else:
+        final_status = "completed"
+
+    logger.info(f"=== Pipeline {final_status}: {len(recommendations)} recommendations ===")
 
     run_log["final_pool_size"] = len(recommendations)
-    _finish_run_log(run_log, "success", None)
+    _finish_run_log(run_log, "success" if final_status == "completed" else "partial", None)
 
-    await _warm_recommend_cache(recommendations, market_regime, regime_label, trade_date, pool_summary=pool_summary)
+    # 保存管道追踪数据
+    try:
+        save_traces(ctx)
+        if _degraded:
+            ctx.step_stats["_degraded"] = _degraded
+        complete_execution_record(ctx, status=final_status,
+                                  total_input=run_log.get("total_collected", 0),
+                                  total_output=len(recommendations),
+                                  error=_error_detail)
+    except Exception as e:
+        logger.warning("Failed to save pipeline traces: %s", e)
+
+    if pg_save_ok:
+        await _warm_recommend_cache(recommendations, market_regime, regime_label, trade_date,
+                                    pool_summary=pool_summary, strategy_payload=strategy_payload)
 
     return result
 
@@ -755,6 +986,7 @@ async def _warm_recommend_cache(
     regime_label: str,
     trade_date: str,
     pool_summary: dict | None = None,
+    strategy_payload: dict | None = None,
 ) -> None:
     """Pipeline 完成后预热 /batch/recommend 接口的缓存，避免用户请求触发实时计算"""
     try:
@@ -763,6 +995,7 @@ async def _warm_recommend_cache(
         cache = await get_cache_manager()
         await cache.invalidate_pattern("stock:daily_recommendations:*")
 
+        _strategy = strategy_payload or {}
         cache_result = {
             "recommendations": recommendations,
             "count": len(recommendations),
@@ -777,16 +1010,16 @@ async def _warm_recommend_cache(
                 "description": "全市场量价异动筛选 + 行业硬否决 + 乘法评分，秒级响应。",
             },
             "active_strategy": {
-                "id": "anomaly_driven",
-                "name": "量价异动驱动",
-                "selection_mode": "anomaly_screening",
-                "selection_reason": "全市场量价异动筛选 + 硬否决 + 乘法评分 + 风险否决 + 证据链",
+                "id": _strategy.get("id", "unknown"),
+                "name": _strategy.get("name", ""),
+                "selection_mode": _strategy.get("selection_mode", ""),
+                "selection_reason": _strategy.get("selection_reason", ""),
             },
             "updated_at": datetime.now().isoformat(),
             "disclaimer": "每日观察池仅用于筛选值得继续研究的标的，不是买入建议；需结合个人风险承受能力和完整信息独立判断。",
         }
 
-        default_key = "market-ALL:limit-10:max-200:strategy-auto:evidence-1:debate-1:full-0"
+        default_key = "v4:market-ALL:limit-50:max-200:strategy-auto:evidence-1:debate-1:full-0"
         await cache.set("daily_recommendations", default_key, value=cache_result)
         logger.info("Cache warmed for default recommend key")
     except Exception as e:

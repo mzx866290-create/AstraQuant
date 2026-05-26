@@ -31,6 +31,10 @@ class ReorderItemsRequest(BaseModel):
     stock_ids: List[int]
 
 
+class BatchAddRequest(BaseModel):
+    symbols: List[str]
+
+
 def _api_symbol(stock: Stock) -> str:
     code = stock.symbol[:6]
     return f"{code}.{stock.market}"
@@ -246,6 +250,54 @@ async def add_to_watchlist(
         "sort_order": item.sort_order,
         "added_at": item.added_at.isoformat() if item.added_at else None,
     }
+
+
+@router.post("/{watchlist_id}/items/batch")
+async def batch_add_to_watchlist(
+    watchlist_id: int,
+    body: BatchAddRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """批量添加股票到自选股"""
+    wl = db.query(Watchlist).filter(Watchlist.id == watchlist_id).first()
+    if not wl or wl.user_id != current_user.id:
+        raise_not_found("自选股分组")
+
+    existing_stock_ids = {
+        item.stock_id
+        for item in db.query(WatchlistItem).filter(WatchlistItem.watchlist_id == watchlist_id).all()
+    }
+    max_sort_row = (
+        db.query(WatchlistItem.sort_order)
+        .filter(WatchlistItem.watchlist_id == watchlist_id)
+        .order_by(WatchlistItem.sort_order.desc())
+        .first()
+    )
+    next_sort = ((max_sort_row[0] if max_sort_row else -1) or 0) + 1
+
+    added = 0
+    skipped = 0
+    for symbol in body.symbols[:200]:
+        code = _normalize_stock_code(symbol)
+        if not code:
+            skipped += 1
+            continue
+        try:
+            stock = _ensure_stock_for_symbol(db, AddItemRequest(symbol=code))
+        except Exception:
+            skipped += 1
+            continue
+        if stock.id in existing_stock_ids:
+            skipped += 1
+            continue
+        db.add(WatchlistItem(watchlist_id=watchlist_id, stock_id=stock.id, sort_order=next_sort))
+        existing_stock_ids.add(stock.id)
+        next_sort += 1
+        added += 1
+
+    db.commit()
+    return {"added": added, "skipped": skipped}
 
 
 @router.put("/{watchlist_id}/items/reorder")

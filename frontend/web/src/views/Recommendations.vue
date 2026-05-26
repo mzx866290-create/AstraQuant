@@ -7,7 +7,33 @@
       </div>
       <div class="actions">
         <el-segmented v-model="market" :options="marketOptions" @change="loadRecommendations()" />
-        <el-button :icon="Refresh" :loading="loading" @click="loadRecommendations()">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="loadRecommendations()">重新加载</el-button>
+      </div>
+    </section>
+
+    <section v-if="meta && !showInitialLoading" class="core-summary" :class="trustState.level">
+      <div class="core-summary-main">
+        <span class="core-eyebrow">{{ dataDateText || pipelineStatusText }}</span>
+        <h3>{{ coreSummaryTitle }}</h3>
+        <p>{{ coreSummaryMessage }}</p>
+      </div>
+      <div class="core-stat-grid">
+        <span>
+          <small>入池</small>
+          <strong>{{ items.length }}</strong>
+        </span>
+        <span>
+          <small>A档</small>
+          <strong>{{ coreStats.tierA }}</strong>
+        </span>
+        <span>
+          <small>可关注</small>
+          <strong>{{ coreStats.actionable }}</strong>
+        </span>
+        <span>
+          <small>等回踩</small>
+          <strong>{{ coreStats.waiting }}</strong>
+        </span>
       </div>
     </section>
 
@@ -45,6 +71,15 @@
       show-icon
       :closable="false"
       :title="expansionMessage"
+    />
+
+    <el-alert
+      v-if="isStaleData"
+      class="risk-alert"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="服务暂时不可用，显示的是本地缓存数据，可能不是最新结果。"
     />
 
     <section class="trust-strip" :class="trustState.level">
@@ -109,6 +144,21 @@
       </el-radio-group>
     </div>
 
+    <div v-if="items.length > 0" class="readiness-filter">
+      <button
+        v-for="option in readinessOptions"
+        :key="option.value || 'all'"
+        type="button"
+        class="readiness-option"
+        :class="{ active: selectedReadiness === option.value }"
+        :aria-pressed="selectedReadiness === option.value"
+        @click="selectedReadiness = option.value"
+      >
+        <span>{{ option.label }}</span>
+        <strong>{{ option.count }}</strong>
+      </button>
+    </div>
+
     <section v-if="!showInitialLoading && filteredItems.length > 0" class="bucket-overview">
       <div class="bucket-overview-head">
         <strong>已按观察池拆分</strong>
@@ -163,7 +213,7 @@
 
     <section v-if="!showInitialLoading && filteredItems.length === 0 && items.length > 0" class="empty-state">
       <strong>当前筛选暂无标的</strong>
-      <span>可以切回全部档位，或查看另外两个观察池分类。</span>
+      <span>{{ emptyFilterText }}</span>
     </section>
 
     <div v-if="!showInitialLoading && filteredItems.length > 0" ref="bucketStackRef" v-loading="loading" class="bucket-stack">
@@ -188,134 +238,17 @@
           </el-tag>
         </div>
         <div v-if="section.items.length > 0" class="card-grid">
-          <article
+          <ObservationCard
             v-for="row in section.items"
             :key="row.symbol"
-            class="stock-card"
-            :class="{ 'tier-a': row.tier === 'A', 'tier-b': row.tier === 'B', 'tier-c': row.tier === 'C' }"
-            role="button"
-            tabindex="0"
-            @click="goDetail(row)"
-            @keyup.enter="goDetail(row)"
-            @keyup.space.prevent="goDetail(row)"
-          >
-            <div class="card-header">
-              <div class="card-rank">#{{ getDisplayIndex(row) + 1 }}</div>
-              <div class="card-stock-info">
-                <strong>{{ row.name }}</strong>
-                <span class="card-symbol">{{ row.symbol }}</span>
-                <small v-if="rowDataDate(row)" class="card-data-date">{{ rowDataDate(row) }}</small>
-              </div>
-              <div class="card-score">
-                <el-tag v-if="row.tier" size="small" :type="tierTagType(row.tier)" class="tier-tag">
-                  {{ row.tier }}档
-                </el-tag>
-                <span class="score-number">{{ row.score }}</span>
-                <el-tag size="small" :type="recommendationRatingTag(row)">
-                  {{ row.rating?.text || scoreReferenceText(row.score) }}
-                </el-tag>
-              </div>
-            </div>
-
-            <div class="card-price-row">
-              <span class="card-price">{{ formatPrice(row.price) }}</span>
-              <span class="card-change" :class="changeClass(row.change_pct)">{{ formatPct(row.change_pct) }}</span>
-              <el-tag v-if="row.observation_action" size="small" :type="actionTagType(row.observation_action)" effect="light" class="action-tag">
-                {{ row.observation_action }}
-              </el-tag>
-              <el-tag v-else size="small" :type="riskHintTagType(recommendationRiskHint(row))" effect="light">
-                {{ recommendationRiskHint(row).label }}
-              </el-tag>
-              <el-tag size="small" effect="plain" class="bucket-tag">
-                {{ row.observation_bucket_label || section.label }}
-              </el-tag>
-              <el-tag
-                v-if="row.intraday_confirmation"
-                size="small"
-                :type="intradayTagType(row.intraday_confirmation.status)"
-                effect="dark"
-                class="intraday-tag"
-              >
-                {{ row.intraday_confirmation.label || '盘中确认' }}
-              </el-tag>
-              <span v-if="row.sector" class="card-sector">{{ row.sector }}</span>
-            </div>
-
-            <div class="retail-summary">
-              <div v-if="row.intraday_confirmation" class="summary-line intraday-line" :class="row.intraday_confirmation.status">
-                <span class="summary-label intraday-label">盘中</span>
-                <span>{{ intradayLineText(row) }}</span>
-              </div>
-              <div v-if="row.summary_text" class="summary-line ai-summary-line">
-                <span class="summary-label ai-label">AI解读</span>
-                <span>{{ row.summary_text }}</span>
-              </div>
-              <template v-else>
-                <div class="summary-line reason-line">
-                  <span class="summary-label">入选理由</span>
-                  <span>{{ recommendationPlainReason(row) }}</span>
-                </div>
-              </template>
-              <div v-if="row.trigger_condition" class="summary-line trigger-line">
-                <span class="summary-label trigger-label">触发</span>
-                <span>{{ row.trigger_condition }}</span>
-              </div>
-              <div v-if="row.invalidation_condition" class="summary-line invalidation-line">
-                <span class="summary-label">失效</span>
-                <span>{{ row.invalidation_condition }}</span>
-              </div>
-              <div v-if="row.risk_warning" class="summary-line risk-warning-line">
-                <span class="summary-label risk-label">风险</span>
-                <span>{{ row.risk_warning }}</span>
-              </div>
-              <div v-if="optimizerAdjustmentText(row)" class="summary-line optimizer-line">
-                <span class="summary-label optimizer-label">优化</span>
-                <span>{{ optimizerAdjustmentText(row) }}</span>
-              </div>
-              <template v-if="!row.trigger_condition">
-                <div class="summary-line risk-line" :class="recommendationRiskHint(row).level">
-                  <span class="summary-label">风险提示</span>
-                  <span>{{ recommendationRiskHint(row).message }}</span>
-                </div>
-              </template>
-              <div v-if="firstFalsification(row) && !row.invalidation_condition" class="summary-line invalidation-line">
-                <span class="summary-label">失效条件</span>
-                <span>{{ firstFalsification(row) }}</span>
-              </div>
-              <div v-if="capitalFlowUnavailable(row)" class="summary-line source-line">
-                <span class="summary-label">资金流</span>
-                <span>暂未覆盖，不作为买入或放弃的单独依据。</span>
-              </div>
-            </div>
-
-            <div class="card-footer">
-              <div class="card-warnings">
-                <el-tag
-                  v-for="warning in recommendationRowWarnings(row, meta?.candidate_source).slice(0, 2)"
-                  :key="warning"
-                  size="small"
-                  type="danger"
-                  effect="plain"
-                >
-                  {{ warning }}
-                </el-tag>
-              </div>
-              <div class="card-actions">
-                <el-button size="small" type="primary" link @click.stop="goDetail(row)">详情</el-button>
-                <el-button
-                  size="small"
-                  type="success"
-                  link
-                  :loading="addingSymbol === row.symbol"
-                  :disabled="Boolean(actionBlockedReason(row))"
-                  :title="actionBlockedReason(row)"
-                  @click.stop="handleAddToWatchlist(row)"
-                >
-                  加自选
-                </el-button>
-              </div>
-            </div>
-          </article>
+            :row="row"
+            :display-index="getDisplayIndex(row)"
+            :bucket-label="section.label"
+            :meta="meta"
+            :adding-symbol="addingSymbol"
+            @view-detail="goDetail"
+            @add-watchlist="handleAddToWatchlist"
+          />
         </div>
         <div v-else class="bucket-empty">
           <el-empty description="今日未筛出该池标的" />
@@ -323,18 +256,21 @@
       </section>
     </div>
 
-    <div class="meta" v-if="meta">
-      <span>筛选结果 {{ meta.count ?? items.length }} 只</span>
-      <span>当前展示 {{ displayItems.length }} 只</span>
-      <span>状态 {{ pipelineStatusText }}</span>
-      <span v-if="dataDateText">{{ dataDateText }}</span>
-      <span v-if="targetDateText">{{ targetDateText }}</span>
-      <span v-if="meta.news_enriched_count !== undefined">资讯增强 {{ meta.news_enriched_count }} 只</span>
-      <span v-if="candidatePoolText">{{ candidatePoolText }}</span>
-      <span v-if="meta.cache_hit !== undefined">{{ meta.cache_hit ? '缓存命中' : '重新计算' }}</span>
-      <span>{{ meta.updated_at }}</span>
-      <span>流程：全市场快照 -> 趋势/量价初筛 -> 风险否决 -> 观察池</span>
-    </div>
+    <details class="meta-panel" v-if="meta">
+      <summary>数据与规则</summary>
+      <div class="meta">
+        <span>筛选结果 {{ meta.count ?? items.length }} 只</span>
+        <span>当前展示 {{ displayItems.length }} 只</span>
+        <span>状态 {{ pipelineStatusText }}</span>
+        <span v-if="dataDateText">{{ dataDateText }}</span>
+        <span v-if="targetDateText">{{ targetDateText }}</span>
+        <span v-if="meta.news_enriched_count !== undefined">资讯增强 {{ meta.news_enriched_count }} 只</span>
+        <span v-if="candidatePoolText">{{ candidatePoolText }}</span>
+        <span v-if="meta.cache_hit !== undefined">{{ meta.cache_hit ? '缓存命中' : '重新计算' }}</span>
+        <span>{{ meta.updated_at }}</span>
+        <span>流程：全市场快照 -> 趋势/量价初筛 -> 风险否决 -> 观察池</span>
+      </div>
+    </details>
   </div>
 </template>
 
@@ -345,18 +281,10 @@ import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { analysisApi } from '@/api'
 import { useWatchlistActions } from '@/composables/useWatchlistActions'
-import { formatPct, formatPrice } from '@/utils/formatters'
+import ObservationCard from '@/components/recommendations/ObservationCard.vue'
 import {
-  ratingTag,
-  recommendationActionBlockedReason,
   recommendationEmptyReason,
-  recommendationPlainReason,
-  recommendationRiskHint,
-  recommendationRowWarnings,
   recommendationTrustState,
-  riskHintTagType,
-  scoreReferenceText,
-  scoreTagType,
   type IntradayConfirmationResponse,
   type RecentReviewsResponse,
   type RecommendationItem,
@@ -376,13 +304,44 @@ const loadError = ref('')
 const expansionMessage = ref('')
 const selectedTier = ref('')
 const selectedBucket = ref('')
+const selectedReadiness = ref('')
 const bucketStackRef = ref<HTMLElement | null>(null)
 const { addingSymbol, addToWatchlist } = useWatchlistActions()
 const loadingBars = [92, 74, 86, 58]
 let requestSeq = 0
 
 const poolSummary = computed(() => meta.value?.pool_summary)
+const isStaleData = computed(() => (meta.value as any)?.source === 'local_cache' || (meta.value as any)?.stale === true)
 const optimizerSummary = computed(() => poolSummary.value?.optimizer)
+
+const coreStats = computed(() => {
+  const counts = intradayMeta.value?.summary?.counts || {}
+  return {
+    tierA: items.value.filter((item) => item.tier === 'A').length,
+    actionable: Number(counts.actionable ?? readinessCount('actionable')),
+    waiting: Number(counts.wait_pullback ?? readinessCount('wait_pullback')),
+    invalidated: Number(counts.invalidated ?? readinessCount('invalidated')),
+  }
+})
+
+const coreSummaryTitle = computed(() => {
+  if (trustState.value.level === 'blocked') return '今天不适合直接使用观察池'
+  if (!items.value.length) return '今天还没有可用观察标的'
+  if (coreStats.value.actionable > 0) return `今天先看 ${coreStats.value.actionable} 只可关注标的`
+  if (coreStats.value.waiting > 0) return `今天先等 ${coreStats.value.waiting} 只标的回踩确认`
+  return `今天有 ${items.value.length} 只观察线索`
+})
+
+const coreSummaryMessage = computed(() => {
+  if (poolSummary.value?.recommended_strategy || poolSummary.value?.biggest_risk) {
+    return [poolSummary.value.recommended_strategy, poolSummary.value.biggest_risk].filter(Boolean).join('；')
+  }
+  if (trustState.value.level === 'blocked') return trustState.value.message
+  if (coreStats.value.invalidated > 0) {
+    return `${coreStats.value.invalidated} 只盘中已触发失效或报价异常，优先看仍处于可关注/等回踩状态的标的。`
+  }
+  return '把它当作研究和盯盘清单：先看触发条件，再看失效条件，最后决定是否加入观察。'
+})
 
 const intradaySummaryItems = computed(() => {
   const counts = intradayMeta.value?.summary?.counts
@@ -415,8 +374,27 @@ const optimizerStatusItems = computed(() => {
 })
 
 const filteredItems = computed(() => {
-  if (!selectedTier.value) return items.value
-  return items.value.filter(r => r.tier === selectedTier.value)
+  let rows = items.value
+  if (selectedTier.value) {
+    rows = rows.filter(r => r.tier === selectedTier.value)
+  }
+  if (selectedReadiness.value) {
+    rows = rows.filter((row) => readinessKey(row) === selectedReadiness.value)
+  }
+  return rows
+})
+
+const readinessOptions = computed(() => [
+  { label: '全部状态', value: '', count: items.value.length },
+  { label: '可关注', value: 'actionable', count: readinessCount('actionable') },
+  { label: '等回踩', value: 'wait_pullback', count: readinessCount('wait_pullback') },
+  { label: '仅观察', value: 'watch_only', count: readinessCount('watch_only') },
+  { label: '已失效', value: 'invalidated', count: readinessCount('invalidated') },
+])
+
+const emptyFilterText = computed(() => {
+  if (selectedTier.value || selectedReadiness.value) return '当前筛选组合没有标的，可以切回全部档位或全部状态。'
+  return '可以切回全部档位，或查看另外两个观察池分类。'
 })
 
 const bucketOrder = ['pullback_support', 'trend_strength', 'oversold_reversal'] as const
@@ -465,6 +443,21 @@ function tierCount(tier: string): number {
   return items.value.filter(r => r.tier === tier).length
 }
 
+function readinessCount(value: string) {
+  return items.value.filter((row) => readinessKey(row) === value).length
+}
+
+function readinessKey(row: RecommendationItem) {
+  const status = row.intraday_confirmation?.status
+  if (status === 'actionable') return 'actionable'
+  if (status === 'wait_pullback') return 'wait_pullback'
+  if (status === 'invalidated' || status === 'quote_error') return 'invalidated'
+  if (status === 'watch_only' || status === 'quote_degraded') return 'watch_only'
+  if (row.observation_action === '只看不追') return 'watch_only'
+  if (row.observation_action === '回踩承接' || row.observation_action === '缩量企稳') return 'wait_pullback'
+  return row.tier === 'A' ? 'actionable' : 'watch_only'
+}
+
 async function setBucketFilter(bucket: string) {
   selectedBucket.value = selectedBucket.value === bucket ? '' : bucket
   await nextTick()
@@ -482,35 +475,12 @@ function bucketTagType(bucket: string): 'success' | 'primary' | 'warning' | 'inf
   return 'info'
 }
 
-function onTierChange() {
-  // 筛选无需重新加载
-}
-
 function getDisplayIndex(row: RecommendationItem): number {
   return filteredItems.value.indexOf(row)
 }
 
-function tierTagType(tier?: string | null): 'success' | 'primary' | 'warning' | 'info' | 'danger' | undefined {
-  if (tier === 'A') return 'success'
-  if (tier === 'B') return 'primary'
-  return 'info'
-}
-
-function actionTagType(action?: string | null): 'success' | 'primary' | 'warning' | 'info' | 'danger' | undefined {
-  if (action === '回踩承接') return 'success'
-  if (action === '放量突破') return 'warning'
-  if (action === '缩量企稳') return 'primary'
-  if (action === '只看不追') return 'info'
-  if (action === '消息验证') return 'warning'
-  return 'info'
-}
-
-function intradayTagType(status?: string | null): 'success' | 'primary' | 'warning' | 'info' | 'danger' | undefined {
-  if (status === 'actionable') return 'success'
-  if (status === 'wait_pullback') return 'warning'
-  if (status === 'invalidated' || status === 'quote_error') return 'danger'
-  if (status === 'quote_degraded') return 'info'
-  return 'info'
+function onTierChange() {
+  // 筛选无需重新加载
 }
 
 function regimePlainLabel(regime?: string) {
@@ -608,7 +578,7 @@ async function loadRecommendations() {
         ? `当前沿用基于 ${date} 收盘数据生成的观察池${targetDate ? `，原用于 ${targetDate} 观察` : ''}；等待今日盘后更新。`
         : '当前展示的是最近一次观察池结果（非今日），今日数据尚未生成。'
     } else if (res.pipeline_status === 'empty') {
-      expansionMessage.value = '观察池暂无数据，请先运行一次采集（点击刷新按钮）。'
+      expansionMessage.value = '今日筛选完成，暂无符合条件的观察标的。'
     }
     void loadRecentReviews(requestId)
   } catch (error) {
@@ -664,56 +634,7 @@ function goDetail(row: RecommendationItem) {
 }
 
 function handleAddToWatchlist(row: RecommendationItem) {
-  const reason = actionBlockedReason(row)
-  if (reason) {
-    ElMessage.warning(reason)
-    return
-  }
   addToWatchlist(row)
-}
-
-function actionBlockedReason(row: RecommendationItem) {
-  return recommendationActionBlockedReason(row, meta.value)
-}
-
-function optimizerAdjustmentText(row: RecommendationItem) {
-  const reasons = row.optimizer_adjustments || row.pool_optimizer?.adjustments || []
-  return reasons.slice(0, 2).join('；')
-}
-
-function changeClass(value?: number | string) {
-  const number = Number(value)
-  if (!Number.isFinite(number)) return ''
-  return number >= 0 ? 'up' : 'down'
-}
-
-function recommendationRatingTag(row: RecommendationItem) {
-  const type = ratingTag(row.rating?.level)
-  return type === 'info' && !row.rating?.level ? scoreTagType(row.score) : type
-}
-
-function rowDataDate(row: RecommendationItem) {
-  if (!row.snapshot_date) return ''
-  return `基于 ${row.snapshot_date} 收盘`
-}
-
-function firstFalsification(row: RecommendationItem) {
-  return row.falsification?.find((item) => item.condition)?.condition || ''
-}
-
-function capitalFlowUnavailable(row: RecommendationItem) {
-  const signal = row.capital_flow_status || row.capital_flow_features?.signal || row.capital_flow_features?.status
-  return signal === 'unavailable'
-}
-
-function intradayLineText(row: RecommendationItem) {
-  const confirmation = row.intraday_confirmation
-  if (!confirmation) return ''
-  const quote = confirmation.quote || {}
-  const price = quote.price != null ? `现价 ${formatPrice(quote.price)}` : ''
-  const change = quote.change_pct != null ? `涨跌 ${formatPct(quote.change_pct)}` : ''
-  const action = confirmation.next_action || ''
-  return [price, change, action].filter(Boolean).join('，')
 }
 
 onMounted(() => loadRecommendations())
@@ -757,6 +678,87 @@ onMounted(() => loadRecommendations())
   margin-bottom: 12px;
 }
 
+.core-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.65fr);
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 16px;
+  border: 1px solid #dcdfe6;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: var(--shadow-card);
+}
+
+.core-summary.stable {
+  border-color: #b7eb8f;
+  background: linear-gradient(135deg, #ffffff 0%, #f2fbf6 100%);
+}
+
+.core-summary.warning {
+  border-color: #faad14;
+  background: linear-gradient(135deg, #ffffff 0%, #fffbe6 100%);
+}
+
+.core-summary.blocked {
+  border-color: #ff4d4f;
+  background: linear-gradient(135deg, #ffffff 0%, #fff2f0 100%);
+}
+
+.core-summary-main {
+  min-width: 0;
+}
+
+.core-eyebrow {
+  display: inline-flex;
+  margin-bottom: 6px;
+  color: #606266;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.core-summary h3 {
+  margin: 0 0 6px;
+  color: #303133;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.core-summary p {
+  margin: 0;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.core-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.core-stat-grid span {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.core-stat-grid small {
+  display: block;
+  color: #606266;
+  font-size: 12px;
+}
+
+.core-stat-grid strong {
+  display: block;
+  margin-top: 4px;
+  color: #303133;
+  font-size: 22px;
+  line-height: 1;
+}
+
 .trust-strip {
   display: flex;
   flex-wrap: wrap;
@@ -768,6 +770,7 @@ onMounted(() => loadRecommendations())
   color: #606266;
   background: #fff;
   font-size: 13px;
+  transition: all 0.3s;
 }
 
 .trust-strip strong {
@@ -780,13 +783,35 @@ onMounted(() => loadRecommendations())
 }
 
 .trust-strip.warning {
-  border-color: #f2d48b;
-  background: #fff8e6;
+  border-color: #faad14;
+  background: #fffbe6;
+  padding: 14px 16px;
+  font-size: 14px;
+  border-width: 2px;
+  animation: trust-pulse 2s ease-in-out 3;
+}
+
+.trust-strip.warning strong {
+  color: #d48806;
 }
 
 .trust-strip.blocked {
-  border-color: #ffa39e;
-  background: #fff1f0;
+  border-color: #ff4d4f;
+  background: #fff2f0;
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  border-width: 2px;
+  animation: trust-pulse 2s ease-in-out 3;
+}
+
+.trust-strip.blocked strong {
+  color: #cf1322;
+}
+
+@keyframes trust-pulse {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: 0 0 12px rgba(255, 77, 79, 0.25); }
 }
 
 .optimizer-strip {
@@ -881,24 +906,6 @@ onMounted(() => loadRecommendations())
 .intraday-status-item.bad {
   border-color: #ffa39e;
   background: #fff1f0;
-}
-
-.intraday-line {
-  color: #606266;
-}
-
-.intraday-line.actionable {
-  color: #166534;
-}
-
-.intraday-line.invalidated,
-.intraday-line.quote_error {
-  color: #b91c1c;
-}
-
-.intraday-label {
-  color: #303133 !important;
-  font-weight: 600 !important;
 }
 
 .bucket-overview {
@@ -1179,10 +1186,6 @@ onMounted(() => loadRecommendations())
   line-height: 1.45;
 }
 
-.bucket-tag {
-  flex-shrink: 0;
-}
-
 .bucket-empty {
   border: 1px dashed #dcdfe6;
   border-radius: 8px;
@@ -1200,288 +1203,6 @@ onMounted(() => loadRecommendations())
   margin-bottom: 12px;
 }
 
-.stock-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-  border: 1px solid #dcdfe6;
-  border-radius: 10px;
-  background: #fff;
-  cursor: pointer;
-  transition: box-shadow 0.2s, border-color 0.2s;
-}
-
-.stock-card:hover {
-  border-color: var(--el-color-primary-light-5, #a0cfff);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-}
-
-.stock-card:focus-visible {
-  outline: 2px solid var(--el-color-primary, #409eff);
-  outline-offset: 2px;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.card-rank {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: #f0f2f5;
-  color: #606266;
-  font-size: 12px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.card-stock-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-
-.card-stock-info strong {
-  font-size: 15px;
-  color: #303133;
-}
-
-.card-symbol {
-  color: #909399;
-  font-family: monospace;
-  font-size: 12px;
-}
-
-.card-data-date {
-  color: #909399;
-  font-size: 12px;
-}
-
-.card-score {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  max-width: 128px;
-  text-align: right;
-}
-
-.card-score small {
-  color: #909399;
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.score-number {
-  font-size: 20px;
-  font-weight: 700;
-  color: #303133;
-}
-
-.card-price-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-}
-
-.card-price {
-  font-weight: 500;
-  color: #303133;
-}
-
-.card-change {
-  font-weight: 500;
-}
-
-.card-sector {
-  margin-left: auto;
-  color: #909399;
-  font-size: 12px;
-}
-
-.retail-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: #f8fafc;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.summary-line {
-  display: flex;
-  gap: 8px;
-  color: #303133;
-}
-
-.summary-label {
-  flex-shrink: 0;
-  color: #606266;
-  font-weight: 700;
-}
-
-.summary-label::after {
-  content: '->';
-}
-
-.ai-label {
-  color: #1a73e8;
-}
-
-.ai-summary-line {
-  background: #f0f7ff;
-  border-radius: 6px;
-  padding: 6px 10px;
-  border-left: 3px solid #409eff;
-}
-
-.risk-line.medium {
-  color: #b7791f;
-}
-
-.risk-line.high {
-  color: #c53030;
-}
-
-.risk-line.low {
-  color: #2f855a;
-}
-
-.invalidation-line {
-  color: #7c2d12;
-}
-
-.source-line {
-  color: #606266;
-}
-
-.card-breakdown {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.capital-flow-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: #f5f7fa;
-  color: #606266;
-  font-size: 12px;
-}
-
-.capital-flow-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.capital-flow-row small {
-  color: #909399;
-  padding-left: 2px;
-}
-
-.card-debate {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: #f9fafb;
-  font-size: 13px;
-}
-
-.debate-side {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  line-height: 1.5;
-  color: #606266;
-}
-
-.debate-side span:last-child {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-.debate-label {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.debate-side.bull .debate-label {
-  background: #f0fdf4;
-  color: #16a34a;
-}
-
-.debate-side.bear .debate-label {
-  background: #fef2f2;
-  color: #dc2626;
-}
-
-.card-evidence {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.evidence-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #606266;
-}
-
-.card-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  margin-top: auto;
-  padding-top: 6px;
-  border-top: 1px solid #f0f2f5;
-}
-
-.card-warnings {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  flex: 1;
-  min-width: 0;
-}
-
-.card-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -1491,24 +1212,37 @@ onMounted(() => loadRecommendations())
   color: #909399;
 }
 
-.up {
-  color: #d93026;
+.meta-panel {
+  margin-top: 12px;
+  color: #606266;
+  font-size: 13px;
 }
 
-.down {
-  color: #07883d;
+.meta-panel summary {
+  display: inline-flex;
+  cursor: pointer;
+  color: #606266;
+  font-weight: 700;
 }
 
 .meta {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin-top: 12px;
+  margin-top: 8px;
   color: #909399;
   font-size: 13px;
 }
 
 @media (max-width: 760px) {
+  .core-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .core-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -1535,37 +1269,6 @@ onMounted(() => loadRecommendations())
 
   .card-grid {
     grid-template-columns: 1fr;
-  }
-
-  .stock-card {
-    padding: 14px;
-  }
-
-  .card-header,
-  .card-price-row,
-  .card-footer {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .card-score {
-    align-items: flex-start;
-    max-width: 100%;
-    text-align: left;
-  }
-
-  .card-sector {
-    margin-left: 0;
-  }
-
-  .summary-line {
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .card-actions {
-    width: 100%;
-    justify-content: flex-end;
   }
 }
 
@@ -1624,45 +1327,47 @@ onMounted(() => loadRecommendations())
   margin: 0 0 16px;
 }
 
-/* 卡片分层边框 */
-.stock-card.tier-a {
-  border-left: 3px solid #67c23a;
+.readiness-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -6px 0 14px;
 }
 
-.stock-card.tier-b {
-  border-left: 3px solid #409eff;
+.readiness-option {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid #dcdfe6;
+  border-radius: 999px;
+  background: #fff;
+  color: #606266;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
 }
 
-.stock-card.tier-c {
-  border-left: 3px solid #909399;
+.readiness-option strong {
+  color: #303133;
+  font-family: var(--font-number);
+  font-size: 13px;
 }
 
-/* 分层标签 */
-.tier-tag {
-  margin-right: 4px;
+.readiness-option:hover,
+.readiness-option:focus-visible,
+.readiness-option.active {
+  border-color: var(--el-color-primary);
+  background: #f0f7ff;
+  color: var(--el-color-primary);
+  outline: none;
 }
 
-/* 观察动作标签 */
-.action-tag {
-  font-weight: 600;
+.readiness-option.active strong {
+  color: var(--el-color-primary);
 }
 
-/* 触发/失效/风险条件 */
-.trigger-line {
-  color: #166534;
-}
-
-.trigger-label {
-  color: #166534 !important;
-  font-weight: 600 !important;
-}
-
-.risk-warning-line {
-  color: #b45309;
-}
-
-.risk-label {
-  color: #b45309 !important;
-  font-weight: 600 !important;
-}
 </style>
