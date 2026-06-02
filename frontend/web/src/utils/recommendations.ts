@@ -604,10 +604,10 @@ export function capitalFlowSummary(row: Pick<RecommendationItem, 'capital_flow_f
 export function capitalFlowWarningText(row: Pick<RecommendationItem, 'capital_flow_features'>): string {
   const warning = row.capital_flow_features?.warnings?.[0]
   const mapping: Record<string, string> = {
-    akshare_money_flow_empty: 'AKShare暂无资金流数据',
+    akshare_money_flow_empty: '暂无资金流数据',
     akshare_money_flow_disabled: '资金流验证已关闭',
-    akshare_money_flow_source_error: 'AKShare资金流源不可用',
-    akshare_money_flow_partial_schema: '资金流字段不完整',
+    akshare_money_flow_source_error: '资金流数据源暂不可用',
+    akshare_money_flow_partial_schema: '资金流数据不完整',
   }
   return warning ? mapping[warning] || warning : ''
 }
@@ -643,10 +643,10 @@ export function dataGradeTag(grade?: string): TagProps['type'] {
 }
 
 export function candidateSourceLabel(source?: string) {
-  if (source === 'fallback') return '开发兜底'
-  if (source === 'mixed') return '数据库+开发兜底'
-  if (source === 'db') return '数据库候选'
-  return source || '未知来源'
+  if (source === 'fallback') return '示例数据'
+  if (source === 'mixed') return '部分为示例数据'
+  if (source === 'db') return '实盘筛选'
+  return source || ''
 }
 
 export function isFallbackCandidate(row: Pick<RecommendationItem, 'candidate_source' | 'source'>, metaSource?: string) {
@@ -668,7 +668,7 @@ export function recommendationTrustState(meta: RecommendationsResponse | null | 
     return {
       level: 'blocked',
       label: '不可用',
-      message: '数据库候选池为空，系统没有生成真实候选结果。',
+      message: '今日暂未生成观察池，请等待盘后更新或稍后重试。',
       reasons: meta.warnings || [],
       actionable: false,
     }
@@ -677,8 +677,8 @@ export function recommendationTrustState(meta: RecommendationsResponse | null | 
   if (meta.candidate_source === 'fallback') {
     return {
       level: 'blocked',
-      label: '调试数据',
-      message: '当前使用开发兜底候选池，仅能验证界面流程，不能代表真实市场筛选。',
+      label: '示例数据',
+      message: '当前展示的是示例数据，不代表真实市场筛选结果。',
       reasons: meta.warnings || [],
       actionable: false,
     }
@@ -687,8 +687,8 @@ export function recommendationTrustState(meta: RecommendationsResponse | null | 
   if (meta.candidate_source === 'mixed') {
     return {
       level: 'warning',
-      label: '混合候选',
-      message: '数据库候选池偏小，系统已用开发兜底候选补足；真实数据库候选与兜底候选已在单行标明。',
+      label: '部分示例',
+      message: '今日筛选结果偏少，已补充部分示例数据；每只标的会标明是否为实盘筛选。',
       reasons: meta.warnings || [],
       actionable: true,
     }
@@ -699,7 +699,7 @@ export function recommendationTrustState(meta: RecommendationsResponse | null | 
     return {
       level: 'warning',
       label: '需复核',
-      message: warnings[0] || '有效评分数量不足，仅适合继续核查数据链路。',
+      message: warnings[0] || '有效评分数量不足，建议等待下次更新后再参考。',
       reasons: warnings.slice(0, 3),
       actionable: true,
     }
@@ -719,25 +719,25 @@ export function recommendationActionBlockedReason(
   meta: RecommendationsResponse | null | undefined,
 ) {
   if (meta?.status === 'unavailable') {
-    return '候选池不可用，暂无法添加'
+    return '观察池暂不可用，无法添加'
   }
   if (isFallbackCandidate(row, meta?.candidate_source)) {
-    return '开发兜底候选仅用于界面调试，不能直接加入自选'
+    return '示例数据不能加入自选'
   }
   return ''
 }
 
 export function recommendationEmptyReason(meta: RecommendationsResponse | null | undefined) {
-  if (!meta) return '请先确认分析服务已启动，或点击刷新重新计算。'
-  if (meta.status === 'unavailable') return '数据库候选池为空，系统没有生成真实候选结果。'
-  if (meta.candidate_source === 'fallback') return '当前只有开发兜底候选池，仅用于调试展示。'
-  if (meta.candidate_source === 'mixed') return '数据库候选池偏小，已用开发兜底候选补足，但当前没有通过评分的结果。'
-  return (meta.warnings || [])[0] || '请先确认分析服务已启动，或点击刷新重新计算。'
+  if (!meta) return '观察池暂未生成，请稍后点击"重新加载"重试。'
+  if (meta.status === 'unavailable') return '今日暂未生成观察池结果。'
+  if (meta.candidate_source === 'fallback') return '当前仅有示例数据，非实盘筛选结果。'
+  if (meta.candidate_source === 'mixed') return '今日筛选结果偏少且无标的通过评分。'
+  return (meta.warnings || [])[0] || '观察池暂未生成，请稍后点击"重新加载"重试。'
 }
 
 export function recommendationRowWarnings(row: RecommendationItem, metaSource?: string) {
   const warnings = Array.isArray(row.warnings) ? [...row.warnings] : []
-  if (isFallbackCandidate(row, metaSource)) warnings.unshift('开发兜底候选')
+  if (isFallbackCandidate(row, metaSource)) warnings.unshift('示例数据')
   if (row.data_grade?.grade && row.data_grade.grade !== 'A') warnings.push(`数据等级 ${row.data_grade.grade}：${row.data_grade.label || '未说明'}`)
   if (row.data_grade?.grade && row.data_grade.grade !== 'A' && row.data_grade?.analysis_scope) warnings.push(row.data_grade.analysis_scope)
   if (Array.isArray(row.data_grade?.warnings)) warnings.push(...row.data_grade.warnings)
@@ -818,4 +818,59 @@ export function resolveRecentReviewStrategy(uiStrategy?: string, activeStrategyI
     return activeStrategyId
   }
   return uiStrategy || 'auto'
+}
+
+// ── Pool Scorecard ──
+
+export interface ScorecardBucket {
+  reviews: number
+  win_rate: number | null
+  avg_return_pct: number | null
+  avg_excess_pct: number | null
+  worst_return_pct: number | null
+  max_drawdown_pct: number | null
+}
+
+export interface PoolScorecardResponse {
+  status: string
+  lookback_days: number
+  as_of: string
+  strategy: string
+  benchmark: string
+  benchmark_status?: string
+  overall: Record<string, ScorecardBucket>
+  by_tier: Record<string, Record<string, ScorecardBucket>>
+  sample_threshold: number
+  disclaimer: string
+}
+
+export interface SimulationArm {
+  trades: number
+  win_rate: number | null
+  avg_return_pct: number | null
+  expectancy_pct: number | null
+  payoff_ratio: number | null
+  avg_win_pct: number | null
+  avg_loss_pct: number | null
+  worst_return_pct: number | null
+}
+
+export interface SimulationBucket {
+  discipline: SimulationArm
+  buy_hold: SimulationArm
+  stopped: number
+  stop_rate: number | null
+  expectancy_delta_pct: number | null
+}
+
+export interface PoolSimulationResponse {
+  status: string
+  lookback_days: number
+  as_of: string
+  strategy: string
+  stop_loss_pct: number
+  sample_threshold: number
+  overall: Record<string, SimulationBucket>
+  by_tier: Record<string, Record<string, SimulationBucket>>
+  disclaimer: string
 }

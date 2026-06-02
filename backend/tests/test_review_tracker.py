@@ -32,6 +32,8 @@ class _FakeQuery:
         if self.model.__name__ == "ResearchObservation":
             if any("id" in str(clause) for clause in self.filters):
                 return self.session.observation_by_id
+        if self.model.__name__ == "DailySnapshot":
+            return self.session.snapshot_first
         return None
 
     def order_by(self, *_clauses):
@@ -61,6 +63,8 @@ class _FakeQuery:
             return list(self.session.review_rows)
         if self.model.__name__ == "DailySnapshot":
             return list(self.session.snapshot_rows)
+        if self.model.__name__ == "PipelineRunLog":
+            return list(self.session.run_log_rows)
         if self.model.__name__ == "ResearchObservation":
             return list(self.session.rows)
         return list(self.session.rows)
@@ -72,10 +76,12 @@ class _FakeSession:
         self.rows = []
         self.review_rows = []
         self.snapshot_rows = []
+        self.run_log_rows = []
         self.audit_rows = []
         self.proposal_rows = []
         self.version_rows = []
         self.observation_by_id = None
+        self.snapshot_first = None
         self.audit_by_id = None
         self.proposal_by_id = None
         self.version_by_id = None
@@ -192,27 +198,67 @@ class ReviewTrackerTests(unittest.TestCase):
             },
         )()
         session.observation_by_id = observation
+        # Reproducible path: review price comes from the review-day DailySnapshot close.
+        session.snapshot_first = type("DailySnapshot", (), {"trade_date": "2026-05-10", "symbol": "000001.SZ", "close": 9.0})()
         session.snapshot_rows = [
             type("DailySnapshot", (), {"trade_date": "2026-05-09", "symbol": "000001.SZ", "low": 9.7, "close": 10.0})(),
             type("DailySnapshot", (), {"trade_date": "2026-05-10", "symbol": "000001.SZ", "low": 8.8, "close": 9.0})(),
         ]
 
+        # fetch_quote returns a different price to prove the historical close wins.
         with patch.object(review_tracker, "_has_table", return_value=True), patch.object(
             review_tracker, "list_pending_reviews", return_value=[{"observation_id": 7, "symbol": "000001.SZ", "review_offset": "T+1"}]
         ), patch.object(review_tracker, "SessionLocal", return_value=session), patch.object(
-            review_tracker, "fetch_quote", AsyncMock(return_value={"price": 9.0, "source": "unit-quote"})
+            review_tracker, "fetch_quote", AsyncMock(return_value={"price": 99.0, "source": "unit-quote"})
         ):
             result = asyncio.run(review_tracker.run_pending_reviews(date(2026, 5, 10), offsets=("T+1",)))
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["created"], 1)
+        self.assertEqual(result["items"][0]["price_source"], "daily_snapshot")
         self.assertEqual(len(session.added), 1)
         review = session.added[0]
         self.assertEqual(review.observation_id, 7)
+        self.assertEqual(review.close_price, 9.0)
         self.assertEqual(review.return_pct, -10.0)
         self.assertEqual(review.max_drawdown_pct, -12.0)
         self.assertTrue(review.falsification_triggered)
         self.assertTrue(review.risk_signal_valid)
+        self.assertIn("price_source=daily_snapshot", review.notes)
+
+    def test_run_pending_reviews_falls_back_to_realtime_quote_when_no_bar(self) -> None:
+        session = _FakeSession()
+        observation = type(
+            "Observation",
+            (),
+            {
+                "id": 7,
+                "symbol": "000001.SZ",
+                "strategy_id": "retail_small",
+                "snapshot_date": datetime(2026, 5, 9, tzinfo=timezone.utc),
+                "close_price": 10.0,
+                "veto_result_json": {},
+            },
+        )()
+        session.observation_by_id = observation
+        # No DailySnapshot bar for the review day -> snapshot_first stays None.
+        session.snapshot_first = None
+        session.snapshot_rows = []
+
+        with patch.object(review_tracker, "_has_table", return_value=True), patch.object(
+            review_tracker, "list_pending_reviews", return_value=[{"observation_id": 7, "symbol": "000001.SZ", "review_offset": "T+1"}]
+        ), patch.object(review_tracker, "SessionLocal", return_value=session), patch.object(
+            review_tracker, "fetch_quote", AsyncMock(return_value={"price": 11.0, "source": "unit-quote"})
+        ):
+            result = asyncio.run(review_tracker.run_pending_reviews(date(2026, 5, 10), offsets=("T+1",)))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["items"][0]["price_source"], "realtime_quote_fallback")
+        review = session.added[0]
+        self.assertEqual(review.close_price, 11.0)
+        self.assertEqual(review.return_pct, 10.0)
+        self.assertIn("price_source=realtime_quote_fallback", review.notes)
+        self.assertIn("unit-quote", review.notes)
 
     def test_build_review_report_groups_by_strategy(self) -> None:
         session = _FakeSession()
@@ -231,6 +277,7 @@ class ReviewTrackerTests(unittest.TestCase):
             (),
             {
                 "observation_id": 7,
+                "review_offset": "T+1",
                 "return_pct": 5.0,
                 "falsification_triggered": False,
                 "risk_signal_valid": False,
@@ -246,8 +293,130 @@ class ReviewTrackerTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "ok")
         self.assertEqual(report["summary"]["reviews"], 1)
+        self.assertEqual(report["summary"]["evaluated_reviews"], 1)
+        self.assertEqual(report["summary"]["positive_reviews"], 1)
+        self.assertEqual(report["summary"]["win_rate"], 1.0)
         self.assertEqual(report["by_strategy"][0]["strategy_id"], "retail_small")
         self.assertEqual(report["by_strategy"][0]["win_rate"], 1.0)
+        self.assertEqual(report["by_offset"][0]["review_offset"], "T+1")
+        self.assertEqual(report["by_offset"][0]["win_rate"], 1.0)
+
+    def test_build_review_report_breaks_down_by_tier_with_evaluated_denominator(self) -> None:
+        session = _FakeSession()
+        observation_a = type(
+            "Observation",
+            (),
+            {
+                "id": 1,
+                "symbol": "000001.SZ",
+                "strategy_id": "trend_momentum",
+                "snapshot_date": datetime(2026, 5, 9, tzinfo=timezone.utc),
+                "factor_snapshot_json": {"tier": "A"},
+            },
+        )()
+        observation_a2 = type(
+            "Observation",
+            (),
+            {
+                "id": 2,
+                "symbol": "000002.SZ",
+                "strategy_id": "trend_momentum",
+                "snapshot_date": datetime(2026, 5, 9, tzinfo=timezone.utc),
+                "factor_snapshot_json": {"tier": "A"},
+            },
+        )()
+        observation_c = type(
+            "Observation",
+            (),
+            {
+                "id": 3,
+                "symbol": "000003.SZ",
+                "strategy_id": "trend_momentum",
+                "snapshot_date": datetime(2026, 5, 9, tzinfo=timezone.utc),
+                "factor_snapshot_json": None,
+            },
+        )()
+        # A: one positive, one with no return_pct (must be excluded from denominator)
+        review_a = type("Review", (), {"observation_id": 1, "review_offset": "T+5", "return_pct": 6.0, "falsification_triggered": False, "risk_signal_valid": False})()
+        review_a2 = type("Review", (), {"observation_id": 2, "review_offset": "T+5", "return_pct": None, "falsification_triggered": False, "risk_signal_valid": False})()
+        # C: one negative
+        review_c = type("Review", (), {"observation_id": 3, "review_offset": "T+5", "return_pct": -4.0, "falsification_triggered": True, "risk_signal_valid": False})()
+        session.rows = [observation_a, observation_a2, observation_c]
+        session.review_rows = [review_a, review_a2, review_c]
+
+        with patch.object(review_tracker, "_has_table", return_value=True), patch.object(
+            review_tracker, "SessionLocal", return_value=session
+        ):
+            report = review_tracker.build_review_report()
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["summary"]["tiers"], 2)
+        by_tier = {row["tier"]: row for row in report["by_tier"]}
+        # Tier A appears first (ordering), defaults applied for missing snapshot -> C
+        self.assertEqual([row["tier"] for row in report["by_tier"]], ["A", "C"])
+        # A tier: 2 reviews but only 1 evaluated -> win_rate divides by evaluated, not reviews
+        self.assertEqual(by_tier["A"]["reviews"], 2)
+        self.assertEqual(by_tier["A"]["evaluated_reviews"], 1)
+        self.assertEqual(by_tier["A"]["win_rate"], 1.0)
+        self.assertEqual(by_tier["A"]["avg_return_pct"], 6.0)
+        # C tier: missing factor_snapshot defaults to C
+        self.assertEqual(by_tier["C"]["reviews"], 1)
+        self.assertEqual(by_tier["C"]["win_rate"], 0.0)
+        self.assertEqual(by_tier["C"]["avg_return_pct"], -4.0)
+        self.assertEqual(by_tier["C"]["falsification_triggered"], 1)
+
+    def test_build_data_foundation_health_reports_gaps_and_price_sources(self) -> None:
+        session = _FakeSession()
+        # 2026-05-29 is a Friday; window covers a few weekdays before it.
+        session.run_log_rows = [
+            type("PipelineRunLog", (), {"run_date": "2026-05-26", "status": "success"})(),
+            type("PipelineRunLog", (), {"run_date": "2026-05-27", "status": "success"})(),
+            # 2026-05-28 missing entirely
+            type("PipelineRunLog", (), {"run_date": "2026-05-29", "status": "failed"})(),
+        ]
+        session.rows = [
+            type("Observation", (), {"snapshot_date": datetime(2026, 5, 26, tzinfo=timezone.utc)})(),
+            type("Observation", (), {"snapshot_date": datetime(2026, 5, 26, tzinfo=timezone.utc)})(),
+            type("Observation", (), {"snapshot_date": datetime(2026, 5, 27, tzinfo=timezone.utc)})(),
+        ]
+        session.review_rows = [
+            type("Review", (), {"notes": "price_source=daily_snapshot source=daily_snapshot"})(),
+            type("Review", (), {"notes": "price_source=daily_snapshot source=daily_snapshot"})(),
+            type("Review", (), {"notes": "price_source=realtime_quote_fallback source=realtime_quote:em"})(),
+            type("Review", (), {"notes": "source=tencent"})(),  # legacy row
+        ]
+
+        class _FixedDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 5, 29)
+
+        with patch.object(review_tracker, "_has_table", return_value=True), patch.object(
+            review_tracker, "SessionLocal", return_value=session
+        ), patch.object(review_tracker, "date", _FixedDate):
+            health = review_tracker.build_data_foundation_health(lookback_days=10)
+
+        self.assertEqual(health["status"], "degraded")
+        cont = health["run_continuity"]
+        self.assertIn("2026-05-28", cont["missing_days"])
+        self.assertEqual(cont["failed_day_count"], 1)
+        self.assertEqual(cont["successful_runs"], 2)
+        obs = health["observation_accumulation"]
+        self.assertEqual(obs["observations"], 3)
+        self.assertEqual(obs["observation_days"], 2)
+        price = health["price_source_quality"]
+        self.assertEqual(price["reviews"], 4)
+        self.assertEqual(price["by_source"]["daily_snapshot"], 2)
+        self.assertEqual(price["by_source"]["realtime_quote_fallback"], 1)
+        self.assertEqual(price["by_source"]["legacy_unknown"], 1)
+        self.assertEqual(price["reproducible_rate"], 0.5)
+        self.assertTrue(health["issues"])
+
+    def test_build_data_foundation_health_reports_missing_tables(self) -> None:
+        with patch.object(review_tracker, "_has_table", return_value=False):
+            health = review_tracker.build_data_foundation_health()
+        self.assertEqual(health["status"], "tables_missing")
+        self.assertFalse(health["tables"]["pipeline_run_logs"])
 
     def test_build_review_readiness_reports_pending_state(self) -> None:
         session = _FakeSession()
@@ -372,7 +541,7 @@ class ReviewTrackerTests(unittest.TestCase):
             )
 
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(report["summary"], {"factors": 2, "reviews": 2, "regime_factors": 3})
+        self.assertEqual(report["summary"], {"factors": 2, "reviews": 2, "regime_factors": 3, "baseline_win_rate": 0.5, "baseline_evaluated_reviews": 2})
         valuation = report["by_factor"][0]
         self.assertEqual(valuation["factor"], "valuation")
         self.assertEqual(valuation["label"], "Valuation")
@@ -383,6 +552,10 @@ class ReviewTrackerTests(unittest.TestCase):
         self.assertEqual(valuation["max_drawdown_pct"], -8.0)
         self.assertEqual(valuation["worst_return_pct"], -5.0)
         self.assertEqual(valuation["coverage_rate"], 1.0)
+        # baseline win rate is 0.5; valuation also 0.5 -> zero lift + full coverage = confounded
+        self.assertEqual(valuation["baseline_win_rate"], 0.5)
+        self.assertEqual(valuation["win_rate_lift"], 0.0)
+        self.assertTrue(valuation["confounded"])
         self.assertEqual(valuation["avg_impact"], 0.75)
         self.assertEqual(valuation["positive_impact_reviews"], 1)
         self.assertEqual(valuation["negative_impact_reviews"], 0)
@@ -535,7 +708,7 @@ class ReviewTrackerTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["summary"], {"suggestions": 3, "eligible_factors": 3, "min_reviews": 3})
+        self.assertEqual(result["summary"], {"suggestions": 3, "eligible_factors": 3, "confounded_held": 0, "baseline_win_rate": None, "min_reviews": 3})
         self.assertEqual(
             [(item["factor"], item["action"]) for item in result["suggestions"]],
             [("valuation", "increase"), ("risk", "decrease"), ("momentum", "hold")],
@@ -547,6 +720,58 @@ class ReviewTrackerTests(unittest.TestCase):
         kwargs = report.call_args.kwargs
         self.assertEqual(kwargs["snapshot_from"], date(2026, 5, 1))
         self.assertEqual(kwargs["snapshot_to"], date(2026, 5, 10))
+
+    def test_build_weight_adjustment_suggestions_holds_confounded_factors(self) -> None:
+        # A factor with strong raw win_rate that would normally trigger "increase",
+        # but it is high-coverage and flagged confounded -> must be held.
+        factor_report = {
+            "status": "ok",
+            "summary": {"factors": 2, "reviews": 20, "baseline_win_rate": 0.78},
+            "by_factor": [
+                {
+                    "factor": "trend",
+                    "label": "Trend",
+                    "reviews": 18,
+                    "win_rate": 0.8,
+                    "baseline_win_rate": 0.78,
+                    "win_rate_lift": 0.02,
+                    "coverage_rate": 0.95,
+                    "avg_return_pct": 4.0,
+                    "avg_impact": 0.9,
+                    "falsification_triggered": 0,
+                    "risk_signal_valid": 0,
+                    "confounded": True,
+                },
+                {
+                    "factor": "valuation",
+                    "label": "Valuation",
+                    "reviews": 10,
+                    "win_rate": 0.8,
+                    "baseline_win_rate": 0.5,
+                    "win_rate_lift": 0.3,
+                    "coverage_rate": 0.4,
+                    "avg_return_pct": 4.0,
+                    "avg_impact": 0.9,
+                    "falsification_triggered": 0,
+                    "risk_signal_valid": 0,
+                    "confounded": False,
+                },
+            ],
+        }
+
+        with patch.object(review_tracker, "build_factor_review_report", return_value=factor_report):
+            result = review_tracker.build_weight_adjustment_suggestions(min_reviews=3)
+
+        by_factor = {item["factor"]: item for item in result["suggestions"]}
+        # confounded trend held despite a win_rate that alone would say "increase"
+        self.assertEqual(by_factor["trend"]["action"], "hold")
+        self.assertTrue(by_factor["trend"]["confounded"])
+        self.assertIn("confounded", by_factor["trend"]["reason"])
+        # genuine high-lift factor still gets increase
+        self.assertEqual(by_factor["valuation"]["action"], "increase")
+        self.assertFalse(by_factor["valuation"]["confounded"])
+        self.assertEqual(result["summary"]["confounded_held"], 1)
+        self.assertEqual(result["summary"]["baseline_win_rate"], 0.78)
 
     def test_build_weight_adjustment_suggestions_reports_missing_tables(self) -> None:
         with patch.object(

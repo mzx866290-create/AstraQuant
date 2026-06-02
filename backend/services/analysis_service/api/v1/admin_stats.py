@@ -25,7 +25,10 @@ from backend.shared.auth import get_current_user, require_admin
 from backend.shared.schemas import AdminStatsResponse
 from backend.services.analysis_service.engine.review_scheduler import review_scheduler
 from backend.services.analysis_service.engine.review_tracker import (
+    build_data_foundation_health,
     build_factor_review_report,
+    build_pool_scorecard,
+    build_pool_simulation,
     build_review_readiness,
     build_review_report,
     build_single_factor_validation_report,
@@ -415,6 +418,19 @@ async def get_review_readiness(
     return build_review_readiness(review_date=review_date, offsets=offset_list)
 
 
+@router.get("/data-foundation-health")
+async def get_data_foundation_health(
+    lookback_days: int = Query(default=30, ge=7, le=180),
+    current_user=Depends(require_admin()),
+):
+    """Health check for the observation-pool data foundation.
+
+    Reports pipeline-run continuity gaps, observation accumulation, and the
+    share of reviews priced from reproducible historical closes.
+    """
+    return build_data_foundation_health(lookback_days=lookback_days)
+
+
 @router.get("/review-report")
 async def get_review_report(
     snapshot_from: date | None = Query(default=None),
@@ -425,6 +441,36 @@ async def get_review_report(
     if snapshot_from and snapshot_to and snapshot_from > snapshot_to:
         raise HTTPException(status_code=400, detail="snapshot_from must be earlier than or equal to snapshot_to")
     return build_review_report(snapshot_from=snapshot_from, snapshot_to=snapshot_to)
+
+
+@router.get("/review-scorecard")
+async def get_review_scorecard(
+    lookback_days: int = Query(default=90, ge=7, le=365),
+    strategy: str = Query(default="auto", min_length=1),
+    current_user=Depends(require_admin()),
+):
+    """Get admin-only historical scorecard for the observation pool."""
+    return await build_pool_scorecard(
+        lookback_days=lookback_days,
+        strategy=strategy.strip() or "auto",
+    )
+
+
+@router.get("/pool-simulation")
+async def get_pool_simulation(
+    lookback_days: int = Query(default=90, ge=7, le=365),
+    strategy: str = Query(default="auto", min_length=1),
+    current_user=Depends(require_admin()),
+):
+    """Admin-only execution simulation: discipline (-10% stop) vs buy-and-hold.
+
+    Deterministic backtest over stored reviews. Reports win rate, expectancy and
+    payoff ratio per tier/offset for both arms plus the discipline delta.
+    """
+    return build_pool_simulation(
+        lookback_days=lookback_days,
+        strategy=strategy.strip() or "auto",
+    )
 
 
 @router.get("/review-factor-report")

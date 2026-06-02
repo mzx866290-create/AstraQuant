@@ -43,6 +43,10 @@ export const adminApi = {
     api.get<T>('/api/v1/admin/stats/review-readiness', { params }),
   getResearchReviewReport: <T = unknown>(params?: unknown) =>
     api.get<T>('/api/v1/admin/stats/review-report', { params }),
+  getResearchReviewScorecard: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/review-scorecard', { params }),
+  getResearchPoolSimulation: <T = unknown>(params?: unknown) =>
+    api.get<T>('/api/v1/admin/stats/pool-simulation', { params }),
   getResearchReviewFactorReport: <T = unknown>(params?: unknown) =>
     api.get<T>('/api/v1/admin/stats/review-factor-report', { params }),
   getResearchReviewFactorValidation: <T = unknown>(params?: unknown) =>

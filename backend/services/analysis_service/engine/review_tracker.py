@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import inspect
@@ -12,6 +12,7 @@ from backend.shared.database import SessionLocal
 from backend.shared.models import (
     DailySnapshot,
     ObservationReview,
+    PipelineRunLog,
     ResearchObservation,
     StrategyWeightPatchProposal,
     StrategyWeightVersion,
@@ -24,6 +25,11 @@ from backend.services.analysis_service.engine.strategy_scoring import apply_stra
 logger = logging.getLogger(__name__)
 _TABLE_CHECK_CACHE: dict[str, bool] = {}
 VALID_REVIEW_OFFSETS = ("T+1", "T+5", "T+20")
+# Confounding guard: a factor that appears in nearly every pick (high coverage)
+# but whose win rate barely beats the pool baseline (low lift) is not a signal —
+# it just inherits the pool average. Such factors must not drive weight changes.
+_CONFOUND_COVERAGE_THRESHOLD = 0.85  # appears in >=85% of evaluated reviews
+_CONFOUND_LIFT_THRESHOLD = 0.05      # win-rate lift over baseline within +/-5pp
 _STRATEGY_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "strategies"
 _WEIGHT_FACTOR_ALIASES = {
     "financial": "financial_quality",
@@ -227,6 +233,31 @@ def _calculate_max_drawdown_pct(db, observation: ResearchObservation, review_dat
     return round(worst_drop, 4) if worst_drop < 0 else 0.0
 
 
+def _historical_close_on_or_before(db, symbol: str, review_date: date, tolerance_days: int = 4) -> float | None:
+    """Return the DailySnapshot close for review_date, or the nearest prior trading day.
+
+    Reviews must be reproducible: the recorded price has to be the close on the
+    review day, not whatever the realtime quote happens to be when the job runs.
+    A small backward tolerance absorbs weekends/holidays (review_date may be a
+    calendar day with no bar). Same data source the drawdown calc already uses.
+    """
+    lower_bound = (review_date - timedelta(days=tolerance_days)).isoformat()
+    row = (
+        db.query(DailySnapshot)
+        .filter(
+            DailySnapshot.symbol == symbol,
+            DailySnapshot.trade_date >= lower_bound,
+            DailySnapshot.trade_date <= review_date.isoformat(),
+        )
+        .order_by(DailySnapshot.trade_date.desc())
+        .first()
+    )
+    if not row:
+        return None
+    value = row.close if row.close not in (None, 0) else None
+    return float(value) if value not in (None, 0) else None
+
+
 async def run_pending_reviews(review_date: date, offsets: tuple[str, ...] = ("T+1", "T+5", "T+20")) -> dict:
     if not _has_table("research_observations") or not _has_table("observation_reviews"):
         return {"review_date": review_date.isoformat(), "processed": 0, "created": 0, "skipped": 0, "items": [], "status": "tables_missing"}
@@ -244,9 +275,21 @@ async def run_pending_reviews(review_date: date, offsets: tuple[str, ...] = ("T+
             if not observation:
                 continue
 
-            quote = await fetch_quote(item["symbol"])
-            review_price = quote.get("price")
+            historical_close = _historical_close_on_or_before(db, item["symbol"], review_date)
             base_price = observation.close_price
+            price_source = "daily_snapshot"
+            quote_source = ""
+            if historical_close not in (None, 0):
+                review_price = historical_close
+            else:
+                # No historical bar for the review day — fall back to a realtime
+                # quote so the review is not silently dropped, but mark it as
+                # non-reproducible so downstream stats can treat it with caution.
+                quote = await fetch_quote(item["symbol"])
+                review_price = quote.get("price")
+                quote_source = str(quote.get("source") or "unknown")
+                price_source = "realtime_quote_fallback"
+
             return_pct = None
             if base_price not in (None, 0) and review_price not in (None, 0):
                 try:
@@ -254,6 +297,7 @@ async def run_pending_reviews(review_date: date, offsets: tuple[str, ...] = ("T+
                 except (TypeError, ValueError, ZeroDivisionError):
                     return_pct = None
 
+            note_source = "daily_snapshot" if price_source == "daily_snapshot" else f"realtime_quote:{quote_source}"
             row = ObservationReview(
                 observation_id=observation.id,
                 review_offset=item["review_offset"],
@@ -263,7 +307,7 @@ async def run_pending_reviews(review_date: date, offsets: tuple[str, ...] = ("T+
                 max_drawdown_pct=_calculate_max_drawdown_pct(db, observation, review_date),
                 falsification_triggered=_falsification_triggered(observation, base_price, review_price),
                 risk_signal_valid=_risk_signal_valid(observation, return_pct),
-                notes=f"source={quote.get('source') or 'unknown'}",
+                notes=f"price_source={price_source} source={note_source}",
             )
             db.add(row)
             created += 1
@@ -274,6 +318,7 @@ async def run_pending_reviews(review_date: date, offsets: tuple[str, ...] = ("T+
                     "base_price": base_price,
                     "review_price": review_price,
                     "return_pct": return_pct,
+                    "price_source": price_source,
                 }
             )
         db.commit()
@@ -301,9 +346,23 @@ async def run_pending_reviews(review_date: date, offsets: tuple[str, ...] = ("T+
         db.close()
 
 
+def _observation_tier(observation: ResearchObservation) -> str:
+    """Extract the A/B/C tier stored in factor_snapshot_json, defaulting to C.
+
+    Matches the scorecard convention so tier-level win rates are consistent
+    across both reports.
+    """
+    snapshot = getattr(observation, "factor_snapshot_json", None)
+    if isinstance(snapshot, dict):
+        tier = snapshot.get("tier")
+        if tier:
+            return str(tier)
+    return "C"
+
+
 def build_review_report(snapshot_from: date | None = None, snapshot_to: date | None = None) -> dict:
     if not _has_table("research_observations") or not _has_table("observation_reviews"):
-        return {"status": "tables_missing", "summary": {}, "by_strategy": []}
+        return {"status": "tables_missing", "summary": {}, "by_strategy": [], "by_offset": []}
 
     db = SessionLocal()
     try:
@@ -312,7 +371,10 @@ def build_review_report(snapshot_from: date | None = None, snapshot_to: date | N
         rows = _filtered_review_rows(observations, reviews, snapshot_from, snapshot_to)
 
         by_strategy: dict[str, dict] = {}
+        by_tier: dict[str, dict] = {}
+        by_offset: dict[str, dict] = {}
         total_returns: list[float] = []
+        total_positive = 0
         for observation, review in rows:
             strategy_id = observation.strategy_id
             bucket = by_strategy.setdefault(
@@ -320,31 +382,96 @@ def build_review_report(snapshot_from: date | None = None, snapshot_to: date | N
                 {
                     "strategy_id": strategy_id,
                     "reviews": 0,
+                    "evaluated_reviews": 0,
                     "positive_reviews": 0,
                     "avg_return_pct": 0.0,
                     "falsification_triggered": 0,
                     "risk_signal_valid": 0,
                 },
             )
-            bucket["reviews"] += 1
+            tier = _observation_tier(observation)
+            tier_bucket = by_tier.setdefault(
+                tier,
+                {
+                    "tier": tier,
+                    "reviews": 0,
+                    "evaluated_reviews": 0,
+                    "positive_reviews": 0,
+                    "avg_return_pct": 0.0,
+                    "falsification_triggered": 0,
+                    "risk_signal_valid": 0,
+                },
+            )
+            grouped = (bucket, tier_bucket)
+            for group in grouped:
+                group["reviews"] += 1
+            offset = getattr(review, "review_offset", None) or "unknown"
+            offset_bucket = by_offset.setdefault(
+                offset,
+                {
+                    "review_offset": offset,
+                    "reviews": 0,
+                    "evaluated_reviews": 0,
+                    "positive_reviews": 0,
+                    "return_total": 0.0,
+                },
+            )
+            offset_bucket["reviews"] += 1
             if review.return_pct is not None:
-                total_returns.append(float(review.return_pct))
-                bucket["avg_return_pct"] += float(review.return_pct)
-                if float(review.return_pct) > 0:
-                    bucket["positive_reviews"] += 1
+                return_pct = float(review.return_pct)
+                total_returns.append(return_pct)
+                offset_bucket["evaluated_reviews"] += 1
+                offset_bucket["return_total"] += return_pct
+                for group in grouped:
+                    group["avg_return_pct"] += return_pct
+                    group["evaluated_reviews"] += 1
+                if return_pct > 0:
+                    offset_bucket["positive_reviews"] += 1
+                    total_positive += 1
+                    for group in grouped:
+                        group["positive_reviews"] += 1
             if review.falsification_triggered:
-                bucket["falsification_triggered"] += 1
+                for group in grouped:
+                    group["falsification_triggered"] += 1
             if review.risk_signal_valid:
-                bucket["risk_signal_valid"] += 1
+                for group in grouped:
+                    group["risk_signal_valid"] += 1
 
         result_rows = []
         for bucket in by_strategy.values():
-            reviews_count = max(int(bucket["reviews"]), 1)
+            evaluated = int(bucket["evaluated_reviews"])
             result_rows.append(
                 {
                     **bucket,
-                    "win_rate": round(bucket["positive_reviews"] / reviews_count, 4),
-                    "avg_return_pct": round(bucket["avg_return_pct"] / reviews_count, 4),
+                    "win_rate": round(bucket["positive_reviews"] / evaluated, 4) if evaluated else None,
+                    "avg_return_pct": round(bucket["avg_return_pct"] / evaluated, 4) if evaluated else None,
+                }
+            )
+
+        tier_order = {"A": 1, "B": 2, "C": 3}
+        tier_rows = []
+        for bucket in by_tier.values():
+            evaluated = int(bucket["evaluated_reviews"])
+            tier_rows.append(
+                {
+                    **bucket,
+                    "win_rate": round(bucket["positive_reviews"] / evaluated, 4) if evaluated else None,
+                    "avg_return_pct": round(bucket["avg_return_pct"] / evaluated, 4) if evaluated else None,
+                }
+            )
+
+        offset_order = {"T+1": 1, "T+5": 2, "T+20": 3}
+        offset_rows = []
+        for bucket in by_offset.values():
+            evaluated = int(bucket["evaluated_reviews"])
+            offset_rows.append(
+                {
+                    "review_offset": bucket["review_offset"],
+                    "reviews": int(bucket["reviews"]),
+                    "evaluated_reviews": evaluated,
+                    "positive_reviews": int(bucket["positive_reviews"]),
+                    "win_rate": round(bucket["positive_reviews"] / evaluated, 4) if evaluated else None,
+                    "avg_return_pct": round(bucket["return_total"] / evaluated, 4) if evaluated else None,
                 }
             )
 
@@ -352,10 +479,16 @@ def build_review_report(snapshot_from: date | None = None, snapshot_to: date | N
             "status": "ok",
             "summary": {
                 "reviews": len(rows),
+                "evaluated_reviews": len(total_returns),
+                "positive_reviews": total_positive,
                 "strategies": len(result_rows),
+                "tiers": len(tier_rows),
+                "win_rate": round(total_positive / len(total_returns), 4) if total_returns else None,
                 "avg_return_pct": round(sum(total_returns) / len(total_returns), 4) if total_returns else None,
             },
             "by_strategy": sorted(result_rows, key=lambda item: item["reviews"], reverse=True),
+            "by_tier": sorted(tier_rows, key=lambda item: tier_order.get(item["tier"], 99)),
+            "by_offset": sorted(offset_rows, key=lambda item: offset_order.get(item["review_offset"], 99)),
         }
     finally:
         db.close()
@@ -523,6 +656,155 @@ def build_review_readiness(
         "latest_review_date": latest_review.date().isoformat() if latest_review else None,
         "pending_reviews": pending[:20],
         "review_report_summary": report.get("summary") or {},
+    }
+
+
+def _expected_trading_days(start: date, end: date) -> list[str]:
+    """Weekday calendar between start and end inclusive (Mon–Fri).
+
+    A coarse proxy for trading days — it does not know A-share public holidays,
+    so a holiday shows up as an expected-but-missing day. That over-reports gaps
+    rather than hiding them, which is the safe direction for a health check.
+    """
+    if start > end:
+        return []
+    days: list[str] = []
+    cursor = start
+    while cursor <= end:
+        if cursor.weekday() < 5:
+            days.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return days
+
+
+def _price_source_from_notes(notes: str | None) -> str:
+    text = str(notes or "")
+    if "price_source=daily_snapshot" in text:
+        return "daily_snapshot"
+    if "price_source=realtime_quote_fallback" in text:
+        return "realtime_quote_fallback"
+    # Legacy rows written before the reproducible-pricing change only carried
+    # "source=..." — treat them as unknown rather than miscount them as clean.
+    return "legacy_unknown"
+
+
+def build_data_foundation_health(lookback_days: int = 30) -> dict:
+    """Health check for the observation-pool data foundation.
+
+    Surfaces the three things that determine whether the pool accumulates clean,
+    reproducible data day over day:
+      1. pipeline-run continuity — missing run days mean missing observations
+         (and offsets match on exact calendar deltas, so a missed day is a
+         permanently un-reviewed cohort).
+      2. observation accumulation — how many observation-days actually landed.
+      3. price-source reproducibility — share of reviews priced from historical
+         closes vs realtime-quote fallbacks vs legacy unknown rows.
+    """
+    tables = {
+        "pipeline_run_logs": _has_table("pipeline_run_logs"),
+        "research_observations": _has_table("research_observations"),
+        "observation_reviews": _has_table("observation_reviews"),
+    }
+    today = date.today()
+    window_start = today - timedelta(days=max(int(lookback_days), 1))
+
+    db = SessionLocal()
+    try:
+        # 1. Pipeline-run continuity
+        run_continuity: dict = {"status": "tables_missing"}
+        if tables["pipeline_run_logs"]:
+            runs = (
+                db.query(PipelineRunLog)
+                .filter(PipelineRunLog.run_date >= window_start.isoformat())
+                .all()
+            )
+            run_by_date = {str(row.run_date): row for row in runs}
+            successful = {d for d, row in run_by_date.items() if row.status in ("success", "no_data")}
+            run_dates = sorted(run_by_date)
+            earliest = date.fromisoformat(run_dates[0]) if run_dates else window_start
+            expected = _expected_trading_days(earliest, today)
+            missing = [d for d in expected if d not in run_by_date]
+            failed = sorted(d for d, row in run_by_date.items() if row.status not in ("success", "no_data", "running"))
+            run_continuity = {
+                "status": "ok",
+                "window_from": earliest.isoformat(),
+                "window_to": today.isoformat(),
+                "expected_trading_days": len(expected),
+                "runs_recorded": len(run_by_date),
+                "successful_runs": len(successful),
+                "missing_days": missing[:20],
+                "missing_day_count": len(missing),
+                "failed_days": failed[:20],
+                "failed_day_count": len(failed),
+                "continuity_rate": round(len(successful) / len(expected), 4) if expected else None,
+            }
+
+        # 2. Observation accumulation
+        observation_stats: dict = {"status": "tables_missing"}
+        if tables["research_observations"]:
+            observations = (
+                db.query(ResearchObservation)
+                .filter(ResearchObservation.snapshot_date >= datetime.combine(window_start, datetime.min.time(), tzinfo=timezone.utc))
+                .all()
+            )
+            obs_days = {row.snapshot_date.date().isoformat() for row in observations if row.snapshot_date}
+            observation_stats = {
+                "status": "ok",
+                "observations": len(observations),
+                "observation_days": len(obs_days),
+                "avg_per_day": round(len(observations) / len(obs_days), 2) if obs_days else 0.0,
+                "latest_observation_date": max(obs_days) if obs_days else None,
+            }
+
+        # 3. Price-source reproducibility
+        price_quality: dict = {"status": "tables_missing"}
+        if tables["observation_reviews"]:
+            reviews = (
+                db.query(ObservationReview)
+                .filter(ObservationReview.review_date >= datetime.combine(window_start, datetime.min.time(), tzinfo=timezone.utc))
+                .all()
+            )
+            counts = {"daily_snapshot": 0, "realtime_quote_fallback": 0, "legacy_unknown": 0}
+            for review in reviews:
+                counts[_price_source_from_notes(review.notes)] += 1
+            total = sum(counts.values())
+            reproducible = counts["daily_snapshot"]
+            price_quality = {
+                "status": "ok",
+                "reviews": total,
+                "by_source": counts,
+                "reproducible_rate": round(reproducible / total, 4) if total else None,
+            }
+    finally:
+        db.close()
+
+    # Roll up an overall verdict for quick scanning.
+    issues: list[str] = []
+    if run_continuity.get("status") == "ok" and run_continuity.get("missing_day_count"):
+        issues.append(f"{run_continuity['missing_day_count']} 个交易日缺少 pipeline 运行")
+    if run_continuity.get("status") == "ok" and run_continuity.get("failed_day_count"):
+        issues.append(f"{run_continuity['failed_day_count']} 个交易日 pipeline 运行失败")
+    if price_quality.get("status") == "ok":
+        rate = price_quality.get("reproducible_rate")
+        if rate is not None and rate < 1.0 and price_quality.get("reviews"):
+            issues.append(f"复盘价可复现率 {rate:.0%}（其余来自实时报价回退或历史遗留）")
+
+    if not all(tables.values()):
+        verdict = "tables_missing"
+    elif issues:
+        verdict = "degraded"
+    else:
+        verdict = "healthy"
+
+    return {
+        "status": verdict,
+        "as_of": today.isoformat(),
+        "lookback_days": int(lookback_days),
+        "tables": tables,
+        "run_continuity": run_continuity,
+        "observation_accumulation": observation_stats,
+        "price_source_quality": price_quality,
+        "issues": issues,
     }
 
 
@@ -789,7 +1071,7 @@ def _serialize_factor_bucket(bucket: dict, total_reviews: int) -> dict:
         "sources": sorted(bucket.get("sources") or []),
         "reviews": bucket["reviews"],
         "positive_reviews": bucket["positive_reviews"],
-        "win_rate": round(bucket["positive_reviews"] / reviews_count, 4),
+        "win_rate": round(bucket["positive_reviews"] / return_count, 4) if return_count else None,
         "avg_return_pct": round(bucket["return_total"] / return_count, 4) if return_count else None,
         "max_drawdown_pct": round(bucket["max_drawdown_pct"], 4) if bucket["max_drawdown_pct"] is not None else None,
         "worst_return_pct": round(bucket["worst_return_pct"], 4) if bucket["worst_return_pct"] is not None else None,
@@ -808,6 +1090,32 @@ def _serialize_factor_bucket(bucket: dict, total_reviews: int) -> dict:
     return item
 
 
+def _annotate_confounding(item: dict, baseline_win_rate: float | None) -> dict:
+    """Tag a factor row with its win-rate lift over the pool baseline.
+
+    A factor's raw win rate is confounded: because every factor on an
+    observation is bound to the same return, a factor present in nearly all
+    picks just inherits the pool average. ``win_rate_lift`` isolates the part
+    that is actually attributable to the factor, and ``confounded`` flags rows
+    that are high-coverage but indistinguishable from baseline — these must not
+    drive weight changes.
+    """
+    win_rate = item.get("win_rate")
+    coverage = _safe_float(item.get("coverage_rate"), 0.0)
+    if win_rate is None or baseline_win_rate is None:
+        item["baseline_win_rate"] = baseline_win_rate
+        item["win_rate_lift"] = None
+        item["confounded"] = False
+        return item
+    lift = round(_safe_float(win_rate) - baseline_win_rate, 4)
+    item["baseline_win_rate"] = baseline_win_rate
+    item["win_rate_lift"] = lift
+    item["confounded"] = (
+        coverage >= _CONFOUND_COVERAGE_THRESHOLD and abs(lift) < _CONFOUND_LIFT_THRESHOLD
+    )
+    return item
+
+
 def build_factor_review_report(snapshot_from: date | None = None, snapshot_to: date | None = None) -> dict:
     if not _has_table("research_observations") or not _has_table("observation_reviews"):
         return {"status": "tables_missing", "summary": {}, "by_factor": []}
@@ -820,7 +1128,13 @@ def build_factor_review_report(snapshot_from: date | None = None, snapshot_to: d
 
         by_factor: dict[str, dict] = {}
         by_regime_factor: dict[tuple[str, str], dict] = {}
+        baseline_positive = 0
+        baseline_evaluated = 0
         for observation, review in rows:
+            if review.return_pct is not None:
+                baseline_evaluated += 1
+                if float(review.return_pct) > 0:
+                    baseline_positive += 1
             regime = str(observation.regime or "unknown")
             for item in _observation_factor_items(observation):
                 factor = str(item.get("factor") or item.get("dimension") or "unknown")
@@ -832,12 +1146,19 @@ def build_factor_review_report(snapshot_from: date | None = None, snapshot_to: d
                 regime_bucket = by_regime_factor.setdefault((regime, factor), _new_factor_bucket(factor, label, regime=regime, dimension=dimension))
                 _update_factor_bucket(regime_bucket, impact, review, item)
 
-        result_rows = [_serialize_factor_bucket(bucket, len(rows)) for bucket in by_factor.values()]
-        regime_rows = [_serialize_factor_bucket(bucket, len(rows)) for bucket in by_regime_factor.values()]
+        baseline_win_rate = round(baseline_positive / baseline_evaluated, 4) if baseline_evaluated else None
+        result_rows = [_annotate_confounding(_serialize_factor_bucket(bucket, len(rows)), baseline_win_rate) for bucket in by_factor.values()]
+        regime_rows = [_annotate_confounding(_serialize_factor_bucket(bucket, len(rows)), baseline_win_rate) for bucket in by_regime_factor.values()]
 
         return {
             "status": "ok",
-            "summary": {"factors": len(result_rows), "reviews": len(rows), "regime_factors": len(regime_rows)},
+            "summary": {
+                "factors": len(result_rows),
+                "reviews": len(rows),
+                "regime_factors": len(regime_rows),
+                "baseline_win_rate": baseline_win_rate,
+                "baseline_evaluated_reviews": baseline_evaluated,
+            },
             "by_factor": sorted(result_rows, key=lambda item: item["reviews"], reverse=True),
             "by_regime_factor": sorted(regime_rows, key=lambda item: (item["regime"], -item["reviews"], item["factor"])),
         }
@@ -932,8 +1253,12 @@ def build_single_factor_validation_report(
 
 def _weight_suggestion_action(item: dict) -> str:
     reviews = max(int(item.get("reviews") or 0), 1)
-    win_rate = _safe_float(item.get("win_rate"), 0.0)
     avg_return_pct = item.get("avg_return_pct")
+    # No evaluated outcomes (all reviews lack return_pct) — outcome is unknown,
+    # so hold instead of penalizing the factor for missing price data.
+    if item.get("win_rate") is None and avg_return_pct is None:
+        return "hold"
+    win_rate = _safe_float(item.get("win_rate"), 0.0)
     avg_impact = _safe_float(item.get("avg_impact"), 0.0)
     falsification_rate = _safe_float(item.get("falsification_triggered"), 0.0) / reviews
 
@@ -993,22 +1318,46 @@ def build_weight_adjustment_suggestions(
         }
 
     suggestions = []
+    confounded_held = 0
     for item in report.get("by_factor", []):
         reviews = int(item.get("reviews") or 0)
         if reviews < min_reviews:
             continue
 
-        action = _weight_suggestion_action(item)
+        is_confounded = bool(item.get("confounded"))
+        if is_confounded:
+            # High coverage, negligible lift over baseline: the win rate is not
+            # attributable to this factor. Hold and say why, rather than letting
+            # a confounded number move the weight.
+            action = "hold"
+            confidence = "low"
+            lift = item.get("win_rate_lift")
+            lift_text = "n/a" if lift is None else f"{_safe_float(lift) * 100:.1f}pp"
+            reason = (
+                f"coverage={_safe_float(item.get('coverage_rate')) * 100:.0f}% with win-rate lift {lift_text} "
+                f"over baseline — indistinguishable from the pool average (confounded); hold until attribution improves."
+            )
+        else:
+            action = _weight_suggestion_action(item)
+            confidence = _weight_suggestion_confidence(item, action)
+            reason = _weight_suggestion_reason(item, action)
+
+        if is_confounded:
+            confounded_held += 1
         suggestions.append(
             {
                 "factor": str(item.get("factor") or "unknown"),
                 "label": str(item.get("label") or item.get("factor") or "unknown"),
                 "action": action,
-                "confidence": _weight_suggestion_confidence(item, action),
-                "reason": _weight_suggestion_reason(item, action),
+                "confidence": confidence,
+                "reason": reason,
+                "confounded": is_confounded,
                 "metrics": {
                     "reviews": reviews,
                     "win_rate": _safe_float(item.get("win_rate"), 0.0),
+                    "baseline_win_rate": item.get("baseline_win_rate"),
+                    "win_rate_lift": item.get("win_rate_lift"),
+                    "coverage_rate": _safe_float(item.get("coverage_rate"), 0.0),
                     "avg_return_pct": item.get("avg_return_pct"),
                     "avg_impact": _safe_float(item.get("avg_impact"), 0.0),
                     "falsification_triggered": int(item.get("falsification_triggered") or 0),
@@ -1025,6 +1374,8 @@ def build_weight_adjustment_suggestions(
         "summary": {
             "suggestions": len(suggestions),
             "eligible_factors": len(suggestions),
+            "confounded_held": confounded_held,
+            "baseline_win_rate": (report.get("summary") or {}).get("baseline_win_rate"),
             "min_reviews": min_reviews,
         },
         "suggestions": suggestions,
@@ -1771,3 +2122,350 @@ def _serialize_review(review: ObservationReview | None) -> dict | None:
         "risk_signal_valid": bool(review.risk_signal_valid),
         "notes": review.notes,
     }
+
+
+# ── Pool Scorecard ──
+
+
+_SCORECARD_SAMPLE_THRESHOLD = 10
+_SCORECARD_BENCHMARK_SYMBOL = "000300.SH"
+_SCORECARD_OFFSETS = ("T+1", "T+5", "T+20")
+
+
+def _find_nearest_close(date_map: dict[str, float], target_date: str, tolerance: int = 3) -> float | None:
+    if target_date in date_map:
+        return date_map[target_date]
+    try:
+        base = date.fromisoformat(target_date)
+    except ValueError:
+        return None
+    for delta in range(1, tolerance + 1):
+        for direction in (-1, 1):
+            candidate = (base + timedelta(days=delta * direction)).isoformat()
+            if candidate in date_map:
+                return date_map[candidate]
+    return None
+
+
+def _build_scorecard_bucket(returns: list[float], excess_returns: list[float | None], drawdowns: list[float]) -> dict:
+    reviews_count = len(returns)
+    if reviews_count < _SCORECARD_SAMPLE_THRESHOLD:
+        return {
+            "reviews": reviews_count,
+            "win_rate": None,
+            "avg_return_pct": None,
+            "avg_excess_pct": None,
+            "worst_return_pct": None,
+            "max_drawdown_pct": None,
+        }
+    positive = sum(1 for r in returns if r > 0)
+    valid_excess = [e for e in excess_returns if e is not None]
+    return {
+        "reviews": reviews_count,
+        "win_rate": round(positive / reviews_count, 4),
+        "avg_return_pct": round(sum(returns) / reviews_count, 4),
+        "avg_excess_pct": round(sum(valid_excess) / len(valid_excess), 4) if valid_excess else None,
+        "worst_return_pct": round(min(returns), 4),
+        "max_drawdown_pct": round(min(drawdowns), 4) if drawdowns else None,
+    }
+
+
+async def build_pool_scorecard(lookback_days: int = 90, strategy: str = "auto") -> dict:
+    if not _has_table("research_observations") or not _has_table("observation_reviews"):
+        return {"status": "tables_missing", "lookback_days": lookback_days, "disclaimer": "历史统计不代表未来表现，不构成投资建议"}
+
+    from backend.shared.cache import get_cache_manager
+
+    cache = await get_cache_manager()
+    cache_key = f"scorecard:{strategy}:{lookback_days}"
+    cached = await cache.get("pool_scorecard", cache_key)
+    if cached is not None:
+        return cached
+
+    from backend.services.analysis_service.engine.scoring_data import fetch_recent_kline
+
+    benchmark_map: dict[str, float] = {}
+    benchmark_status = "ok"
+    try:
+        kline = await fetch_recent_kline(_SCORECARD_BENCHMARK_SYMBOL, count=lookback_days + 60)
+        for row in kline:
+            trade_date = str(row.get("trade_date") or row.get("date") or "").strip()[:10]
+            close = row.get("close")
+            if trade_date and close:
+                try:
+                    benchmark_map[trade_date] = float(close)
+                except (TypeError, ValueError):
+                    pass
+    except Exception as exc:
+        logger.warning("Scorecard benchmark fetch failed: %s", exc)
+        benchmark_status = "unavailable"
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.combine(date.today() - timedelta(days=lookback_days), datetime.min.time(), tzinfo=timezone.utc)
+
+        query = db.query(ResearchObservation, ObservationReview).join(
+            ObservationReview, ObservationReview.observation_id == ResearchObservation.id
+        ).filter(
+            ResearchObservation.snapshot_date >= cutoff,
+            ObservationReview.return_pct.isnot(None),
+        )
+
+        if strategy and strategy != "auto":
+            from backend.services.analysis_service.engine.strategy_config import _ALIASES
+            resolved = _ALIASES.get(strategy.strip().lower(), strategy.strip().lower())
+            query = query.filter(ResearchObservation.strategy_id == resolved)
+
+        rows = query.all()
+
+        if not rows:
+            result = {
+                "status": "insufficient_data",
+                "lookback_days": lookback_days,
+                "as_of": date.today().isoformat(),
+                "strategy": strategy,
+                "benchmark": _SCORECARD_BENCHMARK_SYMBOL,
+                "benchmark_status": benchmark_status,
+                "overall": {},
+                "by_tier": {},
+                "sample_threshold": _SCORECARD_SAMPLE_THRESHOLD,
+                "disclaimer": "历史统计不代表未来表现，不构成投资建议",
+            }
+            await cache.set("pool_scorecard", cache_key, value=result, ttl=timedelta(hours=1))
+            return result
+
+        buckets: dict[tuple[str, str], dict] = {}
+        for observation, review in rows:
+            factor_snapshot = observation.factor_snapshot_json if isinstance(observation.factor_snapshot_json, dict) else {}
+            tier = factor_snapshot.get("tier") or "C"
+            offset = review.review_offset
+
+            if offset not in _SCORECARD_OFFSETS:
+                continue
+
+            stock_return = float(review.return_pct)
+
+            snapshot_date_str = observation.snapshot_date.strftime("%Y-%m-%d") if observation.snapshot_date else ""
+            review_date_str = review.review_date.strftime("%Y-%m-%d") if review.review_date else ""
+
+            excess: float | None = None
+            if benchmark_map and snapshot_date_str and review_date_str:
+                bench_start = _find_nearest_close(benchmark_map, snapshot_date_str)
+                bench_end = _find_nearest_close(benchmark_map, review_date_str)
+                if bench_start and bench_end and bench_start > 0:
+                    bench_return = (bench_end / bench_start - 1) * 100
+                    excess = stock_return - bench_return
+
+            drawdown = float(review.max_drawdown_pct) if review.max_drawdown_pct is not None else None
+
+            for key in [(tier, offset), ("ALL", offset)]:
+                bucket = buckets.setdefault(key, {"returns": [], "excess": [], "drawdowns": []})
+                bucket["returns"].append(stock_return)
+                bucket["excess"].append(excess)
+                if drawdown is not None:
+                    bucket["drawdowns"].append(drawdown)
+
+        by_tier: dict[str, dict] = {}
+        for tier_label in ("A", "B", "C"):
+            tier_data: dict[str, dict] = {}
+            for offset in _SCORECARD_OFFSETS:
+                bucket = buckets.get((tier_label, offset))
+                if bucket:
+                    tier_data[offset] = _build_scorecard_bucket(bucket["returns"], bucket["excess"], bucket["drawdowns"])
+                else:
+                    tier_data[offset] = _build_scorecard_bucket([], [], [])
+            by_tier[tier_label] = tier_data
+
+        overall: dict[str, dict] = {}
+        for offset in _SCORECARD_OFFSETS:
+            bucket = buckets.get(("ALL", offset))
+            if bucket:
+                overall[offset] = _build_scorecard_bucket(bucket["returns"], bucket["excess"], bucket["drawdowns"])
+            else:
+                overall[offset] = _build_scorecard_bucket([], [], [])
+
+        resolved_strategy = strategy
+        if rows:
+            resolved_strategy = rows[0][0].strategy_id or strategy
+
+        result = {
+            "status": "ok",
+            "lookback_days": lookback_days,
+            "as_of": date.today().isoformat(),
+            "strategy": resolved_strategy,
+            "benchmark": _SCORECARD_BENCHMARK_SYMBOL,
+            "benchmark_status": benchmark_status,
+            "overall": overall,
+            "by_tier": by_tier,
+            "sample_threshold": _SCORECARD_SAMPLE_THRESHOLD,
+            "disclaimer": "历史统计不代表未来表现，不构成投资建议",
+        }
+        await cache.set("pool_scorecard", cache_key, value=result, ttl=timedelta(hours=1))
+        return result
+    finally:
+        db.close()
+
+
+# ── Pool Simulation (admin-only) ──
+#
+# A deterministic, low-fidelity execution simulation built on existing reviews.
+# It measures what the pool would have returned under the system's OWN discipline
+# (stop out at the falsification line) versus naive buy-and-hold, so the win rate
+# reflects how the product is actually meant to be used rather than passive holding.
+#
+# Intentionally NOT a curve-fit: the stop is locked to the existing -10%
+# falsification threshold, never tuned to flatter the numbers. Outputs expectancy
+# and payoff ratio alongside win rate because win rate alone hides small-win/
+# big-loss strategies with negative expectancy.
+
+_SIMULATION_SAMPLE_THRESHOLD = 10
+_SIMULATION_OFFSETS = ("T+1", "T+5", "T+20")
+_SIMULATION_STOP_LOSS_PCT = -10.0  # mirrors _falsification_triggered (review_price <= base * 0.9)
+
+
+def _discipline_exit_return(return_pct: float, max_drawdown_pct: float | None) -> tuple[float, bool]:
+    """Return (exit_return_pct, stopped) under the -10% discipline rule.
+
+    If the path drew down to the stop at any point, the position is closed at the
+    stop (a deliberately conservative model — it does not assume you got out at
+    exactly -10%, it assumes the stop cost you the full -10% even if it later
+    recovered). Otherwise the position is held to the offset and exits at T+N.
+    """
+    if max_drawdown_pct is not None and float(max_drawdown_pct) <= _SIMULATION_STOP_LOSS_PCT:
+        return _SIMULATION_STOP_LOSS_PCT, True
+    return float(return_pct), False
+
+
+def _simulation_bucket(returns: list[float]) -> dict:
+    n = len(returns)
+    if n < _SIMULATION_SAMPLE_THRESHOLD:
+        return {
+            "trades": n,
+            "win_rate": None,
+            "avg_return_pct": None,
+            "expectancy_pct": None,
+            "payoff_ratio": None,
+            "avg_win_pct": None,
+            "avg_loss_pct": None,
+            "worst_return_pct": None,
+        }
+    wins = [r for r in returns if r > 0]
+    losses = [r for r in returns if r < 0]
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0  # negative or 0
+    win_rate = len(wins) / n
+    expectancy = sum(returns) / n  # mean return per trade == win_rate*avg_win + loss_rate*avg_loss
+    payoff_ratio = round(avg_win / abs(avg_loss), 4) if avg_loss < 0 else None
+    return {
+        "trades": n,
+        "win_rate": round(win_rate, 4),
+        "avg_return_pct": round(expectancy, 4),
+        "expectancy_pct": round(expectancy, 4),
+        "payoff_ratio": payoff_ratio,
+        "avg_win_pct": round(avg_win, 4) if wins else None,
+        "avg_loss_pct": round(avg_loss, 4) if losses else None,
+        "worst_return_pct": round(min(returns), 4),
+    }
+
+
+def _simulation_arm(returns: list[float]) -> dict:
+    """One arm (discipline or buy_hold) summarized with its overall bucket."""
+    return _simulation_bucket(returns)
+
+
+def build_pool_simulation(lookback_days: int = 90, strategy: str = "auto") -> dict:
+    """Admin-only execution simulation: discipline (-10% stop) vs buy-and-hold.
+
+    Deterministic and reproducible — reads only stored reviews, no realtime IO.
+    Returns per-offset, per-tier metrics for both arms plus the discipline delta.
+    """
+    if not _has_table("research_observations") or not _has_table("observation_reviews"):
+        return {
+            "status": "tables_missing",
+            "lookback_days": lookback_days,
+            "disclaimer": "历史模拟不代表未来表现，不构成投资建议",
+        }
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.combine(date.today() - timedelta(days=lookback_days), datetime.min.time(), tzinfo=timezone.utc)
+        query = db.query(ResearchObservation, ObservationReview).join(
+            ObservationReview, ObservationReview.observation_id == ResearchObservation.id
+        ).filter(
+            ResearchObservation.snapshot_date >= cutoff,
+            ObservationReview.return_pct.isnot(None),
+        )
+        if strategy and strategy != "auto":
+            from backend.services.analysis_service.engine.strategy_config import _ALIASES
+            resolved = _ALIASES.get(strategy.strip().lower(), strategy.strip().lower())
+            query = query.filter(ResearchObservation.strategy_id == resolved)
+
+        rows = query.all()
+        if not rows:
+            return {
+                "status": "insufficient_data",
+                "lookback_days": lookback_days,
+                "as_of": date.today().isoformat(),
+                "strategy": strategy,
+                "overall": {},
+                "by_tier": {},
+                "sample_threshold": _SIMULATION_SAMPLE_THRESHOLD,
+                "stop_loss_pct": _SIMULATION_STOP_LOSS_PCT,
+                "disclaimer": "历史模拟不代表未来表现，不构成投资建议",
+            }
+
+        # key -> {"discipline": [...], "buy_hold": [...], "stopped": int}
+        buckets: dict[tuple[str, str], dict] = {}
+        for observation, review in rows:
+            offset = review.review_offset
+            if offset not in _SIMULATION_OFFSETS:
+                continue
+            factor_snapshot = observation.factor_snapshot_json if isinstance(observation.factor_snapshot_json, dict) else {}
+            tier = factor_snapshot.get("tier") or "C"
+            hold_return = float(review.return_pct)
+            disc_return, stopped = _discipline_exit_return(hold_return, review.max_drawdown_pct)
+            for key in ((tier, offset), ("ALL", offset)):
+                bucket = buckets.setdefault(key, {"discipline": [], "buy_hold": [], "stopped": 0})
+                bucket["discipline"].append(disc_return)
+                bucket["buy_hold"].append(hold_return)
+                if stopped:
+                    bucket["stopped"] += 1
+
+        def _serialize(key: tuple[str, str]) -> dict:
+            bucket = buckets.get(key)
+            if not bucket:
+                empty = _simulation_bucket([])
+                return {"discipline": empty, "buy_hold": dict(empty), "stopped": 0, "stop_rate": None, "expectancy_delta_pct": None}
+            discipline = _simulation_arm(bucket["discipline"])
+            buy_hold = _simulation_arm(bucket["buy_hold"])
+            trades = discipline["trades"]
+            disc_exp = discipline.get("expectancy_pct")
+            hold_exp = buy_hold.get("expectancy_pct")
+            return {
+                "discipline": discipline,
+                "buy_hold": buy_hold,
+                "stopped": bucket["stopped"],
+                "stop_rate": round(bucket["stopped"] / trades, 4) if trades else None,
+                "expectancy_delta_pct": round(disc_exp - hold_exp, 4) if disc_exp is not None and hold_exp is not None else None,
+            }
+
+        overall = {offset: _serialize(("ALL", offset)) for offset in _SIMULATION_OFFSETS}
+        by_tier = {
+            tier_label: {offset: _serialize((tier_label, offset)) for offset in _SIMULATION_OFFSETS}
+            for tier_label in ("A", "B", "C")
+        }
+
+        resolved_strategy = rows[0][0].strategy_id or strategy if rows else strategy
+        return {
+            "status": "ok",
+            "lookback_days": lookback_days,
+            "as_of": date.today().isoformat(),
+            "strategy": resolved_strategy,
+            "stop_loss_pct": _SIMULATION_STOP_LOSS_PCT,
+            "sample_threshold": _SIMULATION_SAMPLE_THRESHOLD,
+            "overall": overall,
+            "by_tier": by_tier,
+            "disclaimer": "历史模拟不代表未来表现，不构成投资建议",
+        }
+    finally:
+        db.close()

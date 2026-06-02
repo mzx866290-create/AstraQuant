@@ -163,18 +163,48 @@
             <h3>研究复盘概览</h3>
             <span class="chart-period">{{ reviewReport?.status || 'unknown' }}</span>
           </div>
-          <div v-if="reviewReport" class="review-summary-grid">
-            <div class="summary-tile">
-              <div class="summary-value">{{ formatNumber(reviewReport.summary?.reviews || 0) }}</div>
-              <div class="summary-label">累计复盘</div>
+          <div v-if="reviewReport" class="review-report-panel">
+            <div class="review-summary-grid pool-summary-grid">
+              <div class="summary-tile">
+                <div class="summary-value">{{ formatWinRate(reviewReport.summary?.win_rate) }}</div>
+                <div class="summary-label">观察池胜率</div>
+              </div>
+              <div class="summary-tile">
+                <div class="summary-value">{{ formatNumber(reviewReport.summary?.reviews || 0) }}</div>
+                <div class="summary-label">累计复盘</div>
+              </div>
+              <div class="summary-tile">
+                <div class="summary-value">
+                  {{ formatNumber(reviewReport.summary?.positive_reviews || 0) }}/{{ formatNumber(reviewReport.summary?.evaluated_reviews || 0) }}
+                </div>
+                <div class="summary-label">正收益/可评估</div>
+              </div>
+              <div class="summary-tile">
+                <div class="summary-value">{{ formatPercent(reviewReport.summary?.avg_return_pct) }}</div>
+                <div class="summary-label">平均收益率</div>
+              </div>
             </div>
-            <div class="summary-tile">
-              <div class="summary-value">{{ formatNumber(reviewReport.summary?.strategies || 0) }}</div>
-              <div class="summary-label">覆盖策略</div>
+            <div v-if="reviewTierRows.length" class="offset-breakdown tier-breakdown">
+              <div
+                v-for="item in reviewTierRows"
+                :key="item.tier"
+                class="offset-breakdown-item"
+              >
+                <span>{{ item.tier }}档</span>
+                <strong>{{ formatWinRate(item.win_rate) }}</strong>
+                <small>{{ formatNumber(item.positive_reviews) }}/{{ formatNumber(item.evaluated_reviews) }} · {{ formatPercent(item.avg_return_pct) }}</small>
+              </div>
             </div>
-            <div class="summary-tile">
-              <div class="summary-value">{{ formatPercent(reviewReport.summary?.avg_return_pct) }}</div>
-              <div class="summary-label">平均收益率</div>
+            <div v-if="reviewOffsetRows.length" class="offset-breakdown">
+              <div
+                v-for="item in reviewOffsetRows"
+                :key="item.review_offset"
+                class="offset-breakdown-item"
+              >
+                <span>{{ item.review_offset }}</span>
+                <strong>{{ formatWinRate(item.win_rate) }}</strong>
+                <small>{{ formatNumber(item.positive_reviews) }}/{{ formatNumber(item.evaluated_reviews) }} · {{ formatPercent(item.avg_return_pct) }}</small>
+              </div>
             </div>
           </div>
           <div v-else class="chart-empty">暂无复盘数据</div>
@@ -285,6 +315,134 @@
           </div>
         </div>
         <div v-else class="chart-empty">暂无策略复盘数据</div>
+      </div>
+
+      <div class="review-table-card">
+        <div class="chart-header">
+          <h3>历史成绩单</h3>
+          <div class="header-actions">
+            <el-segmented
+              v-model="scorecardOffset"
+              :options="scorecardOffsetOptions"
+              size="small"
+            />
+            <span class="chart-period">近{{ reviewScorecard?.lookback_days || 90 }}天</span>
+          </div>
+        </div>
+        <div v-if="reviewScorecard?.status === 'ok'" class="scorecard-admin">
+          <div v-if="scorecardOverallBucket" class="review-summary-grid factor-summary-grid">
+            <div class="summary-tile">
+              <div class="summary-value">{{ formatWinRate(scorecardOverallBucket.win_rate) }}</div>
+              <div class="summary-label">整体胜率</div>
+            </div>
+            <div class="summary-tile">
+              <div class="summary-value" :class="returnClass(scorecardOverallBucket.avg_return_pct)">
+                {{ formatPercent(scorecardOverallBucket.avg_return_pct) }}
+              </div>
+              <div class="summary-label">平均收益</div>
+            </div>
+            <div class="summary-tile">
+              <div class="summary-value" :class="returnClass(scorecardOverallBucket.avg_excess_pct)">
+                {{ formatPercent(scorecardOverallBucket.avg_excess_pct) }}
+              </div>
+              <div class="summary-label">超额沪深300</div>
+            </div>
+            <div class="summary-tile">
+              <div class="summary-value">{{ formatNumber(scorecardOverallBucket.reviews) }}</div>
+              <div class="summary-label">样本数</div>
+            </div>
+          </div>
+          <div class="scorecard-admin-table">
+            <div class="scorecard-admin-head scorecard-admin-row">
+              <span>档位</span>
+              <span>样本</span>
+              <span>胜率</span>
+              <span>平均收益</span>
+              <span>超额沪深300</span>
+              <span>最大回撤</span>
+            </div>
+            <div
+              v-for="row in scorecardTierRows"
+              :key="row.tier"
+              class="scorecard-admin-row"
+            >
+              <span class="strategy-name">{{ row.tier }}档</span>
+              <span>{{ formatNumber(row.bucket?.reviews || 0) }}</span>
+              <span>{{ formatWinRate(row.bucket?.win_rate) }}</span>
+              <span :class="returnClass(row.bucket?.avg_return_pct)">{{ formatPercent(row.bucket?.avg_return_pct) }}</span>
+              <span :class="returnClass(row.bucket?.avg_excess_pct)">{{ formatPercent(row.bucket?.avg_excess_pct) }}</span>
+              <span :class="returnClass(row.bucket?.max_drawdown_pct)">{{ formatPercent(row.bucket?.max_drawdown_pct) }}</span>
+            </div>
+          </div>
+          <p class="scorecard-admin-note">{{ reviewScorecard.disclaimer }}</p>
+        </div>
+        <div v-else class="chart-empty">暂无历史成绩单数据</div>
+      </div>
+
+      <div class="review-table-card">
+        <div class="chart-header">
+          <h3>模拟盘（纪律 vs 裸持有）</h3>
+          <div class="header-actions">
+            <el-segmented
+              v-model="simulationOffset"
+              :options="scorecardOffsetOptions"
+              size="small"
+            />
+            <span class="chart-period">近{{ poolSimulation?.lookback_days || 90 }}天 · 止损{{ poolSimulation?.stop_loss_pct ?? -10 }}%</span>
+          </div>
+        </div>
+        <div v-if="poolSimulation?.status === 'ok'" class="scorecard-admin">
+          <div v-if="simulationOverall" class="review-summary-grid factor-summary-grid">
+            <div class="summary-tile">
+              <div class="summary-value" :class="returnClass(simulationOverall.discipline?.expectancy_pct)">
+                {{ formatPercent(simulationOverall.discipline?.expectancy_pct) }}
+              </div>
+              <div class="summary-label">纪律期望值</div>
+            </div>
+            <div class="summary-tile">
+              <div class="summary-value" :class="returnClass(simulationOverall.buy_hold?.expectancy_pct)">
+                {{ formatPercent(simulationOverall.buy_hold?.expectancy_pct) }}
+              </div>
+              <div class="summary-label">裸持有期望值</div>
+            </div>
+            <div class="summary-tile">
+              <div class="summary-value" :class="returnClass(simulationOverall.expectancy_delta_pct)">
+                {{ formatPercent(simulationOverall.expectancy_delta_pct) }}
+              </div>
+              <div class="summary-label">纪律增量</div>
+            </div>
+            <div class="summary-tile">
+              <div class="summary-value">{{ formatWinRate(simulationOverall.discipline?.win_rate) }}</div>
+              <div class="summary-label">纪律胜率</div>
+            </div>
+          </div>
+          <div class="scorecard-admin-table">
+            <div class="scorecard-admin-head scorecard-admin-row simulation-row">
+              <span>档位</span>
+              <span>样本</span>
+              <span>纪律胜率</span>
+              <span>纪律期望</span>
+              <span>裸持有期望</span>
+              <span>盈亏比</span>
+              <span>止损率</span>
+            </div>
+            <div
+              v-for="row in simulationTierRows"
+              :key="row.tier"
+              class="scorecard-admin-row simulation-row"
+            >
+              <span class="strategy-name">{{ row.tier }}档</span>
+              <span>{{ formatNumber(row.bucket?.discipline?.trades || 0) }}</span>
+              <span>{{ formatWinRate(row.bucket?.discipline?.win_rate) }}</span>
+              <span :class="returnClass(row.bucket?.discipline?.expectancy_pct)">{{ formatPercent(row.bucket?.discipline?.expectancy_pct) }}</span>
+              <span :class="returnClass(row.bucket?.buy_hold?.expectancy_pct)">{{ formatPercent(row.bucket?.buy_hold?.expectancy_pct) }}</span>
+              <span>{{ formatRatio(row.bucket?.discipline?.payoff_ratio) }}</span>
+              <span>{{ formatWinRate(row.bucket?.stop_rate) }}</span>
+            </div>
+          </div>
+          <p class="scorecard-admin-note">{{ poolSimulation.disclaimer }}</p>
+        </div>
+        <div v-else class="chart-empty">暂无模拟盘数据</div>
       </div>
 
       <div class="review-table-card">
@@ -515,7 +673,10 @@
             :key="item.factor"
             class="suggestion-row"
           >
-            <span class="strategy-name">{{ item.label || item.factor }}</span>
+            <span class="strategy-name">
+              {{ item.label || item.factor }}
+              <span v-if="item.confounded" class="confounded-chip" title="高覆盖、相对基准无显著超额，归因不可信，已锁定为观望">共线</span>
+            </span>
             <span>
               <span class="action-chip" :class="item.action">{{ actionLabel(item.action) }}</span>
             </span>
@@ -870,7 +1031,7 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { adminApi } from '@/api'
-
+import type { PoolScorecardResponse, PoolSimulationResponse } from '@/utils/recommendations'
 interface CallsByDayItem {
   date: string
   count: number
@@ -978,14 +1139,40 @@ interface ReviewReportStrategy {
   win_rate: number
 }
 
+interface ReviewOffsetBreakdown {
+  review_offset: string
+  reviews: number
+  evaluated_reviews: number
+  positive_reviews: number
+  win_rate: number | null
+  avg_return_pct: number | null
+}
+
+interface ReviewTierBreakdown {
+  tier: string
+  reviews: number
+  evaluated_reviews: number
+  positive_reviews: number
+  win_rate: number | null
+  avg_return_pct: number | null
+  falsification_triggered: number
+  risk_signal_valid: number
+}
+
 interface ReviewReport {
   status: string
   summary?: {
     reviews?: number
+    evaluated_reviews?: number
+    positive_reviews?: number
     strategies?: number
+    tiers?: number
+    win_rate?: number | null
     avg_return_pct?: number | null
   }
   by_strategy?: ReviewReportStrategy[]
+  by_tier?: ReviewTierBreakdown[]
+  by_offset?: ReviewOffsetBreakdown[]
 }
 
 interface FactorReportItem {
@@ -1089,9 +1276,13 @@ interface WeightSuggestionItem {
   action: WeightAction
   confidence: SuggestionConfidence
   reason: string
+  confounded?: boolean
   metrics: {
     reviews: number
     win_rate: number
+    baseline_win_rate?: number | null
+    win_rate_lift?: number | null
+    coverage_rate?: number
     avg_return_pct: number | null
     avg_impact: number
     falsification_triggered: number
@@ -1104,6 +1295,8 @@ interface WeightSuggestions {
   summary?: {
     suggestions?: number
     eligible_factors?: number
+    confounded_held?: number
+    baseline_win_rate?: number | null
     min_reviews?: number
   }
   suggestions?: WeightSuggestionItem[]
@@ -1228,6 +1421,10 @@ const dataQualityBaseline = ref<DataQualityBaseline | null>(null)
 const reviewScheduler = ref<ReviewSchedulerStatus | null>(null)
 const reviewReadiness = ref<ReviewReadiness | null>(null)
 const reviewReport = ref<ReviewReport | null>(null)
+const reviewScorecard = ref<PoolScorecardResponse | null>(null)
+const poolSimulation = ref<PoolSimulationResponse | null>(null)
+const scorecardOffset = ref<'T+1' | 'T+5' | 'T+20'>('T+5')
+const simulationOffset = ref<'T+1' | 'T+5' | 'T+20'>('T+5')
 const factorReport = ref<FactorReport | null>(null)
 const factorValidation = ref<FactorValidationReport | null>(null)
 const factorValidationLoading = ref(false)
@@ -1259,6 +1456,29 @@ const maxCalls = computed(() => {
 })
 
 const reviewStrategies = computed(() => reviewReport.value?.by_strategy || [])
+const reviewTierRows = computed(() => reviewReport.value?.by_tier || [])
+const reviewOffsetRows = computed(() => reviewReport.value?.by_offset || [])
+const scorecardOffsetOptions = [
+  { label: 'T+1', value: 'T+1' },
+  { label: 'T+5', value: 'T+5' },
+  { label: 'T+20', value: 'T+20' },
+]
+const scorecardOverallBucket = computed(() => reviewScorecard.value?.overall?.[scorecardOffset.value] || null)
+const scorecardTierRows = computed(() => {
+  const byTier = reviewScorecard.value?.by_tier || {}
+  return ['A', 'B', 'C'].map((tier) => ({
+    tier,
+    bucket: byTier[tier]?.[scorecardOffset.value] || null,
+  }))
+})
+const simulationOverall = computed(() => poolSimulation.value?.overall?.[simulationOffset.value] || null)
+const simulationTierRows = computed(() => {
+  const byTier = poolSimulation.value?.by_tier || {}
+  return ['A', 'B', 'C'].map((tier) => ({
+    tier,
+    bucket: byTier[tier]?.[simulationOffset.value] || null,
+  }))
+})
 const factorRows = computed(() => factorReport.value?.by_factor || [])
 const regimeFactorRows = computed(() => (factorReport.value?.by_regime_factor || []).slice(0, 12))
 const topNRows = computed(() => topNReviewReport.value?.by_top_n || [])
@@ -1412,6 +1632,11 @@ function formatPercent(num?: number | null) {
 function formatWinRate(num?: number | null) {
   if (num === null || num === undefined) return '-'
   return `${(num * 100).toFixed(1)}%`
+}
+
+function formatRatio(num?: number | null) {
+  if (num === null || num === undefined) return '-'
+  return `${num.toFixed(2)}x`
 }
 
 function formatSignedNumber(num?: number | null) {
@@ -1801,12 +2026,14 @@ async function rollbackStrategyVersion(versionId: number) {
 async function loadStats() {
   try {
     loading.value = true
-    const [overview, dataQuality, scheduler, readiness, report, factor, validation, topN, suggestions, audits, proposals] = await Promise.all([
+    const [overview, dataQuality, scheduler, readiness, report, scorecard, simulation, factor, validation, topN, suggestions, audits, proposals] = await Promise.all([
       adminApi.getStatsOverview<StatsOverview>(),
       adminApi.getDataQualityBaseline<DataQualityBaseline>(),
       adminApi.getResearchReviewScheduler<ReviewSchedulerStatus>(),
       adminApi.getResearchReviewReadiness<ReviewReadiness>(),
       adminApi.getResearchReviewReport<ReviewReport>(),
+      adminApi.getResearchReviewScorecard<PoolScorecardResponse>({ strategy: 'auto', lookback_days: 90 }),
+      adminApi.getResearchPoolSimulation<PoolSimulationResponse>({ strategy: 'auto', lookback_days: 90 }),
       adminApi.getResearchReviewFactorReport<FactorReport>(),
       adminApi.getResearchReviewFactorValidation<FactorValidationReport>({ factor: selectedValidationFactor.value, min_reviews: 3 }),
       adminApi.getResearchReviewTopNReport<TopNReviewReport>({ top_n: '5,10,20' }),
@@ -1822,6 +2049,8 @@ async function loadStats() {
     reviewScheduler.value = scheduler
     reviewReadiness.value = readiness
     reviewReport.value = report
+    reviewScorecard.value = scorecard
+    poolSimulation.value = simulation
     factorReport.value = factor
     factorValidation.value = validation
     topNReviewReport.value = topN
@@ -2188,6 +2417,42 @@ onMounted(loadStats)
   gap: var(--space-3);
 }
 
+.review-report-panel {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.pool-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.offset-breakdown {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.offset-breakdown-item {
+  display: grid;
+  gap: 3px;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.offset-breakdown-item span,
+.offset-breakdown-item small {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.offset-breakdown-item strong {
+  color: var(--color-text);
+  font-size: 18px;
+  line-height: 1.2;
+}
+
 .factor-summary-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: var(--space-4);
@@ -2355,6 +2620,7 @@ onMounted(loadStats)
 }
 
 .strategy-table,
+.scorecard-admin-table,
 .factor-table,
 .regime-factor-table,
 .topn-table,
@@ -2365,6 +2631,7 @@ onMounted(loadStats)
 }
 
 .strategy-row,
+.scorecard-admin-row,
 .factor-row,
 .regime-factor-row,
 .topn-row,
@@ -2376,6 +2643,29 @@ onMounted(loadStats)
   border-bottom: 1px solid var(--color-border);
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+
+.scorecard-admin {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.scorecard-admin-row {
+  grid-template-columns: 0.7fr 0.6fr 0.8fr 0.9fr 0.9fr 0.9fr;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.scorecard-admin-row.simulation-row {
+  grid-template-columns: 0.7fr 0.6fr 0.8fr 0.9fr 0.9fr 0.7fr 0.7fr;
+}
+
+.scorecard-admin-note {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
 .factor-row {
@@ -2425,6 +2715,7 @@ onMounted(loadStats)
 }
 
 .strategy-row:last-child,
+.scorecard-admin-row:last-child,
 .factor-row:last-child,
 .suggestion-row:last-child,
 .audit-row:last-child,
@@ -2433,6 +2724,7 @@ onMounted(loadStats)
 }
 
 .strategy-head,
+.scorecard-admin-head,
 .factor-head,
 .regime-factor-head,
 .topn-head,
@@ -2683,6 +2975,18 @@ onMounted(loadStats)
   font-weight: 800;
 }
 
+.confounded-chip {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #fef3c7;
+  color: #92400e;
+}
+
 .action-chip.increase {
   background: #ecfdf5;
   color: #047857;
@@ -2775,6 +3079,7 @@ onMounted(loadStats)
   }
 
   .strategy-row,
+  .scorecard-admin-row,
   .factor-row,
   .regime-factor-row,
   .topn-row,
@@ -2786,6 +3091,7 @@ onMounted(loadStats)
   }
 
   .strategy-head,
+  .scorecard-admin-head,
   .factor-head,
   .regime-factor-head,
   .topn-head,
@@ -2794,6 +3100,11 @@ onMounted(loadStats)
   .patch-head,
   .version-head {
     display: none;
+  }
+
+  .pool-summary-grid,
+  .offset-breakdown {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2815,6 +3126,10 @@ onMounted(loadStats)
   }
 
   .review-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .offset-breakdown {
     grid-template-columns: 1fr;
   }
 
