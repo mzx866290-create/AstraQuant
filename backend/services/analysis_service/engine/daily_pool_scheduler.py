@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 NEWS_ENRICH_HOUR = int(os.getenv("NEWS_ENRICH_HOUR", "1"))
 NEWS_ENRICH_MINUTE = int(os.getenv("NEWS_ENRICH_MINUTE", "30"))
+BASE_POOL_TIMEOUT_SECONDS = int(os.getenv("DAILY_POOL_TIMEOUT_SECONDS", "1800"))
+NEWS_ENRICH_TIMEOUT_SECONDS = int(os.getenv("NEWS_ENRICH_TIMEOUT_SECONDS", "1800"))
+INTRADAY_CONFIRMATION_TIMEOUT_SECONDS = int(os.getenv("INTRADAY_CONFIRMATION_TIMEOUT_SECONDS", "180"))
 
 
 def _next_daily_pool_target(now: datetime, hour: int, minute: int) -> datetime:
@@ -150,7 +153,11 @@ class DailyPoolScheduler:
         if has_run_today():
             logger.info("Daily pool already ran today, skipping")
             return
-        await self._execute()
+        try:
+            await asyncio.wait_for(self._execute(), timeout=BASE_POOL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            self._last_error = f"daily pool timed out after {BASE_POOL_TIMEOUT_SECONDS}s"
+            logger.error(self._last_error)
 
     async def _run_due_news_enrich(self, now: datetime) -> None:
         target = now.replace(hour=NEWS_ENRICH_HOUR, minute=NEWS_ENRICH_MINUTE, second=0, microsecond=0)
@@ -158,7 +165,12 @@ class DailyPoolScheduler:
             return
         if self._last_news_enrich_at and self._last_news_enrich_at[:10] == now.date().isoformat():
             return
-        await self._execute_news_enrich()
+        try:
+            await asyncio.wait_for(self._execute_news_enrich(), timeout=NEWS_ENRICH_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            self._last_news_enrich_error = f"news enrichment timed out after {NEWS_ENRICH_TIMEOUT_SECONDS}s"
+            self._last_news_enrich_result = {"status": "timeout", "error": self._last_news_enrich_error}
+            logger.error(self._last_news_enrich_error)
 
     async def _run_due_intraday_confirmation(self, now: datetime) -> None:
         if self._is_weekend():
@@ -169,7 +181,21 @@ class DailyPoolScheduler:
         marker = f"{now.date().isoformat()}T{label}"
         if self._last_intraday_confirmation_at == marker:
             return
-        await self._execute_intraday_confirmation(marker)
+        try:
+            await asyncio.wait_for(
+                self._execute_intraday_confirmation(marker),
+                timeout=INTRADAY_CONFIRMATION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            self._last_intraday_confirmation_error = (
+                f"intraday confirmation timed out after {INTRADAY_CONFIRMATION_TIMEOUT_SECONDS}s"
+            )
+            self._last_intraday_confirmation_result = {
+                "status": "timeout",
+                "error": self._last_intraday_confirmation_error,
+                "window": confirmation_window_label(now),
+            }
+            logger.error(self._last_intraday_confirmation_error)
 
     async def _execute_news_enrich(self, trade_date: str | None = None) -> dict:
         logger.info("Running nightly news enrichment for %s", trade_date or "latest observation pool")
@@ -199,7 +225,11 @@ class DailyPoolScheduler:
                 logger.info("Catch-up check: pipeline already ran today, skipping")
             else:
                 logger.info("Catch-up: pipeline missed today, running now")
-                await self._execute()
+                try:
+                    await asyncio.wait_for(self._execute(), timeout=BASE_POOL_TIMEOUT_SECONDS)
+                except asyncio.TimeoutError:
+                    self._last_error = f"daily pool timed out after {BASE_POOL_TIMEOUT_SECONDS}s"
+                    logger.error(self._last_error)
 
         await self._catch_up_news_enrich(now)
         await self._run_due_intraday_confirmation(now)
@@ -211,7 +241,12 @@ class DailyPoolScheduler:
             return
         if self._last_news_enrich_at and self._last_news_enrich_at[:10] == now.date().isoformat():
             return
-        await self._execute_news_enrich()
+        try:
+            await asyncio.wait_for(self._execute_news_enrich(), timeout=NEWS_ENRICH_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            self._last_news_enrich_error = f"news enrichment timed out after {NEWS_ENRICH_TIMEOUT_SECONDS}s"
+            self._last_news_enrich_result = {"status": "timeout", "error": self._last_news_enrich_error}
+            logger.error(self._last_news_enrich_error)
 
     async def _execute(self) -> dict:
         trade_date = datetime.now().strftime("%Y-%m-%d")
