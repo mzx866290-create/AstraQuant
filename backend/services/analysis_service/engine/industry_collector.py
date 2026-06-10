@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -19,6 +21,22 @@ logger = logging.getLogger(__name__)
 SINA_INDUSTRY_URL = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
 SINA_INDUSTRY_STOCKS_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+
+def _env_int(name: str, default: int, *, min_value: int = 0, max_value: int = 500) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, min_value), max_value)
+
+
+def _env_float(name: str, default: float, *, min_value: float = 0.0, max_value: float = 120.0) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, min_value), max_value)
 
 
 def _safe_float(val) -> Optional[float]:
@@ -101,9 +119,15 @@ def _fill_historical_metrics(industries: list[dict], trade_date: str) -> None:
     补算 MA 和收益率。
     先查本地历史快照；不足60天时用 AKShare stock_board_industry_hist_em 直接拉历史K线。
     """
+    deadline = time.monotonic() + _env_float("INDUSTRY_HIST_FILL_TIMEOUT_SECONDS", 20.0)
+    akshare_fetch_limit = _env_int("INDUSTRY_HIST_AKSHARE_MAX_FETCHES", 0)
+    akshare_fetches = 0
     db = SessionLocal()
     try:
         for ind in industries:
+            if time.monotonic() >= deadline:
+                logger.warning("Industry historical metric fill timed out; saving realtime snapshots without full history")
+                break
             # 1. 先查本地已有历史
             rows = db.execute(
                 text("""
@@ -119,8 +143,9 @@ def _fill_historical_metrics(industries: list[dict], trade_date: str) -> None:
             closes = [r[1] for r in rows if r[1] is not None]
             flows = [r[2] for r in rows if r[2] is not None]
 
-            # 2. 本地不足20天 → 用 AKShare 拉历史K线补全
-            if len(closes) < 20:
+            # 2. 本地不足20天时可用 AKShare 补全；默认关闭，避免采集任务被慢源拖死。
+            if len(closes) < 20 and akshare_fetches < akshare_fetch_limit and time.monotonic() < deadline:
+                akshare_fetches += 1
                 akshare_closes = _fetch_akshare_hist(ind["industry_name"], trade_date)
                 if akshare_closes:
                     closes = akshare_closes + closes
@@ -228,22 +253,9 @@ def _bulk_upsert(snapshots: list[dict], trade_date: str) -> int:
 
 
 def get_industry_for_stock(symbol: str) -> Optional[dict]:
-    """查询个股所属行业（从新浪获取）"""
-    try:
-        code = symbol[:6]
-        prefix = "sz" if code.startswith(("0", "1", "2", "3")) else "sh"
-        url = (
-            f"{SINA_INDUSTRY_STOCKS_URL}?page=1&num=1&sort=symbol&asc=1"
-            f"&node=hs_a&symbol={prefix}{code}&_s_r_a=page"
-        )
-        r = requests.get(url, timeout=5, headers=HEADERS)
-        if r.status_code == 200 and r.text.strip():
-            # 从新浪行业列表中查找包含该股票的行业
-            pass
-    except Exception:
-        pass
-
-    # 备用方案：从 stocks 表的 sector 字段获取
+    """查询个股所属行业。"""
+    # Prefer local metadata. The old per-stock Sina lookup did not parse a
+    # usable industry and could stall the filter across hundreds of candidates.
     db = SessionLocal()
     try:
         row = db.execute(
