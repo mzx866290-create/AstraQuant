@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -65,6 +66,29 @@ class AdminReviewStatsApiTests(unittest.TestCase):
         )
         global get_current_user
         get_current_user = current_user_dependencies[0]
+
+        # The app authenticates twice per request: once via FastAPI DI
+        # (require_admin -> Depends(get_current_user)) which dependency_overrides
+        # covers, and once in the api_authentication HTTP middleware which calls
+        # get_current_user(...) DIRECTLY by name — DI overrides do not reach it.
+        # Mirror the active override into the middleware's call so tests that set
+        # dependency_overrides[get_current_user] are honored there too; fall back
+        # to the real implementation (which 401s without a token) otherwise.
+        real_get_current_user = module.get_current_user
+
+        async def _middleware_get_current_user(credentials=None):
+            override = module.app.dependency_overrides.get(get_current_user)
+            if override is not None:
+                result = override()
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
+            result = real_get_current_user(credentials)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        module.get_current_user = _middleware_get_current_user
         return module.app
 
     def test_review_scheduler_endpoint_returns_scheduler_status_for_admin(self) -> None:

@@ -16,3 +16,4 @@ redis>=5.0.0
 python-dotenv>=1.0.0
 clickhouse-driver>=0.2.6
 akshare>=1.18.0
+chinesecalendar>=1.10.0

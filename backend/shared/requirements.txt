@@ -21,3 +21,4 @@ mypy==1.7.1
 typing-extensions==4.8.0
 dataclasses-json==0.6.2
 
+chinesecalendar>=1.10.0

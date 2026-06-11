@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 from datetime import date, datetime, timezone
+from backend.shared.trading_calendar import now_cn
 
 from backend.services.analysis_service.engine.daily_snapshot_collector import (
     cleanup_market_redundancy,
@@ -111,14 +112,26 @@ def _selection_window_size(total: int) -> int:
 def _bucket_caps(total: int) -> dict[str, int]:
     if total <= 0:
         return {}
-    trend_cap = _env_int("DAILY_POOL_TREND_BUCKET_CAP", max(1, int(total * 0.65)), min_value=1, max_value=total)
+    trend_cap = _env_int("DAILY_POOL_TREND_BUCKET_CAP", max(1, int(total * 0.55)), min_value=1, max_value=total)
     pullback_cap = _env_int("DAILY_POOL_PULLBACK_BUCKET_CAP", max(1, int(total * 0.30)), min_value=1, max_value=total)
-    reversal_cap = _env_int("DAILY_POOL_REVERSAL_BUCKET_CAP", max(1, int(total * 0.20)), min_value=1, max_value=total)
-    return {
+    reversal_cap = _env_int("DAILY_POOL_REVERSAL_BUCKET_CAP", max(1, int(total * 0.15)), min_value=1, max_value=total)
+    caps = {
         "trend_strength": trend_cap,
         "pullback_support": pullback_cap,
         "oversold_reversal": reversal_cap,
     }
+    cap_sum = sum(caps.values())
+    if cap_sum > total:
+        # 按比例归一化，保证配比真实生效；余数按 cap 大小降序分配
+        scaled = {k: max(1, int(v * total / cap_sum)) for k, v in caps.items()}
+        remainder = total - sum(scaled.values())
+        for k in sorted(caps, key=caps.get, reverse=True):
+            if remainder <= 0:
+                break
+            scaled[k] += 1
+            remainder -= 1
+        caps = scaled
+    return caps
 
 
 def _rebalance_by_observation_bucket(candidates: list[dict], total: int) -> tuple[list[dict], dict]:
@@ -136,11 +149,13 @@ def _rebalance_by_observation_bucket(candidates: list[dict], total: int) -> tupl
             counts[bucket] = count + 1
         else:
             overflow.append(item)
+    backfilled = max(0, min(len(selected) + len(overflow), total) - len(selected))
     selected.extend(overflow)
     return selected[:total], {
         "status": "ok",
         "caps": caps,
         "counts": counts,
+        "backfilled_from_overflow": backfilled,
         "before": len(candidates),
         "after": min(len(selected), total),
     }
@@ -292,7 +307,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
     返回 pipeline 执行结果摘要。
     """
     if not trade_date:
-        trade_date = datetime.now().strftime("%Y-%m-%d")
+        trade_date = now_cn().strftime("%Y-%m-%d")
 
     logger.info(f"=== Daily pool pipeline started: {trade_date} ===")
     result = {
@@ -301,7 +316,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         "steps": {},
     }
 
-    run_log = _create_run_log(trade_date)
+    run_log = await asyncio.to_thread(_create_run_log, trade_date)
 
     # 创建管道追踪上下文
     active_strategy_id = _strategy_id()
@@ -327,7 +342,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         logger.error(f"Pipeline failed at collection: {e}")
         result["status"] = "error"
         result["error"] = f"采集失败: {e}"
-        _finish_run_log(run_log, "failed", str(e))
+        await asyncio.to_thread(_finish_run_log, run_log, "failed", str(e))
         complete_execution_record(ctx, status="failed", error=str(e))
         return result
 
@@ -371,7 +386,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         logger.error(f"Pipeline failed at screening: {e}")
         result["status"] = "error"
         result["error"] = f"筛选失败: {e}"
-        _finish_run_log(run_log, "failed", str(e))
+        await asyncio.to_thread(_finish_run_log, run_log, "failed", str(e))
         complete_execution_record(ctx, status="failed", error=str(e),
                                   total_input=run_log.get("total_collected", 0))
         return result
@@ -379,7 +394,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
     if not candidates:
         result["status"] = "no_data"
         result["steps"]["screen"]["note"] = "无趋势候选股（可能非交易日或数据不足）"
-        _finish_run_log(run_log, "no_data", None)
+        await asyncio.to_thread(_finish_run_log, run_log, "no_data", None)
         complete_execution_record(ctx, status="no_data", total_output=0,
                                   total_input=run_log.get("total_collected", 0))
         # Clear same-day same-strategy DB observations so stale rows don't resurface
@@ -411,7 +426,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
                     "name": _strategy_name(active_strategy_id),
                     "selection_mode": "trend_screening",
                 },
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": now_cn().isoformat(),
             }
             default_key = "v4:market-ALL:limit-50:max-200:strategy-auto:evidence-1:debate-1:full-0"
             await _cache.set("daily_recommendations", default_key, value=empty_cache_result)
@@ -498,7 +513,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         logger.error(f"Pipeline failed at scoring: {e}")
         result["status"] = "error"
         result["error"] = f"评分失败: {e}"
-        _finish_run_log(run_log, "failed", str(e))
+        await asyncio.to_thread(_finish_run_log, run_log, "failed", str(e))
         complete_execution_record(ctx, status="failed", error=str(e),
                                   total_input=run_log.get("total_collected", 0))
         return result
@@ -544,18 +559,20 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         logger.info("Step 4.1 done: observation bucket rebalance %s", bucket_summary)
 
         # 记录近选名单
-        _save_almost_list(almost_candidates, trade_date)
+        await asyncio.to_thread(_save_almost_list, almost_candidates, trade_date)
     except asyncio.TimeoutError:
         logger.warning("Multiplier scoring timed out, falling back to base score")
         result["steps"]["multiplier_score"] = {"status": "timeout_fallback"}
         scored_candidates.sort(key=lambda x: x.get("anomaly_score", 0), reverse=True)
         top_candidates, bucket_summary = _rebalance_by_observation_bucket(scored_candidates, _top_n())
+        almost_candidates = [c for c in scored_candidates if c not in top_candidates]
         result["steps"]["bucket_rebalance"] = bucket_summary
     except Exception as e:
         logger.warning("Multiplier scoring failed, falling back to base score: %s", e)
         result["steps"]["multiplier_score"] = {"status": "error_fallback", "error": str(e)}
         scored_candidates.sort(key=lambda x: x.get("anomaly_score", 0), reverse=True)
         top_candidates, bucket_summary = _rebalance_by_observation_bucket(scored_candidates, _top_n())
+        almost_candidates = [c for c in scored_candidates if c not in top_candidates]
         result["steps"]["bucket_rebalance"] = bucket_summary
 
     try:
@@ -581,6 +598,23 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
     try:
         _before_chase = list(top_candidates)
         top_candidates, high_risk_bucket = apply_chase_high_penalty(top_candidates)
+        backfilled_count = 0
+        if len(top_candidates) < len(_before_chase):
+            shortfall = len(_before_chase) - len(top_candidates)
+            in_pool = {c.get("symbol") for c in top_candidates} | {c.get("symbol") for c in high_risk_bucket}
+            reserve = [c for c in almost_candidates if c.get("symbol") not in in_pool]
+            # 候补也要过追高检查，避免补进同样过热的标的
+            reserve_pass, _ = apply_chase_high_penalty(reserve)
+            backfill = reserve_pass[:shortfall]
+            backfilled_count = len(backfill)
+            for item in backfill:
+                ctx.add_trace("chase_high_penalty", StepResult(
+                    stock_code=item.get("symbol", ""),
+                    stock_name=item.get("name", ""),
+                    action="backfilled",
+                    reason="追高移出后从近选名单补位",
+                ))
+            top_candidates.extend(backfill)
         ctx.add_step_stats("chase_high_penalty", len(_before_chase), len(top_candidates), 0)
         for item in high_risk_bucket:
             ctx.add_trace("chase_high_penalty", StepResult(
@@ -603,6 +637,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
         result["steps"]["chase_high_penalty"] = {
             "main_pool": len(top_candidates),
             "high_risk_bucket": len(high_risk_bucket),
+            "backfilled": backfilled_count,
         }
         logger.info("Step 3.6 done: chase-high penalty, main=%d high_risk=%d", len(top_candidates), len(high_risk_bucket))
     except Exception as e:
@@ -851,7 +886,7 @@ async def run_daily_pool_pipeline(trade_date: str | None = None) -> dict:
     logger.info(f"=== Pipeline {final_status}: {len(recommendations)} recommendations ===")
 
     run_log["final_pool_size"] = len(recommendations)
-    _finish_run_log(run_log, "success" if final_status == "completed" else "partial", None)
+    await asyncio.to_thread(_finish_run_log, run_log, "success" if final_status == "completed" else "partial", None)
 
     # 保存管道追踪数据
     try:
@@ -902,6 +937,8 @@ def _create_run_log(trade_date: str) -> dict:
             existing.start_time = log["start_time"]
             existing.status = "running"
             existing.error_message = None
+            existing.end_time = None
+            existing.duration_seconds = None
             db.commit()
             log["id"] = existing.id
         else:
@@ -957,7 +994,7 @@ def _finish_run_log(log: dict, status: str, error: str | None) -> None:
 def has_run_today(trade_date: str | None = None) -> bool:
     """检查今天是否已经成功运行过 pipeline"""
     if not trade_date:
-        trade_date = datetime.now().strftime("%Y-%m-%d")
+        trade_date = now_cn().strftime("%Y-%m-%d")
     db = SessionLocal()
     try:
         record = db.query(PipelineRunLog).filter_by(run_date=trade_date).first()
@@ -967,7 +1004,10 @@ def has_run_today(trade_date: str | None = None) -> bool:
             return True
         # 卡在 running 超过5分钟，自动恢复为 failed
         if record.status == "running" and record.start_time:
-            elapsed = (datetime.now(timezone.utc) - record.start_time).total_seconds()
+            start_time = record.start_time
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
             if elapsed > 300:
                 record.status = "failed"
                 record.error_message = "auto-recovered: stuck in running > 5min"
@@ -1015,7 +1055,7 @@ async def _warm_recommend_cache(
                 "selection_mode": _strategy.get("selection_mode", ""),
                 "selection_reason": _strategy.get("selection_reason", ""),
             },
-            "updated_at": datetime.now().isoformat(),
+            "updated_at": now_cn().isoformat(),
             "disclaimer": "每日观察池仅用于筛选值得继续研究的标的，不是买入建议；需结合个人风险承受能力和完整信息独立判断。",
         }
 
